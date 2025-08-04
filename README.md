@@ -33,14 +33,18 @@ FULL-APP/
 1. 파이썬 설치
 
 2. 가상환경 생성
-    Windows |   python -m venv venv (cmd)
-            |   .\venv\Scripts\Activate.ps1 (PowerShell)
+    Windows |   python -m venv venv
     macOS   |   python3 -m venv venv
 
-3. 의존성 설치
+3. 가상환경 이동
+    Windows |   venv\Scripts\activate (cmd)
+            |   	.\venv\Scripts\Activate.ps1 (powershell)
+    macOS   |   source venv/bin/activate 
+
+4. 의존성 설치
     Windows |   pip install -r requirements.txt
     macOS   |   pip install -r requirements.txt
 
-4. FastAPI 서버 실행
+5. FastAPI 서버 실행
     Windows |   uvicorn app.main:app --reload
     macOS   |   uvicorn app.main:app --reload
