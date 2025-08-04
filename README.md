@@ -46,5 +46,6 @@ FULL-APP/
     macOS   |   pip install -r requirements.txt
 
 5. FastAPI 서버 실행
-    Windows |   uvicorn app.main:app --reload
-    macOS   |   uvicorn app.main:app --reload
+    Windows |   backend\start.bat (cmd)
+                .\backend\start.ps1 (powershell)
+    macOS   |   ./backend/start.sh
