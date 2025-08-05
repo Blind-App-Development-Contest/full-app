@@ -19,12 +19,39 @@
 
 ## 디렉토리 구조(임시: 추후 구체화 예정)
 FULL-APP/
-├── backend/
-│   └── main.py             # FastAPI 시작점 (테스트용 임시 파일)
-├── flutter_app/            # Flutter CLI로 생성한 앱 전체
-├── requirements.txt        # 프로젝트에 필요한 모든 Python 라이브러리를 기록한 파일
-├── README.md
-└── venv/
+├── .github/                  # GitHub Actions (CI 등 자동화)
+│
+├── backend/                  # FastAPI 백엔드
+│   ├── main.py               # FastAPI 진입점
+│   ├── start.sh              # macOS/Linux 실행 스크립트
+│   ├── start.ps1             # Windows PowerShell 실행 스크립트
+│   ├── start.bat             # Windows CMD 실행 스크립트
+│   ├── api/                  # 라우터 분리 예정 (vision, command 등)
+│   ├── services/             # YOLO, GPT, TTS 등 비즈니스 로직
+│   ├── models/               # Pydantic or SQLAlchemy 모델
+│   ├── db/                   # DB 연결, 세션 관리
+│   ├── core/                 # 설정, 환경 변수 관리
+│   └── tests/                # 테스트 코드
+│
+├── flutter_app/              # Flutter 모바일 앱
+│   ├── android/
+│   ├── ios/
+│   ├── lib/
+│   │   ├── main.dart         # 앱 진입점
+│   │   ├── screens/          # UI 화면
+│   │   ├── widgets/          # 공용 위젯
+│   │   ├── services/         # 백엔드 API 호출
+│   │   ├── models/           # 데이터 모델
+│   │   ├── core/             # 앱 전역 설정 (상수, 스타일, 환경변수)
+│   │   ├── routes/           # 화면 전환 경로 관리
+│   │   └── providers/        # 상태 관리 (Provider, Riverpod 등)
+│   ├── pubspec.yaml
+│   └── ...
+│
+├── .gitignore                # Git 무시 설정
+├── README.md                 # 프로젝트 설명서
+├── requirements.txt          # FastAPI 백엔드 의존성
+├── venv/                     # Python 가상환경 (Git에 포함 X)
 
 
 ## 백엔드 초기 가상환경 설정
