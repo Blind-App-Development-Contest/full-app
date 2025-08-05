@@ -17,7 +17,7 @@
 | **배포 환경**    | AWS (EC2, RDS 등)                                           |
 
 
-## 디렉토리 구조(임시: 추후 구체화 예정)
+## 디렉토리 구조
 FULL-APP/
 ├── .github/                  # GitHub Actions (CI 등 자동화)
 │

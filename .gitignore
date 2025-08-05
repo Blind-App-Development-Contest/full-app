@@ -1,34 +1,85 @@
-# 가상환경
+# ────────────────
+# ✅ Python 관련
+# ────────────────
 venv/
-.env
 .venv/
 env/
 ENV/
-
-# Python 캐시
 __pycache__/
 *.py[cod]
 *.so
+*.pyo
 
-# IDE 설정
-.vscode/
-.idea/
-*.swp
-
-# 로그, DB, 기타
+# 로그, DB
 *.log
 *.sqlite3
 *.db
 
-# macOS 특수 파일
-.DS_Store
-
-# 파이썬 빌드 결과물
+# 빌드 결과물
 build/
 dist/
 *.egg-info/
 
-# pyright, mypy, pylint 등 분석 툴 캐시
+# 테스트 & 정적 분석 도구
 .mypy_cache/
 .pytest_cache/
 .pyright/
+htmlcov/
+.coverage
+.tox/
+
+# 환경 변수
+.env
+
+# ────────────────
+# ✅ IDE & 시스템 관련
+# ────────────────
+.vscode/
+.vscode/settings.json
+.vscode/tasks.json
+.vscode/launch.json
+.idea/
+*.iml
+*.ipr
+*.iws
+*.swp
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# ────────────────
+# ✅ Flutter / Dart 관련
+# ────────────────
+.dart_tool/
+.flutter-*
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+.migrate_working_dir/
+**/doc/api/
+**/ios/Flutter/.last_build_id
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/ServiceDefinitions.json
+ios/Runner.xcworkspace/
+ios/Podfile.lock
+ios/Podfile
+
+# Android
+android/.gradle/
+android/.idea/
+android/local.properties
+android/app/debug
+android/app/profile
+android/app/release
+
+# Symbolication & Obfuscation
+app.*.symbols
+app.*.map.json
