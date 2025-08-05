@@ -53,8 +53,12 @@ FULL-APP/
 ├── requirements.txt          # FastAPI 백엔드 의존성
 ├── venv/                     # Python 가상환경 (Git에 포함 X)
 
+## 개발 환경 준비
+- **Python**: 3.10.13 (`pyenv` ios 권장)
+- **Flutter**: 3.29.3
+- **Dart**: 3.7.2
 
-## 백엔드 초기 가상환경 설정
+## 가상환경 설정
 (venv/ 폴더는 Git에 포함되지 않으며, 각 사용자가 로컬에서 직접 생성해야 함)
 
 1. 파이썬 설치
