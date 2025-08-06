@@ -8,17 +8,17 @@ contourpy==1.3.2
 cycler==0.12.1
 distro==1.9.0
 exceptiongroup==1.3.0
-fastapi==0.116.1
+fastapi==0.116.1                    # 🚀 웹 API 서버 프레임워크
 filelock==3.18.0
 fonttools==4.59.0
 fsspec==2025.7.0
-google-api-core==2.25.1
-google-auth==2.40.3
-google-cloud-speech==2.33.0
-google-cloud-texttospeech==2.27.0
-googleapis-common-protos==1.70.0
-googlemaps==4.10.0
-grpcio==1.74.0
+google-api-core==2.25.1             # 🧠 Google Cloud API 공통 기반
+google-auth==2.40.3                 # 🔐 Google 인증
+google-cloud-speech==2.33.0         # 🗣️ Google Speech-to-Text (음성 → 텍스트)
+google-cloud-texttospeech==2.27.0   # 🔊 Google Text-to-Speech (텍스트 → 음성)
+googleapis-common-protos==1.70.0    # 🧱 Google API 공통 proto
+googlemaps==4.10.0                  # 🗺️ Google Maps & Directions API
+grpcio==1.74.0                      # 🧬 Google API 통신용 gRPC
 grpcio-status==1.74.0
 h11==0.16.0
 httpcore==1.0.9
@@ -28,43 +28,43 @@ Jinja2==3.1.6
 jiter==0.10.0
 kiwisolver==1.4.8
 MarkupSafe==3.0.2
-matplotlib==3.10.5
+matplotlib==3.10.5                  # 📊 시각화
 mpmath==1.3.0
 networkx==3.4.2
-numpy==2.2.6
-openai==1.99.1
-opencv-python==4.12.0.88
+numpy==2.2.6                        # 🔢 수치 연산 라이브러리
+openai==1.99.1                      # 💬 OpenAI GPT-4 API
+opencv-python==4.12.0.88            # 📸 이미지 처리, 카메라 프레임 분석 (YOLO 포함)
 packaging==25.0
-pandas==2.3.1
-pillow==11.3.0
+pandas==2.3.1                       # 🧮 데이터프레임 처리
+pillow==11.3.0                      # 🖼️ 이미지 파일 처리
 proto-plus==1.26.1
 protobuf==6.31.1
 psutil==7.0.0
 py-cpuinfo==9.0.0
 pyasn1==0.6.1
 pyasn1_modules==0.4.2
-pydantic==2.11.7
+pydantic==2.11.7                    # ⚙️ 데이터 검증 및 FastAPI 모델링
 pydantic_core==2.33.2
 pyparsing==3.2.3
 python-dateutil==2.9.0.post0
-python-dotenv==1.1.1
-python-multipart==0.0.20
+python-dotenv==1.1.1                # 🔐 .env 파일에서 API 키 불러오기
+python-multipart==0.0.20            # 📁 파일 업로드 처리
 pytz==2025.2
 PyYAML==6.0.2
-requests==2.32.4
+requests==2.32.4                    # 🌐 외부 API 호출
 rsa==4.9.1
 scipy==1.15.3
 six==1.17.0
 sniffio==1.3.1
 starlette==0.47.2
 sympy==1.14.0
-torch==2.7.1
-torchvision==0.22.1
-tqdm==4.67.1
+torch==2.7.1                        # 🧠 YOLO 등 딥러닝 기반 모델의 토대
+torchvision==0.22.1                 # 🔍 이미지 분류/객체 탐지 관련 지원
+tqdm==4.67.1                        # 📶 프로그레스 바
 typing-inspection==0.4.1
 typing_extensions==4.14.1
 tzdata==2025.2
-ultralytics==8.3.174
-ultralytics-thop==2.0.15
+ultralytics==8.3.174                # 🔍 YOLOv8 모델 (객체 탐지)
+ultralytics-thop==2.0.15            # 📊 YOLO 모델 성능 분석용
 urllib3==2.5.0
-uvicorn==0.35.0
+uvicorn==0.35.0                     # 🔥 FastAPI 실행용 ASGI 서버
