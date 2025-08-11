@@ -101,3 +101,6 @@ GRANT ALL ON DATABASE appdb TO appuser;
 
 3. 스키마 파일 적용
 psql -U appuser -h localhost -d appdb -f backend/db/appdb.sql
+
+4. DB 접속
+psql -h localhost -U appuser -d appdb

@@ -1,7 +1,6 @@
-
 -- AI 시각장애인 보조 시스템 데이터베이스 (PostgreSQL)
 -- Generated: 2025-08-11
--- Note: Table/column names normalized to snake_case for PostgreSQL friendliness.
+-- Note: 사용자 PK = 앱에서 최초 생성한 UUID
 
 -- =========================
 -- Drop tables if exist (dev only)
@@ -28,23 +27,26 @@ BEGIN
     END IF;
 END$$;
 
+-- (선택) gen_random_uuid() 등을 쓰고 싶다면 주석 해제
+-- CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
 -- =========================
--- Users
+-- Users (PK = 앱에서 생성한 UUID, 서버는 기본값 생성하지 않음)
 -- =========================
 CREATE TABLE users (
-    user_id      INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id      UUID PRIMARY KEY,         -- 앱에서 최초 생성한 UUID 그대로 저장
     user_name    VARCHAR(32),
     created_at   TIMESTAMP NOT NULL DEFAULT NOW()
 );
 COMMENT ON TABLE users IS '사용자 기기 단위 식별 및 관리';
-COMMENT ON COLUMN users.user_id IS 'APP UUID';
+COMMENT ON COLUMN users.user_id IS '앱에서 최초 생성한 UUID';
 
 -- =========================
 -- Voice (1:1 with users)
 -- =========================
 CREATE TABLE voice (
     voice_id           INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    user_id            INTEGER UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
+    user_id            UUID UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
     gender             CHAR(1), -- M/F
     voice_created_at   TIMESTAMP NOT NULL DEFAULT NOW(),
     voice_updated_at   TIMESTAMP NOT NULL DEFAULT NOW()
@@ -55,7 +57,7 @@ CREATE TABLE voice (
 -- =========================
 CREATE TABLE caregivers (
     caregiver_id           INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    user_id                INTEGER NOT NULL UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
+    user_id                UUID NOT NULL UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
     caregivers_name        VARCHAR(32),
     phone_number           VARCHAR(32),
     caregiver_created_at   TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -67,7 +69,7 @@ CREATE TABLE caregivers (
 -- =========================
 CREATE TABLE footstep (
     step_id          INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    user_id          INTEGER UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
+    user_id          UUID UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
     step_length      INTEGER NOT NULL,
     step_created_at  TIMESTAMP NOT NULL DEFAULT NOW(),
     step_updated_at  TIMESTAMP NOT NULL DEFAULT NOW()
@@ -78,7 +80,7 @@ CREATE TABLE footstep (
 -- =========================
 CREATE TABLE user_settings (
     setting_id           INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    user_id              INTEGER NOT NULL UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
+    user_id              UUID NOT NULL UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
     caregiver_id         INTEGER UNIQUE REFERENCES caregivers(caregiver_id) ON DELETE SET NULL,
     step_id              INTEGER UNIQUE REFERENCES footstep(step_id) ON DELETE SET NULL,
     voice_id             INTEGER UNIQUE REFERENCES voice(voice_id) ON DELETE SET NULL,
@@ -91,7 +93,7 @@ CREATE TABLE user_settings (
 -- =========================
 CREATE TABLE dashboard_logs (
     dashboard_log_id  INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    user_id           INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    user_id           UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     timestamp         TIMESTAMP NOT NULL DEFAULT NOW(),
     log_type          VARCHAR(32),
     log_data          TEXT,
@@ -99,7 +101,7 @@ CREATE TABLE dashboard_logs (
 );
 COMMENT ON TABLE dashboard_logs IS '시스템 모니터링 및 운영 대시보드용 데이터';
 COMMENT ON COLUMN dashboard_logs.dashboard_log_id IS '대시보드 로그 고유 번호';
-COMMENT ON COLUMN dashboard_logs.user_id IS '로그 대상 사용자';
+COMMENT ON COLUMN dashboard_logs.user_id IS '로그 대상 사용자(UUID)';
 COMMENT ON COLUMN dashboard_logs.timestamp IS '로그 기록 시각';
 COMMENT ON COLUMN dashboard_logs.log_type IS '로그 유형 분류';
 COMMENT ON COLUMN dashboard_logs.log_data IS '상세 로그 데이터 내용';
