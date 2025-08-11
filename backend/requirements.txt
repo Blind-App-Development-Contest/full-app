@@ -68,3 +68,6 @@ ultralytics==8.3.174                # 🔍 YOLOv8 모델 (객체 탐지)
 ultralytics-thop==2.0.15            # 📊 YOLO 모델 성능 분석용
 urllib3==2.5.0
 uvicorn==0.35.0                     # 🔥 FastAPI 실행용 ASGI 서버
+sqlalchemy>=2.0
+asyncpg
+greenlet>=3.0
