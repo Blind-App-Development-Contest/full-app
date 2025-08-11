@@ -1,10 +1,10 @@
 # ────────────────
-# ✅ Python 관련
+# ✅ Python 관련 (백엔드)
 # ────────────────
-venv/
-.venv/
-env/
-ENV/
+backend/venv/
+backend/.venv/
+backend/env/
+backend/ENV/
 __pycache__/
 *.py[cod]
 *.so
@@ -30,6 +30,7 @@ htmlcov/
 
 # 환경 변수
 .env
+backend/.env
 
 # ────────────────
 # ✅ IDE & 시스템 관련
@@ -48,8 +49,9 @@ Thumbs.db
 ehthumbs.db
 
 # ────────────────
-# ✅ Flutter / Dart 관련
+# ✅ Flutter / Dart 관련 (프론트엔드)
 # ────────────────
+frontend/node_modules/
 .dart_tool/
 .flutter-*
 .flutter-plugins

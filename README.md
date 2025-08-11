@@ -68,15 +68,36 @@ FULL-APP/
     macOS   |   python3 -m venv venv
 
 3. 가상환경 이동
-    Windows |   venv\Scripts\activate (cmd)
-            |   	.\venv\Scripts\Activate.ps1 (powershell)
-    macOS   |   source venv/bin/activate 
+    Windows |   backend\venv\Scripts\activate (cmd)
+            |   	backend\venv\Scripts\Activate.ps1 (powershell)
+    macOS   |   source backend/venv/bin/activate 
 
 4. 의존성 설치
-    Windows |   pip install -r requirements.txt
-    macOS   |   pip install -r requirements.txt
+    Windows |   pip install -r backend/requirements.txt
+    macOS   |   pip install -r backend/requirements.txt
 
 5. FastAPI 서버 실행
     Windows |   backend\start.bat (cmd)
                 .\backend\start.ps1 (powershell)
     macOS   |   ./backend/start.sh
+
+## DB 설정
+
+1. PostgreSQL 설치
+- macOS: `brew install postgresql@16`
+- Windows: [공식 다운로드](https://www.postgresql.org/download/windows/)
+
+2. DB/계정 생성
+psql -h localhost -d postgres   #(postgresql 접속)
+CREATE DATABASE appdb;
+CREATE USER appuser WITH PASSWORD '1111';
+GRANT ALL PRIVILEGES ON DATABASE appdb TO appuser;
+
+\c appdb
+GRANT CREATE, USAGE ON SCHEMA public TO appuser;
+ALTER SCHEMA public OWNER TO appuser;   #(실패해도 무방)
+GRANT ALL ON DATABASE appdb TO appuser;
+\q (postgresql 종료)
+
+3. 스키마 파일 적용
+psql -U appuser -h localhost -d appdb -f backend/db/appdb.sql
