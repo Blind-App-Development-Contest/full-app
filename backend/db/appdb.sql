@@ -48,6 +48,7 @@ CREATE TABLE voice (
     voice_id           INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     user_id            UUID UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
     gender             CHAR(1), -- M/F
+    speed              INTEGER,
     voice_created_at   TIMESTAMP NOT NULL DEFAULT NOW(),
     voice_updated_at   TIMESTAMP NOT NULL DEFAULT NOW()
 );
