@@ -6,6 +6,7 @@ import asyncpg
 
 from api import users, update_name
 from api import voice as voice_module  # /api/users/voice 라우터
+from api import camera, objects
 
 from fastapi.responses import HTMLResponse
 
@@ -76,6 +77,8 @@ $("go").onclick = async () => {
 app.include_router(users.router)
 app.include_router(update_name.router)
 app.include_router(voice_module.router)  # /api/users/voice
+app.include_router(camera.router)        # /api/camera
+app.include_router(objects.router)       # /api/objects
 
 @app.get("/")
 def read_root():
