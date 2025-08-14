@@ -47,10 +47,7 @@ class VibrationPattern(BaseModel):
     duration_ms: int = Field(500, ge=100, le=2000)
     reason: Optional[str] = None
 
-class TextReadRequest(BaseModel):
-    user_id: UUID
-    language_code: str = "ko-KR"
-    read_aloud: bool = True  # TTS로 읽어줄지 여부
+
 
 # ─────────────────────────────────────────────────────────────
 # Helper Functions
@@ -180,69 +177,4 @@ async def trigger_vibration(vibration: VibrationPattern):
         "reason": vibration.reason
     }
 
-@router.post("/texts")
-async def read_text_ocr(
-    image: UploadFile = File(...),
-    user_id: UUID = Form(...),
-    language_code: str = Form("ko-KR"),
-    read_aloud: bool = Form(True)
-):
-    """
-    OCR 텍스트 읽기 API
-    이미지에서 텍스트를 추출하고 TTS로 변환
-    """
 
-    try:
-        # 이미지 로드
-        image_content = await image.read()
-        cv_image = load_image_from_upload(image_content)
-        
-        if cv_image is None:
-            raise HTTPException(status_code=400, detail="Invalid image format")
-        
-        # TODO: OCR 처리 (예: Google Vision API, EasyOCR 등)
-        # 임시 더미 텍스트
-        extracted_text = "안전보행 신호등 앞 횡단보도"
-        
-        # OCR 텍스트 추출 완료
-        
-        if read_aloud:
-            # 기존 TTS API 활용
-            from google.cloud import texttospeech
-            
-            client = texttospeech.TextToSpeechClient()
-            synthesis_input = texttospeech.SynthesisInput(text=extracted_text)
-            
-            voice = texttospeech.VoiceSelectionParams(
-                language_code=language_code,
-                ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
-            )
-            
-            audio_config = texttospeech.AudioConfig(
-                audio_encoding=texttospeech.AudioEncoding.MP3
-            )
-            
-            response = client.synthesize_speech(
-                input=synthesis_input,
-                voice=voice,
-                audio_config=audio_config
-            )
-            
-            return StreamingResponse(
-                io.BytesIO(response.audio_content),
-                media_type="audio/mpeg",
-                headers={
-                    "Content-Disposition": "inline; filename=\"ocr_text.mp3\"",
-                    "X-Extracted-Text": extracted_text
-                }
-            )
-        else:
-            return {
-                "user_id": str(user_id),
-                "extracted_text": extracted_text,
-                "language_code": language_code
-            }
-            
-    except Exception as e:
-        logger.exception("OCR text reading error")
-        raise HTTPException(status_code=500, detail=f"OCR error: {str(e)}")
