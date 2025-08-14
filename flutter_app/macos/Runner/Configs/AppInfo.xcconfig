@@ -12,3 +12,6 @@ PRODUCT_BUNDLE_IDENTIFIER = com.example.flutterApp
 
 // The copyright displayed in application information
 PRODUCT_COPYRIGHT = Copyright © 2025 com.example. All rights reserved.
+
+// macOS 배포 타겟 (record 플러그인을 위해 10.15 이상 필요)
+MACOSX_DEPLOYMENT_TARGET = 10.15
