@@ -1,34 +1,38 @@
-# app/main.py
 import os
 from fastapi import FastAPI
 from dotenv import load_dotenv
 import asyncpg
+import logging
 
-from api import users, update_name
-from api import voice as voice_module  # /api/users/voice 라우터
+from api import users, caregiver
+from api import voice as voice_module
 
 from fastapi.responses import HTMLResponse
 
 app = FastAPI(title="Full App")
 
 load_dotenv()
+logger = logging.getLogger("uvicorn.error")
 
 def _normalize_dsn(dsn: str) -> str:
     return dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 @app.on_event("startup")
 async def on_startup():
-    dsn = _normalize_dsn(os.getenv("DB_URL", "postgresql://appuser:1111@localhost:5432/appdb"))
-    app.state.db_pool = await asyncpg.create_pool(dsn=dsn)
+    try:
+        dsn = _normalize_dsn(os.getenv("DB_URL", "postgresql://appuser:1111@localhost:5432/appdb"))
+        app.state.db_pool = await asyncpg.create_pool(dsn=dsn)
+        logger.info("Database connection pool started successfully.")
+    except Exception as e:
+        logger.critical(f"FATAL: Could not connect to database via asyncpg pool: {e}")
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    # 존재 확인 후 종료
     pool = getattr(app.state, "db_pool", None)
     if pool:
         await pool.close()
 
-# 음성 확인용 [http://localhost:8000/play]
+# 음성 확인용
 @app.get("/play", response_class=HTMLResponse)
 def play_page():
     return """
@@ -74,10 +78,9 @@ $("go").onclick = async () => {
 
 # 라우터 등록
 app.include_router(users.router)
-app.include_router(update_name.router)
 app.include_router(voice_module.router)  # /api/users/voice
+app.include_router(caregiver.router)
 
 @app.get("/")
 def read_root():
     return {"message": "Hello, FastAPI!"}
-
