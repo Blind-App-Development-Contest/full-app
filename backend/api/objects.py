@@ -9,11 +9,18 @@ import numpy as np
 import io
 import logging
 from datetime import datetime
-
-# YOLO 모델 (추후 로드)
-# from ultralytics import YOLO
+from ultralytics import YOLO
 
 logger = logging.getLogger("uvicorn.error")
+
+# YOLO 모델 로드 (애플리케이션 시작 시 한 번만 로드)
+# 'yolov8n.pt'는 작고 빠른 모델입니다. 필요에 따라 다른 모델을 사용할 수 있습니다.
+try:
+    model = YOLO('yolov8n.pt')
+    logger.info("YOLO model loaded successfully.")
+except Exception as e:
+    logger.exception("Failed to load YOLO model.")
+    model = None
 
 router = APIRouter(prefix="/api/objects", tags=["objects"])
 
@@ -59,38 +66,59 @@ def load_image_from_upload(file_content: bytes) -> np.ndarray:
     return image
 
 def detect_objects_yolo(image: np.ndarray) -> List[DetectedObject]:
-    """YOLO 모델로 객체 탐지 (추후 구현)"""
-    # TODO: YOLO 모델 로드 및 추론
-    # model = YOLO('yolov8n.pt')
-    # results = model(image)
+    """YOLO 모델로 객체 탐지"""
+    if model is None:
+        raise RuntimeError("YOLO model is not loaded.")
+
+    # YOLO 모델로 추론 수행
+    results = model(image, verbose=False)  # verbose=False로 설정하여 로그 출력 줄임
     
-    # 임시 더미 데이터
-    dummy_objects = [
-        DetectedObject(
-            name="person",
-            confidence=0.95,
-            bbox={"x": 100, "y": 150, "width": 200, "height": 300},
-            distance=2.5
-        ),
-        DetectedObject(
-            name="car",
-            confidence=0.87,
-            bbox={"x": 300, "y": 100, "width": 400, "height": 250},
-            distance=10.0
-        )
-    ]
-    return dummy_objects
+    detected_objects = []
+    # 결과 파싱
+    for result in results:
+        # 클래스 이름 목록
+        names = result.names
+        for box in result.boxes:
+            # 경계 상자 좌표 (xyxy 형식)
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            # 신뢰도
+            confidence = float(box.conf[0])
+            # 클래스 ID
+            cls_id = int(box.cls[0])
+            # 클래스 이름
+            cls_name = names[cls_id]
+            
+            # DetectedObject 모델에 맞게 데이터 변환
+            detected_obj = DetectedObject(
+                name=cls_name,
+                confidence=confidence,
+                bbox={
+                    "x": x1,
+                    "y": y1,
+                    "width": x2 - x1,
+                    "height": y2 - y1
+                },
+                # TODO: 거리 측정 로직 추가 필요
+                distance=None 
+            )
+            detected_objects.append(detected_obj)
+            
+    return detected_objects
 
 def calculate_threat_level(obj: DetectedObject) -> int:
     """객체와 거리를 기반으로 위험도 계산"""
     dangerous_objects = ["car", "truck", "motorcycle", "bicycle"]
     
     if obj.name in dangerous_objects:
+        # TODO: 거리(distance)가 측정되면 위험도 계산 로직 고도화 필요
         if obj.distance and obj.distance < 2.0:
             return 5  # 매우 위험
         elif obj.distance and obj.distance < 5.0:
             return 4  # 위험
         else:
+            # 거리를 알 수 없을 경우, 신뢰도를 기반으로 한 기본 위험도 설정
+            if obj.confidence > 0.7:
+                return 3 # 보통
             return 2  # 경고
     
     return 1  # 안전
