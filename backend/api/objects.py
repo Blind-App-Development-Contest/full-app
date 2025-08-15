@@ -14,9 +14,8 @@ from ultralytics import YOLO
 logger = logging.getLogger("uvicorn.error")
 
 # YOLO 모델 로드 (애플리케이션 시작 시 한 번만 로드)
-# 'yolov8n.pt'는 작고 빠른 모델입니다. 필요에 따라 다른 모델을 사용할 수 있습니다.
 try:
-    model = YOLO('yolov8n.pt')
+    model = YOLO('yolov8m.pt')
     logger.info("YOLO model loaded successfully.")
 except Exception as e:
     logger.exception("Failed to load YOLO model.")
