@@ -60,6 +60,7 @@
 
             // 2. WebSocket 연결
             const wsUrl = `ws://${window.location.host}/api/camera/stream/${userId}`;
+            console.log("Connecting to WebSocket:", wsUrl); // 디버깅용 로그 추가
             websocket = new WebSocket(wsUrl);
 
             websocket.onopen = () => {
