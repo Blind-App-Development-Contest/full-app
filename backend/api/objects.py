@@ -8,14 +8,17 @@ import cv2
 import numpy as np
 import io
 import logging
+import json
+import asyncpg
 from datetime import datetime
 from ultralytics import YOLO
+from core.cache import latest_detection_results
 
 logger = logging.getLogger("uvicorn.error")
 
 # YOLO 모델 로드 (애플리케이션 시작 시 한 번만 로드)
 try:
-    model = YOLO('yolov8m.pt')
+    model = YOLO('yolov8n.pt')
     logger.info("YOLO model loaded successfully.")
 except Exception as e:
     logger.exception("Failed to load YOLO model.")
@@ -106,7 +109,7 @@ def detect_objects_yolo(image: np.ndarray) -> List[DetectedObject]:
 
 def calculate_threat_level(obj: DetectedObject) -> int:
     """객체와 거리를 기반으로 위험도 계산"""
-    dangerous_objects = ["car", "truck", "motorcycle", "bicycle"]
+    dangerous_objects = ["car", "truck", "motorcycle", "bicycle", "keyboard"]
     
     if obj.name in dangerous_objects:
         # TODO: 거리(distance)가 측정되면 위험도 계산 로직 고도화 필요
@@ -122,57 +125,57 @@ def calculate_threat_level(obj: DetectedObject) -> int:
     
     return 1  # 안전
 
+async def save_threat_to_log(
+    pool: asyncpg.Pool,
+    user_id: UUID,
+    obj: DetectedObject,
+    threat_level: int
+):
+    """탐지된 위험 객체를 dashboard_logs 테이블에 저장"""
+    if pool is None:
+        logger.error("Database pool is not available.")
+        return
+
+    log_data = {
+        "object_name": obj.name,
+        "threat_level": threat_level,
+        "confidence": obj.confidence,
+        "bbox": obj.bbox,
+        "distance": obj.distance,
+    }
+
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO dashboard_logs (user_id, log_type, log_data)
+                VALUES ($1, 'threat_detected', $2)
+                """,
+                user_id,
+                json.dumps(log_data)
+            )
+        logger.info(f"Saved threat to log for user {user_id}: {obj.name}")
+    except Exception as e:
+        logger.exception(f"Failed to save threat to log for user {user_id}")
+
 # ─────────────────────────────────────────────────────────────
 # API Endpoints
 # ─────────────────────────────────────────────────────────────
 
-@router.post("/", response_model=ObjectDetectionResponse)
-async def detect_objects(
-    request: Request,
-    image: UploadFile = File(...),
-    user_id: UUID = Form(...)
-):
+@router.get("/{user_id}")
+async def get_latest_detection(user_id: UUID):
     """
-    사물 인식 API
-    업로드된 이미지에서 객체를 탐지하고 결과 반환
+    실시간 스트림의 최신 객체 탐지 결과를 반환합니다.
+    결과는 인메모리 캐시에서 조회합니다.
     """
-    pool: asyncpg.Pool = getattr(request.app.state, "db_pool", None)
-    if pool is None:
-        raise HTTPException(status_code=500, detail="DB pool not initialized")
-
-    # 사용자 존재 확인
-    async with pool.acquire() as conn:
-        user_exists = await conn.fetchval(
-            "SELECT 1 FROM users WHERE user_id = $1", user_id
+    user_id_str = str(user_id)
+    if user_id_str in latest_detection_results:
+        return latest_detection_results[user_id_str]
+    else:
+        raise HTTPException(
+            status_code=404,
+            detail="No active stream or detection result found for this user."
         )
-        if not user_exists:
-            raise HTTPException(status_code=404, detail="User not found")
-
-    try:
-        # 이미지 로드
-        image_content = await image.read()
-        cv_image = load_image_from_upload(image_content)
-        
-        if cv_image is None:
-            raise HTTPException(status_code=400, detail="Invalid image format")
-        
-        height, width = cv_image.shape[:2]
-        
-        # 객체 탐지
-        detected_objects = detect_objects_yolo(cv_image)
-        
-        # 객체 탐지 완료
-        
-        return ObjectDetectionResponse(
-            user_id=user_id,
-            objects=detected_objects,
-            image_size={"width": width, "height": height},
-            processed_at=datetime.now()
-        )
-        
-    except Exception as e:
-        logger.exception("Object detection error")
-        raise HTTPException(status_code=500, detail=f"Detection error: {str(e)}")
 
 @router.post("/threats")
 async def process_threat(threat: ThreatData):

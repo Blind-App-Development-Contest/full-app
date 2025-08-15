@@ -1,5 +1,6 @@
 # api/camera.py
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi.encoders import jsonable_encoder
 from uuid import UUID
 import json
 import base64
@@ -8,7 +9,8 @@ import cv2
 import numpy as np
 
 # api.objects 모듈에서 객체 탐지 함수와 모델을 임포트
-from .objects import detect_objects_yolo, DetectedObject
+from .objects import detect_objects_yolo, DetectedObject, calculate_threat_level, VibrationPattern, save_threat_to_log
+from core.cache import latest_detection_results
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -79,6 +81,57 @@ async def camera_stream(websocket: WebSocket, user_id: UUID):
                 try:
                     detected_objects = detect_objects_yolo(cv_image)
                     
+                    # ─── 위험도 분석 및 진동 트리거 로직 추가 ───
+                    
+                    vibration_pattern = None
+                    highest_threat_level = 0
+                    
+                    # 각 객체의 위험도 계산
+                    threats = [
+                        (obj, calculate_threat_level(obj)) 
+                        for obj in detected_objects
+                    ]
+                    
+                    # 가장 높은 위험도 찾기
+                    if threats:
+                        highest_threat_obj, highest_threat_level = max(threats, key=lambda item: item[1])
+
+                    # 위험도에 따라 진동 패턴 생성
+                    if highest_threat_level >= 2: # '경고' 수준 이상일 때만 진동
+                        pattern_type: str = "info"
+                        intensity: int = 3
+                        duration_ms: int = 300
+
+                        if highest_threat_level == 3: # 보통
+                            pattern_type = "warning"
+                            intensity = 5
+                            duration_ms = 500
+                        elif highest_threat_level == 4: # 위험
+                            pattern_type = "warning"
+                            intensity = 8
+                            duration_ms = 800
+                        elif highest_threat_level >= 5: # 매우 위험
+                            pattern_type = "danger"
+                            intensity = 10
+                            duration_ms = 1200
+                        
+                        vibration_pattern = VibrationPattern(
+                            user_id=user_id,
+                            pattern_type=pattern_type,
+                            intensity=intensity,
+                            duration_ms=duration_ms,
+                            reason=f"'{highest_threat_obj.name}' detected"
+                        )
+                        
+                        # DB에 위험 로그 저장
+                        pool = websocket.app.state.db_pool
+                        await save_threat_to_log(
+                            pool=pool, 
+                            user_id=user_id, 
+                            obj=highest_threat_obj, 
+                            threat_level=highest_threat_level
+                        )
+
                     # Pydantic 모델을 JSON으로 직렬화 가능한 dict 리스트로 변환
                     objects_list = [obj.model_dump() for obj in detected_objects]
                     
@@ -87,9 +140,15 @@ async def camera_stream(websocket: WebSocket, user_id: UUID):
                         "status": "processed",
                         "timestamp": frame_data.get("timestamp"),
                         "user_id": user_id_str,
-                        "objects": objects_list
+                        "objects": objects_list,
+                        # 진동 패턴 정보 추가
+                        "vibration": vibration_pattern.model_dump() if vibration_pattern else None
                     }
-                    await websocket.send_text(json.dumps(response))
+                    
+                    # 최신 결과를 캐시에 저장
+                    latest_detection_results[user_id_str] = response
+                    
+                    await websocket.send_text(json.dumps(jsonable_encoder(response)))
 
                 except Exception as e:
                     logger.exception(f"Error during object detection for user {user_id_str}")

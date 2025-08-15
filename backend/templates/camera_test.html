@@ -77,9 +77,23 @@
 
             websocket.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                if (data.status === 'processed' && data.objects) {
+                if (data.status === 'processed') {
                     // 4. 탐지 결과 그리기
-                    drawDetections(data.objects);
+                    if (data.objects) {
+                        drawDetections(data.objects);
+                    }
+
+                    // 5. 진동 처리 및 상태 업데이트
+                    if (data.vibration) {
+                        statusDiv.textContent = `상태: [${data.vibration.pattern_type.toUpperCase()}] ${data.vibration.reason}`;
+                        // 브라우저의 진동 API 호출
+                        if ('vibrate' in navigator) {
+                            navigator.vibrate(data.vibration.duration_ms);
+                        }
+                    } else {
+                        statusDiv.textContent = '상태: 연결됨. 실시간 탐지 중...';
+                    }
+
                 } else if (data.status === 'error') {
                     console.error("서버 에러:", data.message);
                     statusDiv.textContent = `서버 에러: ${data.message}`;
