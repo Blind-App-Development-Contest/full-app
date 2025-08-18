@@ -104,3 +104,23 @@ psql -U appuser -h localhost -d appdb -f backend/db/appdb.sql
 
 4. DB 접속
 psql -h localhost -U appuser -d appdb
+
+## 구글 클라우드 연동
+
+1. mac
+brew install --cask gcloud-cli
+exec $SHELL -l
+gcloud version
+
+gcloud auth application-default login
+gcloud config set project <PROJECT_ID>                 # 선택이지만 권장
+gcloud auth application-default set-quota-project <PROJECT_ID>
+
+2. windows(powershell)
+winget install -e --id Google.CloudSDK
+설치 후 터미널 닫았다가 다시 열기 (또는 새 PowerShell 창)
+gcloud version
+
+gcloud auth application-default login
+gcloud config set project <PROJECT_ID>                 # 선택이지만 권장
+gcloud auth application-default set-quota-project <PROJECT_ID>
