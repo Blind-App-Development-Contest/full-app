@@ -9,6 +9,7 @@ import asyncpg
 import uvicorn
 
 from api.speech_routes import router as speech_router
+from api.execution_routes import router as execution_router
 from config.settings import get_settings
 
 from api import users, update_name
@@ -115,6 +116,7 @@ app.include_router(users.router)
 app.include_router(update_name.router)
 app.include_router(voice_module.router)  # /api/users/voice
 app.include_router(speech_router, prefix="/api/users/speech", tags=["Speech Recognition"])
+app.include_router(execution_router, prefix="/api/users/action", tags=["Command Execution"])
 
 @app.get("/")
 def read_root():

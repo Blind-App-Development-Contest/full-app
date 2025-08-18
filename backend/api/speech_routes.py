@@ -1,12 +1,18 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File
-from models.schemas import (
+from models.recognition_schemas import (
     SpeechRecognitionRequest, 
     SpeechRecognitionResponse, 
     STTResponse,
     CommandTestResponse
 )
+from models.execution_schemas import (
+    FullCommandRequest,
+    FullCommandResponse,
+    CommandExecutionResponse
+)
 from services.speech_service import SpeechService
 from services.speech_analyzer import SpeechAnalyzer
+from services.command_executor import CommandExecutor, CommandExecutionResult
 from config.settings import get_settings
 
 settings = get_settings()
@@ -15,6 +21,7 @@ router = APIRouter()
 # 서비스 인스턴스 생성
 speech_service = SpeechService()
 speech_analyzer = SpeechAnalyzer()
+command_executor = CommandExecutor()
 
 @router.post("/transcribe", response_model=STTResponse)
 async def test_stt_only(file: UploadFile = File(...)):
@@ -126,3 +133,60 @@ def get_supported_intents():
         "supported_intents": speech_analyzer.get_supported_intents(),
         "keyword_mapping": speech_analyzer.KEYWORD_MAPPING
     }
+
+@router.post("/action", response_model=FullCommandResponse)
+async def handle_speech_command(request: FullCommandRequest):
+    """
+    음성 인식 결과를 받아서 명령 처리 및 실행
+
+    Args:
+        request: 음성 텍스트와 실행 옵션
+
+    Returns:
+        FullCommandResponse: 인식 및 실행 결과
+    """
+    try:
+        if not request.command_text or not request.command_text.strip():
+            raise HTTPException(status_code=400, detail="command_text는 필수입니다")
+        
+        print(f"\n[음성 액션] 시작: '{request.command_text}'")
+        
+        # 1단계: 음성 명령 분석
+        recognition_result = speech_analyzer.analyze_command(request.command_text)
+        print(f"[인식 완료] 의도: {recognition_result.intent}")
+        
+        # 2단계: 명령 실행
+        if request.execute_immediately:
+            execution_result = await command_executor.execute_command(recognition_result)
+            print(f"[실행 완료] 상태: {execution_result.status.value}")
+        else:
+            execution_result = CommandExecutionResult(
+                status="pending",
+                message="명령이 분석되었습니다.",
+                data={"execute_immediately": False}
+            )
+        
+        # 응답 생성
+        from models.execution_schemas import CommandExecutionResponse, FullCommandResponse
+        
+        response = FullCommandResponse(
+            intent=recognition_result.intent,
+            entities=recognition_result.entities,
+            confidence=recognition_result.confidence,
+            execution=CommandExecutionResponse(
+                status=execution_result.status,
+                message=execution_result.message,
+                data=execution_result.data,
+                actions=execution_result.actions,
+                timestamp=execution_result.timestamp
+            )
+        )
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[오류] 음성 액션 처리 중 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"서버 오류: {str(e)}")
+        

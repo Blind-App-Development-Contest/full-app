@@ -1,5 +1,5 @@
 from typing import Dict, List, Any
-from models.schemas import SpeechRecognitionResponse
+from models.recognition_schemas import SpeechRecognitionResponse
 from config.settings import get_settings
 
 settings = get_settings()
