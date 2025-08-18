@@ -163,19 +163,52 @@ async def save_threat_to_log(
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/{user_id}")
-async def get_latest_detection(user_id: UUID):
+async def get_latest_detection(user_id: UUID, request: Request):
     """
     실시간 스트림의 최신 객체 탐지 결과를 반환합니다.
-    결과는 인메모리 캐시에서 조회합니다.
+    결과는 인메모리 캐시에서 우선 조회하고, 없을 경우 DB의 최근 로그를 반환합니다.
     """
     user_id_str = str(user_id)
+    
+    # 1. 인메모리 캐시에서 최신 결과 조회
     if user_id_str in latest_detection_results:
         return latest_detection_results[user_id_str]
-    else:
-        raise HTTPException(
-            status_code=404,
-            detail="No active stream or detection result found for this user."
-        )
+    
+    # 2. 캐시에 결과가 없으면 DB에서 최신 로그 조회
+    pool = request.app.state.db_pool
+    try:
+        async with pool.acquire() as conn:
+            latest_log = await conn.fetchrow(
+                """
+                SELECT log_data, timestamp
+                FROM dashboard_logs
+                WHERE user_id = $1 AND log_type = 'threat_detected'
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                user_id
+            )
+    except Exception as e:
+        logger.exception(f"Database error while fetching latest log for user {user_id_str}")
+        raise HTTPException(status_code=500, detail="Database error.")
+
+    # 3. DB에서 로그를 찾았을 경우, API 응답 형식에 맞게 변환하여 반환
+    if latest_log:
+        log_data = json.loads(latest_log['log_data'])
+        # API 응답 형식과 유사하게 구성
+        return {
+            "status": "retrieved_from_db",
+            "timestamp": latest_log['timestamp'].isoformat(),
+            "user_id": user_id_str,
+            "objects": [log_data], # log_data가 단일 객체 정보이므로 리스트에 담음
+            "vibration": None # DB 로그에는 진동 정보가 없음
+        }
+    
+    # 4. 캐시와 DB 모두에 데이터가 없는 경우
+    raise HTTPException(
+        status_code=404,
+        detail="No active stream or detection result found for this user."
+    )
 
 @router.post("/threats")
 async def process_threat(threat: ThreatData):
