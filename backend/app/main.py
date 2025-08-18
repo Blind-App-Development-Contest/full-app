@@ -9,12 +9,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 import asyncpg
+import logging
 import uvicorn
 
 # API 라우터 imports
 from api.speech_routes import router as speech_router
 from api.execution_routes import router as execution_router
-from api import users, update_name
+from api import users, update_name, caregiver
 from api import voice as voice_module
 
 # Config & Services
@@ -30,6 +31,7 @@ settings = get_settings()
 app = FastAPI(title="Full App")
 
 load_dotenv()
+logger = logging.getLogger("uvicorn.error")
 
 def _normalize_dsn(dsn: str) -> str:
     return dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
@@ -45,6 +47,7 @@ app.add_middleware(
   
 @app.on_event("startup")
 async def on_startup():
+  
     """서버 시작 시 초기화"""
     logger.info("🚀 음성 명령 인식 서버 시작")
     
@@ -60,6 +63,13 @@ async def on_startup():
     logger.info("✅ 서비스 인스턴스 생성 완료")
     logger.info("🎤 음성 명령 인식 시스템 준비 완료!")
 
+    try:
+        dsn = _normalize_dsn(os.getenv("DB_URL", "postgresql://appuser:1111@localhost:5432/appdb"))
+        app.state.db_pool = await asyncpg.create_pool(dsn=dsn)
+        logger.info("Database connection pool started successfully.")
+    except Exception as e:
+        logger.critical(f"FATAL: Could not connect to database via asyncpg pool: {e}")
+        
 @app.on_event("shutdown")
 async def on_shutdown():
     """서버 종료 시 정리"""
@@ -146,8 +156,8 @@ $("go").onclick = async () => {
 
 # 라우터 등록
 app.include_router(users.router)
-app.include_router(update_name.router)
 app.include_router(voice_module.router)  # /api/users/voice
+app.include_router(caregiver.router)
 app.include_router(speech_router, prefix="/api/users/speech", tags=["Speech Recognition"])
 app.include_router(execution_router, prefix="/api/users/action", tags=["Command Execution"])
 
