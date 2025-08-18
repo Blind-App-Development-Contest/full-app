@@ -29,6 +29,10 @@ class SpeechRecognitionResponse(BaseModel):
         le=1.0,
         example=0.9
     )
+    command_text: str = Field(
+        description="음성으로 인식된 텍스트 명령",
+        example="카메라 모드"
+    )
 
 class STTResponse(BaseModel):
     """STT 변환 응답 모델"""
@@ -61,3 +65,17 @@ class CommandTestResponse(BaseModel):
     test_results: list[CommandTestResult] = Field(
         description="테스트 결과 목록"
     )
+
+class UserSettings(BaseModel):
+    """사용자 설정 모델"""
+    user_name: Optional[str] = Field(None, description="사용자 이름")
+    step_length: Optional[int] = Field(None, description="보폭 길이 (cm)")
+    voice_gender: str = Field("F", description="음성 종류 (F/M)")
+    voice_speed: float = Field(1.0, description="음성 속도 (0.5~2.0)")
+    caregiver_name: Optional[str] = Field(None, description="보호자 이름")
+    caregiver_phone: Optional[str] = Field(None, description="보호자 전화번호")
+
+class SetupRequest(BaseModel):
+    """설정 요청 모델"""
+    step: str = Field(description="설정 단계")
+    value: str = Field(description="입력값")

@@ -12,16 +12,18 @@ from models.execution_schemas import (
 )
 from services.speech_service import SpeechService
 from services.speech_analyzer import SpeechAnalyzer
-from services.command_executor import CommandExecutor, CommandExecutionResult
+from services.command_executor import CommandExecutor, CommandExecutionResult, ExecutionStatus
 from config.settings import get_settings
 
 settings = get_settings()
 router = APIRouter()
 
-# 서비스 인스턴스 생성
-speech_service = SpeechService()
-speech_analyzer = SpeechAnalyzer()
-command_executor = CommandExecutor()
+# 싱글톤 서비스 인스턴스 사용
+from services.singleton import service_manager
+
+speech_service = service_manager.get_speech_service()
+speech_analyzer = service_manager.get_speech_analyzer()
+command_executor = service_manager.get_command_executor()
 
 @router.post("/transcribe", response_model=STTResponse)
 async def test_stt_only(file: UploadFile = File(...)):
@@ -161,9 +163,10 @@ async def handle_speech_command(request: FullCommandRequest):
             print(f"[실행 완료] 상태: {execution_result.status.value}")
         else:
             execution_result = CommandExecutionResult(
-                status="pending",
+                status=ExecutionStatus.PENDING,
                 message="명령이 분석되었습니다.",
-                data={"execute_immediately": False}
+                data={"execute_immediately": False},
+                actions=["analyze_command"]
             )
         
         # 응답 생성

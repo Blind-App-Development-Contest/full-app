@@ -9,20 +9,31 @@ class SpeechAnalyzer:
     
     # 키워드 매핑 테이블
     KEYWORD_MAPPING = {
-        'CAMERA': ['카메라', '사진', '촬영', '찍어', '보여'],
-        'NAVIGATION': ['길찾기', '길', '가는법', '방향', '찾아', '네비'],
+        'CAMERA': ['카메라', '사진', '촬영', '찍어', '보여','카메라모드'],
+        'NAVIGATION': ['길찾기', '길', '가는법', '방향', '찾아', '네비','길찾기모드'],
         'EMERGENCY_CALL': ['보호자', '긴급', '도움', '전화', '연락'],
-        'SETTINGS': ['설정', '환경설정', '옵션'],
+        'SETTINGS': ['설정', '환경설정', '옵션','보폭설정','음성설정','보호자설정'],
         'HELP': ['도움말', '도움', '헬프', '사용법', '명령어'],
         'STOP_LISTENING': ['중단', '멈춰', '그만', '중지', '끝'],
-        'START_LISTENING': ['시작', '듣기', '음성인식', '다시'],
-        'DESCRIBE_SCENE': ['주변', '앞', '보이는', '설명', '묘사'],
+        'START_LISTENING': ['시작', '듣기', '음성인식', '다시','보폭 측정 시작'],
+        'DESCRIBE_SCENE': ['주변', '앞', '보이는', '설명', '묘사','주변 안내'],
         'FIND_POI': ['찾아', '어디', '위치', '장소'],
     }
     
     def __init__(self):
         self.poi_types = ['병원', '약국', '은행', '마트', '편의점', '지하철역', '버스정류장', '카페', '식당']
         self.destinations = ['집', '회사', '학교', '병원', '역', '공항']
+        self.setup_steps = ['보폭 측정 시작', '다음 단계', '음성 설정 변경', '보호자 정보 수정', '보폭 설정', '음성 설정', '설정 완료']
+        self.voice_keywords = {
+            'female': ['여성', '여자', '여자목소리'],
+            'male': ['남성', '남자', '남자목소리']
+        }
+        
+        self.speed_keywords = {
+            'slow': ['느리게', '천천히', '느림'],
+            'normal': ['보통', '일반', '평소'],
+            'fast': ['빠르게', '빨리', '빠름']
+        }
     
     def analyze_command(self, text: str) -> SpeechRecognitionResponse:
         """
@@ -48,7 +59,8 @@ class SpeechAnalyzer:
                     return SpeechRecognitionResponse(
                         intent=intent,
                         entities=entities,
-                        confidence=0.9
+                        confidence=0.9,
+                        command_text=text
                     )
         
         # 매칭되지 않은 경우 컨텍스트 추론
@@ -62,6 +74,8 @@ class SpeechAnalyzer:
             return self._extract_poi_entities(text)
         elif intent == 'NAVIGATION':
             return self._extract_destination(text)
+        elif intent == 'SETTINGS':
+            return self._extract_settings_entities(text)
         else:
             return {}
     
@@ -86,6 +100,34 @@ class SpeechAnalyzer:
                 return {'destination': dest}
         
         return {'destination': '목적지'}
+
+    def _extract_settings_entities(self, text: str) -> Dict[str, Any]:
+        """설정 관련 엔티티 추출"""
+        entities = {}
+        
+        # 음성 타입 체크
+        for voice_gender, keywords in self.voice_keywords.items():
+            for keyword in keywords:
+                if keyword in text:
+                    entities['voice_gender'] = voice_gender
+                    break
+        
+        # 음성 속도 체크
+        for speed_type, keywords in self.speed_keywords.items():
+            for keyword in keywords:
+                if keyword in text:
+                    entities['voice_speed'] = speed_type
+                    break
+        
+        # 보폭 설정 체크
+        if '보폭' in text:
+            entities['setting_type'] = 'step_length'
+        elif '음성' in text:
+            entities['setting_type'] = 'voice_gender'
+        elif '보호자' in text:
+            entities['setting_type'] = 'caregiver'
+        
+        return entities
     
     def _infer_from_context(self, text: str) -> SpeechRecognitionResponse:
         """컨텍스트 기반 추론"""
@@ -95,7 +137,8 @@ class SpeechAnalyzer:
             return SpeechRecognitionResponse(
                 intent='START_LISTENING',
                 entities={},
-                confidence=0.7
+                confidence=0.7,
+                command_text=text
             )
         
         # 감사 인사
@@ -103,7 +146,8 @@ class SpeechAnalyzer:
             return SpeechRecognitionResponse(
                 intent='HELP',
                 entities={},
-                confidence=0.6
+                confidence=0.6,
+                command_text=text
             )
         
         # 질문 형태
@@ -111,14 +155,16 @@ class SpeechAnalyzer:
             return SpeechRecognitionResponse(
                 intent='HELP',
                 entities={},
-                confidence=0.5
+                confidence=0.5, 
+                command_text=text
             )
         
         # 기본값
         return SpeechRecognitionResponse(
             intent='unknown',
             entities={},
-            confidence=0.0
+            confidence=0.0,
+            command_text=text
         )
     
     def get_supported_intents(self) -> List[str]:
@@ -136,6 +182,9 @@ class SpeechAnalyzer:
             "설정",
             "도움말",
             "주변 안내",
+            "보폭 측정 시작",
+            "여성 목소리로 해주세요",
+            "느리게 말해주세요",
         ]
         
         results = []
