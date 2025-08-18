@@ -181,32 +181,115 @@ class CommandExecutor:
                 actions=["tts_announce"]
             )
 
-    async def _setup_step_length(self, command_text: str) -> CommandExecutionResult:
-        """보폭 측정"""
-        if "보폭" in command_text or "측정" in command_text or "시작" in command_text:
-            # 보폭 측정 시뮬레이션
-            await asyncio.sleep(3.0)
-            
-            step_length = 65  # cm (시뮬레이션 값)
-            self.user_settings["step_length"] = step_length
-            self.current_setup_step = SetupStep.VOICE_GENDER
-            
-            return CommandExecutionResult(
-                status=ExecutionStatus.SUCCESS,
-                message=f"보폭 측정이 완료되었습니다. 평균 보폭은 {step_length}cm입니다. 이제 음성 설정을 진행하겠습니다. 여성 목소리를 원하시면 '여성', 남성 목소리를 원하시면 '남성'이라고 말씀해주세요.",
-                data={
-                    "setup_step": "voice_gender",
-                    "step_length": step_length,
-                    "progress": "3/6"
-                },
-                actions=["step_length_complete", "tts_announce", "setup_progress_show"]
+    async def _execute_footstep_measurement_start(self, entities: Dict[str, Any]) -> CommandExecutionResult:
+        """보폭 측정 시작"""        
+        try:
+            import requests
+        
+            # 보폭 측정 API 호출
+            response = requests.post(
+                "http://localhost:8000/api/users/footstep/measurement/start",
+                json={"distance_meters": 10.0, "user_id": self.user_settings.get("user_name")},
+                timeout=5
             )
-        else:
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                return CommandExecutionResult(
+                    status=ExecutionStatus.SUCCESS,
+                    message="보폭 측정을 시작합니다. 10미터를 걸어주세요. 준비되면 '측정 시작'이라고 말씀해주세요.",
+                    data={
+                        "mode": "footstep_measurement",
+                        "distance_meters": 10.0,
+                        "measurement_status": "준비"
+                    },
+                    actions=["footstep_measurement_ready", "tts_announce"]
+                )
+            else:
+                raise Exception("보폭 측정 API 호출 실패")
+                
+        except Exception as e:
             return CommandExecutionResult(
-                status=ExecutionStatus.PENDING,
-                message="'보폭 측정 시작'이라고 말씀해주세요.",
-                data={"setup_step": "step_length"},
-                actions=["tts_announce"]
+                status=ExecutionStatus.FAILED,
+                message=f"보폭 측정 시작 실패: {str(e)}"
+            )
+
+    async def _execute_footstep_measurement_begin(self, entities: Dict[str, Any]) -> CommandExecutionResult:
+        """보폭 측정 걷기 시작"""
+        try:
+            import requests
+        
+            # 걷기 시작 API 호출
+            response = requests.post(
+                "http://localhost:8000/api/users/footstep/measurement/begin",
+                params={"user_id": self.user_settings.get("user_name")},
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                return CommandExecutionResult(
+                    status=ExecutionStatus.SUCCESS,
+                    message="측정을 시작했습니다! 이제 10미터를 걸어주세요. 도착하면 '측정 완료'라고 말씀해주세요.",
+                    data={
+                        "mode": "footstep_walking",
+                        "measurement_status": "측정중",
+                        "start_time": result.get("start_time")
+                    },
+                    actions=["footstep_walking_start", "tts_announce", "timer_start"]
+                )
+            else:
+                raise Exception("걷기 시작 API 호출 실패")
+                
+        except Exception as e:
+            return CommandExecutionResult(
+                status=ExecutionStatus.FAILED,
+                message=f"걷기 시작 실패: {str(e)}"
+            )
+
+    async def _execute_footstep_measurement_complete(self, entities: Dict[str, Any]) -> CommandExecutionResult:
+        """보폭 측정 완료"""
+        try:
+            import requests
+        
+            # 걸음 수는 임시로 15걸음으로 설정 (실제로는 센서나 사용자 입력으로 받아야 함)
+            step_count = 15  # 실제 구현에서는 센서 데이터나 사용자 카운트 사용
+            
+            # 측정 완료 API 호출
+            response = requests.post(
+                "http://localhost:8000/api/users/footstep/measurement/complete",
+                params={
+                    "step_count": step_count,
+                    "user_id": self.user_settings.get("user_name")
+                },
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                calculated_step_length = result.get("step_length")
+                
+                return CommandExecutionResult(
+                    status=ExecutionStatus.SUCCESS,
+                    message=f"보폭 측정이 완료되었습니다! 계산된 보폭은 {calculated_step_length}cm입니다.",
+                    data={
+                        "mode": "footstep_complete",
+                        "step_length": calculated_step_length,
+                        "step_count": step_count,
+                        "measurement_time": result.get("measurement_time"),
+                        "measurement_status": "완료"
+                    },
+                    actions=["footstep_measurement_complete", "tts_announce", "timer_stop"]
+                )
+            else:
+                raise Exception("측정 완료 API 호출 실패")
+                
+        except Exception as e:
+            return CommandExecutionResult(
+                status=ExecutionStatus.FAILED,
+                message=f"보폭 측정 완료 실패: {str(e)}"
             )
 
     async def _setup_voice_gender(self, command_text: str) -> CommandExecutionResult:
@@ -362,6 +445,9 @@ class CommandExecutor:
             "STOP_LISTENING": self._execute_stop_listening,
             "START_LISTENING": self._execute_start_listening,
             "DESCRIBE_SCENE": self._execute_describe_scene,
+            'FOOTSTEP_MEASUREMENT_START': self._execute_footstep_measurement_start,
+            'FOOTSTEP_MEASUREMENT_BEGIN': self._execute_footstep_measurement_begin,
+            'FOOTSTEP_MEASUREMENT_COMPLETE': self._execute_footstep_measurement_complete,
         }
 
         if intent in execution_map:

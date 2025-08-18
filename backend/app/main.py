@@ -15,6 +15,7 @@ import uvicorn
 # API 라우터 imports
 from api.speech_routes import router as speech_router
 from api.execution_routes import router as execution_router
+from api.footstep import router as footstep_router
 from api import users, update_name, caregiver
 from api import voice as voice_module
 
@@ -158,6 +159,7 @@ $("go").onclick = async () => {
 app.include_router(users.router)
 app.include_router(voice_module.router)  # /api/users/voice
 app.include_router(caregiver.router)
+app.include_router(footstep_router, prefix="/api/users/footstep", tags=["Footstep Measurement"])
 app.include_router(speech_router, prefix="/api/users/speech", tags=["Speech Recognition"])
 app.include_router(execution_router, prefix="/api/users/action", tags=["Command Execution"])
 

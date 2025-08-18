@@ -18,6 +18,10 @@ class SpeechAnalyzer:
         'START_LISTENING': ['시작', '듣기', '음성인식', '다시','보폭 측정 시작'],
         'DESCRIBE_SCENE': ['주변', '앞', '보이는', '설명', '묘사','주변 안내'],
         'FIND_POI': ['찾아', '어디', '위치', '장소'],
+        'FOOTSTEP_MEASUREMENT_START': ['보폭 측정', '보폭 재측정', '걸음 측정'],
+        'FOOTSTEP_MEASUREMENT_BEGIN': ['측정 시작', '걷기 시작', '출발'],
+        'FOOTSTEP_MEASUREMENT_COMPLETE': ['측정 완료', '도착', '측정 끝'],
+        'FOOTSTEP_SETTINGS': ['보폭 설정', '보폭 변경', '걸음 설정'],
     }
     
     def __init__(self):
