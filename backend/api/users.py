@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
@@ -19,9 +19,9 @@ class UserRegister(BaseModel):
     app_uuid: UUID
     user_name: str | None = None
 
-app = FastAPI()
+router = APIRouter()
 
-@app.post("/users/register")
+@router.post("/users/register")
 async def register_user(payload: UserRegister, session: AsyncSession = Depends(get_session)):
     # 이미 있으면 반환
     result = await session.execute(
