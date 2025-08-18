@@ -1,0 +1,39 @@
+from pydantic_settings import BaseSettings
+from typing import List, Optional
+from functools import lru_cache
+
+class Settings(BaseSettings):
+    """앱 설정 관리"""
+    
+    # 서버 설정
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
+    DEBUG: bool = False
+    
+    # CORS 설정
+    ALLOWED_ORIGINS: List[str] = ["*"]  # 개발용, 운영환경에서는 구체적인 도메인 지정
+    
+    # 음성 인식 설정
+    MAX_FILE_SIZE_MB: int = 50
+    SUPPORTED_AUDIO_TYPES: List[str] = ["audio/", "application/octet-stream"]
+    DEFAULT_SEARCH_RADIUS: int = 500
+    POI_SEARCH_RADIUS: int = 1000
+    
+    # API 키들 (기존 환경 변수 지원)
+    google_tts_api_key: Optional[str] = None
+    google_maps_api_key: Optional[str] = None
+    openai_api_key: Optional[str] = None
+    
+    # 데이터베이스 설정
+    db_url: Optional[str] = None
+    
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        # 추가 필드 허용 (기존 환경 변수 호환성을 위해)
+        extra = "ignore"
+
+@lru_cache()
+def get_settings():
+    """설정 싱글톤 인스턴스 반환"""
+    return Settings()
