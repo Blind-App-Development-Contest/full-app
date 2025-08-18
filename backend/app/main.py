@@ -1,13 +1,23 @@
+# app/main.py
+import sys
 import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import asyncpg
 import logging
+import uvicorn
+
+from api.speech_routes import router as speech_router
+from config.settings import get_settings
 
 from api import users, caregiver
 from api import voice as voice_module
 
 from fastapi.responses import HTMLResponse
+
+settings = get_settings()
 
 app = FastAPI(title="Full App")
 
@@ -17,6 +27,15 @@ logger = logging.getLogger("uvicorn.error")
 def _normalize_dsn(dsn: str) -> str:
     return dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
 
+# CORS 설정 (Flutter 앱에서 호출 가능하도록)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 개발용
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)  
+  
 @app.on_event("startup")
 async def on_startup():
     try:
@@ -32,7 +51,27 @@ async def on_shutdown():
     if pool:
         await pool.close()
 
-# 음성 확인용
+@app.get("/")
+def root():
+    """서버 상태 확인"""
+    return {
+        "message": "음성 명령 인식 테스트 서버가 실행 중입니다",
+        "endpoint": "/api/users/speech/recognition",
+        "version": "1.0.0",
+        "status": "running"
+    }
+
+if __name__ == "__main__":
+    print("🚀 음성 명령 인식 테스트 서버 시작")
+    
+    uvicorn.run(
+        app, 
+        host=settings.HOST, 
+        port=settings.PORT,
+        reload=settings.DEBUG
+    )        
+        
+# 음성 확인용 [http://localhost:8000/play]
 @app.get("/play", response_class=HTMLResponse)
 def play_page():
     return """
@@ -80,6 +119,7 @@ $("go").onclick = async () => {
 app.include_router(users.router)
 app.include_router(voice_module.router)  # /api/users/voice
 app.include_router(caregiver.router)
+app.include_router(speech_router, prefix="/api/users/speech", tags=["Speech Recognition"])
 
 @app.get("/")
 def read_root():
