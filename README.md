@@ -104,3 +104,7 @@ psql -U appuser -h localhost -d appdb -f backend/db/appdb.sql
 
 4. DB 접속
 psql -h localhost -U appuser -d appdb
+
+# 추가된 라이브러리
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+pip install opencv-python numpy ultralytics transformers fastapi uvicorn python-multipart asyncpg
