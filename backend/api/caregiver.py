@@ -39,7 +39,7 @@ class CaregiverAlertResponse(BaseModel):
     status: str
     message: str
     caregiver_phone: str
-    current_location: str  # Optional 제거, 항상 표시
+    current_location: str = Field(..., description="사용자의 현재 위치 주소", example="서울시 강남구 테헤란로 123")
 
 # ─────────────────────────────────────────────────────────────
 # POST /api/users/caregiver : 보호자 정보 등록
@@ -125,8 +125,9 @@ async def update_caregiver(user_id: UUID, req: CaregiverUpdate, session: AsyncSe
 async def send_caregiver_alert(req: AlertRequest, session: AsyncSession = Depends(get_session)):
     user_id_str = str(req.user_id)
     try:
+        # users 테이블에서 current_address를 조회하는 로직 제거
         query = text("""
-                     SELECT c.caregivers_name, c.phone_number, u.user_name, u.current_address
+                     SELECT c.caregivers_name, c.phone_number, u.user_name
                      FROM caregivers c
                               JOIN users u ON c.user_id = u.user_id
                      WHERE c.user_id = :user_id
@@ -147,8 +148,8 @@ async def send_caregiver_alert(req: AlertRequest, session: AsyncSession = Depend
         })
         await session.commit()
 
-        # u.current_address가 NULL이거나 빈 문자열일 경우를 대비해 기본값 설정
-        current_location = caregiver.current_address or "주소 정보 없음"
+        # current_location을 고정된 값으로 반환
+        current_location = "위치 정보 확인 불가"
 
         return CaregiverAlertResponse(
             status="success",
