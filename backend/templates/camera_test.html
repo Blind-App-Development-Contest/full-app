@@ -21,6 +21,7 @@
         <button id="stopBtn" disabled>중지</button>
     </div>
     <div id="status">상태: 대기 중</div>
+    <div id="threat_level_display">현재 위험도: -</div>
     <div id="container">
         <video id="video" width="640" height="480" autoplay muted playsinline></video>
         <canvas id="canvas" width="640" height="480"></canvas>
@@ -97,6 +98,14 @@
                 } else if (data.status === 'error') {
                     console.error("서버 에러:", data.message);
                     statusDiv.textContent = `서버 에러: ${data.message}`;
+                }
+
+                // 위험도 숫자 표시 업데이트
+                const threatLevelDisplay = document.getElementById('threat_level_display');
+                if (data.highest_threat_level !== undefined) {
+                    threatLevelDisplay.textContent = `현재 위험도: ${data.highest_threat_level}`;
+                } else {
+                    threatLevelDisplay.textContent = `현재 위험도: -`;
                 }
             };
 

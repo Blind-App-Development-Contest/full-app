@@ -92,13 +92,17 @@ async def camera_stream(websocket: WebSocket, user_id: UUID):
                         highest_threat_obj, highest_threat_level = max(threats, key=lambda item: item[1])
 
                         if highest_threat_level >= 2:
-                            pattern_type, intensity, duration_ms = "info", 3, 300
-                            if highest_threat_level == 3:
-                                pattern_type, intensity, duration_ms = "warning", 5, 500
+                            # 세분화된 진동 패턴 매핑
+                            if highest_threat_level == 5:
+                                pattern_type, intensity, duration_ms = "danger", 10, 1500 # 즉각적인 위험
                             elif highest_threat_level == 4:
-                                pattern_type, intensity, duration_ms = "warning", 8, 800
-                            elif highest_threat_level >= 5:
-                                pattern_type, intensity, duration_ms = "danger", 10, 1200
+                                pattern_type, intensity, duration_ms = "warning", 8, 800  # 높은 위협
+                            elif highest_threat_level == 3:
+                                pattern_type, intensity, duration_ms = "warning", 5, 400  # 중간 위협
+                            elif highest_threat_level == 2:
+                                pattern_type, intensity, duration_ms = "info", 3, 200    # 낮은 위협/인지
+                            else: # highest_threat_level == 1 (안전)
+                                pattern_type, intensity, duration_ms = "info", 1, 100 # 매우 미미한 진동 또는 없음
                             
                             vibration_pattern = VibrationPattern(
                                 user_id=user_id,
@@ -133,7 +137,7 @@ async def camera_stream(websocket: WebSocket, user_id: UUID):
                         "timestamp": frame_data.get("timestamp"),
                         "user_id": user_id_str,
                         "objects": objects_list,
-                        # 진동 패턴 정보 추가
+                        "highest_threat_level": highest_threat_level, # 추가된 부분
                         "vibration": vibration_pattern.model_dump() if vibration_pattern else None
                     }
                     

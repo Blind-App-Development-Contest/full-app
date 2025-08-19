@@ -72,3 +72,5 @@ sqlalchemy>=2.0
 asyncpg
 greenlet>=3.0
 websockets
+h5py
+timm

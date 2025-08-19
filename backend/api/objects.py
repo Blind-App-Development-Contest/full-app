@@ -13,16 +13,46 @@ import asyncpg
 from datetime import datetime
 from ultralytics import YOLO
 from core.cache import latest_detection_results
+import torch
+import torch.nn as nn
+import tarfile
 
 logger = logging.getLogger("uvicorn.error")
 
-# YOLO 모델 로드 (애플리케이션 시작 시 한 번만 로드)
+# ─────────────────────────────────────────────────────────────
+# 모델 로드
+# ─────────────────────────────────────────────────────────────
+
+# YOLO 모델 로드
 try:
-    model = YOLO('yolov8n.pt')
+    yolo_model = YOLO('yolov8n.pt')
     logger.info("YOLO model loaded successfully.")
 except Exception as e:
     logger.exception("Failed to load YOLO model.")
-    model = None
+    yolo_model = None
+
+# FastDepth 모델은 사용하지 않음
+# MiDaS 모델 로드 (FastDepth 대체)
+midas_model = None
+midas_transform = None
+try:
+    # MiDaS 모델 로드 (DPT_Hybrid_384 사용)
+    # torch.hub를 사용하여 모델을 로드합니다.
+    # 필요한 경우 'intel-isl/MiDaS' 저장소를 로컬에 클론하거나, 인터넷 연결이 필요합니다.
+    midas_model_type = "MiDaS_small"  # 또는 "DPT_Hybrid", "DPT_Large"
+    midas_model = torch.hub.load("intel-isl/MiDaS", midas_model_type)
+    midas_model.eval()
+
+    # MiDaS 모델에 맞는 변환기 로드
+    midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
+    midas_transform = midas_transforms.small_transform if midas_model_type == "MiDaS_small" else midas_transforms.dpt_transform
+
+    logger.info(f"MiDaS model ({midas_model_type}) loaded successfully.")
+except Exception as e:
+    logger.exception("Failed to load MiDaS model.")
+    midas_model = None
+    midas_transform = None
+
 
 router = APIRouter(prefix="/api/objects", tags=["objects"])
 
@@ -56,8 +86,6 @@ class VibrationPattern(BaseModel):
     duration_ms: int = Field(500, ge=100, le=2000)
     reason: Optional[str] = None
 
-
-
 # ─────────────────────────────────────────────────────────────
 # Helper Functions
 # ─────────────────────────────────────────────────────────────
@@ -67,63 +95,140 @@ def load_image_from_upload(file_content: bytes) -> np.ndarray:
     image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     return image
 
+def estimate_distance(image: np.ndarray, bbox: dict) -> Optional[float]:
+    """MiDaS 모델로 객체까지의 거리 추정"""
+    if midas_model is None or midas_transform is None:
+        return None
+
+    try:
+        # BBox에서 객체 이미지 추출
+        x, y, w, h = bbox['x'], bbox['y'], bbox['width'], bbox['height']
+        # Ensure bbox coordinates are within image bounds
+        x = max(0, x)
+        y = max(0, y)
+        w = min(w, image.shape[1] - x)
+        h = min(h, image.shape[0] - y)
+        
+        if w <= 0 or h <= 0:
+            logger.warning(f"Invalid bbox dimensions: w={w}, h={h}")
+            return None
+
+        object_img = image[y:y+h, x:x+w]
+        
+        # MiDaS 모델 입력에 맞게 이미지 전처리
+        # OpenCV 이미지를 PIL 이미지로 변환 (MiDaS transform은 PIL 이미지를 선호)
+        object_img_rgb = cv2.cvtColor(object_img, cv2.COLOR_BGR2RGB)
+        input_batch = midas_transform(object_img_rgb).to("cpu") # Assuming CPU for now
+
+        with torch.no_grad():
+            prediction = midas_model(input_batch)
+
+            # MiDaS 출력은 원본 이미지 크기로 스케일링
+            prediction = torch.nn.functional.interpolate(
+                prediction.unsqueeze(1),
+                size=object_img_rgb.shape[:2],
+                mode="bicubic",
+                align_corners=False,
+            ).squeeze()
+
+        depth_map = prediction.cpu().numpy()
+
+        # 깊이 맵에서 객체 영역의 평균 깊이 계산
+        # MiDaS는 깊이 값을 출력하며, 값이 작을수록 가까움
+        # 실제 거리로 변환하기 위한 스케일링이 필요할 수 있음
+        mean_depth = np.mean(depth_map)
+        
+        # MiDaS 출력은 실제 거리가 아닌 상대적인 깊이이므로,
+        # 이를 실제 미터 단위로 변환하기 위한 임시 스케일링 팩터 적용
+        # 이 값은 실제 환경 및 카메라 캘리브레이션에 따라 조정되어야 합니다.
+        # 예를 들어, 1.0 / mean_depth * K (K는 스케일링 상수)
+        # 여기서는 간단하게 역수를 취하고 임의의 스케일링 팩터를 곱합니다.
+        if mean_depth > 0:
+            distance = 1.0 / mean_depth * 100.0 # 임의의 스케일링 팩터
+            return float(distance)
+        else:
+            return None
+        
+    except Exception as e:
+        logger.exception("Failed to estimate distance with MiDaS.")
+        return None
+
+
 def detect_objects_yolo(image: np.ndarray) -> List[DetectedObject]:
-    """YOLO 모델로 객체 탐지"""
-    if model is None:
+    """YOLO 모델로 객체 탐지 및 거리 추정"""
+    if yolo_model is None:
         raise RuntimeError("YOLO model is not loaded.")
 
-    # YOLO 모델로 추론 수행
-    results = model(image, verbose=False)  # verbose=False로 설정하여 로그 출력 줄임
+    results = yolo_model(image, verbose=False)
     
     detected_objects = []
-    # 결과 파싱
     for result in results:
-        # 클래스 이름 목록
         names = result.names
         for box in result.boxes:
-            # 경계 상자 좌표 (xyxy 형식)
             x1, y1, x2, y2 = map(int, box.xyxy[0])
-            # 신뢰도
             confidence = float(box.conf[0])
-            # 클래스 ID
             cls_id = int(box.cls[0])
-            # 클래스 이름
             cls_name = names[cls_id]
             
-            # DetectedObject 모델에 맞게 데이터 변환
+            bbox = {"x": x1, "y": y1, "width": x2 - x1, "height": y2 - y1}
+            
+            # 거리 추정
+            distance = estimate_distance(image, bbox)
+            
             detected_obj = DetectedObject(
                 name=cls_name,
                 confidence=confidence,
-                bbox={
-                    "x": x1,
-                    "y": y1,
-                    "width": x2 - x1,
-                    "height": y2 - y1
-                },
-                # TODO: 거리 측정 로직 추가 필요
-                distance=None 
+                bbox=bbox,
+                distance=distance
             )
             detected_objects.append(detected_obj)
             
     return detected_objects
 
 def calculate_threat_level(obj: DetectedObject) -> int:
-    """객체와 거리를 기반으로 위험도 계산"""
-    dangerous_objects = ["car", "truck", "motorcycle", "bicycle", "keyboard"]
-    
-    if obj.name in dangerous_objects:
-        # TODO: 거리(distance)가 측정되면 위험도 계산 로직 고도화 필요
-        if obj.distance and obj.distance < 2.0:
-            return 5  # 매우 위험
-        elif obj.distance and obj.distance < 5.0:
-            return 4  # 위험
+    """객체 종류와 거리를 기반으로 위험도 계산"""
+    # 객체 종류별 거리 임계값 및 위험도 매핑
+    # (거리_미만, 해당_위험도) 튜플 리스트. 거리가 가까울수록 먼저 매칭됨.
+    threat_thresholds = {
+        "knife": [(1.0, 5), (3.0, 4), (float('inf'), 3)], # 1m 미만:5, 3m 미만:4, 3m 이상:3
+        "scissors": [(1.0, 5), (3.0, 4), (float('inf'), 3)],
+        "person": [(1.0, 5), (3.0, 4), (7.0, 3), (float('inf'), 2)], # 1m 미만:5, 3m 미만:4, 7m 미만:3, 7m 이상:2
+        "car": [(2.0, 5), (5.0, 4), (15.0, 3), (float('inf'), 2)], # 2m 미만:5, 5m 미만:4, 15m 미만:3, 15m 이상:2
+        "truck": [(2.0, 5), (5.0, 4), (15.0, 3), (float('inf'), 2)],
+        "bus": [(2.0, 5), (5.0, 4), (15.0, 3), (float('inf'), 2)],
+        "motorcycle": [(1.5, 5), (4.0, 4), (10.0, 3), (float('inf'), 2)],
+        "bicycle": [(1.0, 4), (3.0, 3), (float('inf'), 2)], # 1m 미만:4, 3m 미만:3, 3m 이상:2
+        "train": [(5.0, 5), (20.0, 4), (float('inf'), 3)], # 기차는 크고 빠르므로 임계값 높게 설정
+        "airplane": [(float('inf'), 1)], # 비행기는 지상 위협이 아니므로 기본 위험도
+        "traffic light": [(3.0, 4), (10.0, 3), (float('inf'), 2)], # 고정 장애물
+        "fire hydrant": [(1.0, 4), (3.0, 3), (float('inf'), 2)],
+        "stop sign": [(2.0, 4), (7.0, 3), (float('inf'), 2)],
+        "parking meter": [(1.0, 4), (3.0, 3), (float('inf'), 2)],
+        "bench": [(1.0, 3), (5.0, 2), (float('inf'), 1)], # 다른 고정 장애물보다 덜 치명적
+        "dog": [(1.0, 4), (3.0, 3), (float('inf'), 2)], # 예측 불가능하게 움직일 수 있음
+        "cat": [(1.0, 3), (3.0, 2), (float('inf'), 1)], # 작고 직접적인 위협은 적음
+        "bird": [(float('inf'), 1)], # 지상 위협 최소
+        "umbrella": [(1.0, 3), (3.0, 2), (float('inf'), 1)], # 방해물
+        "suitcase": [(1.0, 3), (3.0, 2), (float('inf'), 1)],
+    }
+
+    threat_level = 1 # 기본값: 안전
+
+    if obj.name in threat_thresholds:
+        thresholds = threat_thresholds[obj.name]
+        if obj.distance is not None:
+            for dist_threshold, level in thresholds:
+                if obj.distance < dist_threshold:
+                    threat_level = level
+                    break
         else:
-            # 거리를 알 수 없을 경우, 신뢰도를 기반으로 한 기본 위험도 설정
+            # 거리를 알 수 없을 경우, 신뢰도를 기반으로 한 기본 위험도 (기존 로직 유지)
             if obj.confidence > 0.7:
-                return 3 # 보통
-            return 2  # 경고
+                threat_level = 2  # 경고
+            else:
+                threat_level = 1 # 낮음
     
-    return 1  # 안전
+    return threat_level
 
 async def save_threat_to_log(
     pool: asyncpg.Pool,
@@ -170,11 +275,9 @@ async def get_latest_detection(user_id: UUID, request: Request):
     """
     user_id_str = str(user_id)
     
-    # 1. 인메모리 캐시에서 최신 결과 조회
     if user_id_str in latest_detection_results:
         return latest_detection_results[user_id_str]
     
-    # 2. 캐시에 결과가 없으면 DB에서 최신 로그 조회
     pool = request.app.state.db_pool
     try:
         async with pool.acquire() as conn:
@@ -192,19 +295,16 @@ async def get_latest_detection(user_id: UUID, request: Request):
         logger.exception(f"Database error while fetching latest log for user {user_id_str}")
         raise HTTPException(status_code=500, detail="Database error.")
 
-    # 3. DB에서 로그를 찾았을 경우, API 응답 형식에 맞게 변환하여 반환
     if latest_log:
         log_data = json.loads(latest_log['log_data'])
-        # API 응답 형식과 유사하게 구성
         return {
             "status": "retrieved_from_db",
             "timestamp": latest_log['timestamp'].isoformat(),
             "user_id": user_id_str,
-            "objects": [log_data], # log_data가 단일 객체 정보이므로 리스트에 담음
-            "vibration": None # DB 로그에는 진동 정보가 없음
+            "objects": [log_data],
+            "vibration": None
         }
     
-    # 4. 캐시와 DB 모두에 데이터가 없는 경우
     raise HTTPException(
         status_code=404,
         detail="No active stream or detection result found for this user."
