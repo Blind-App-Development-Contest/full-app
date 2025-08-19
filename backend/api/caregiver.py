@@ -31,9 +31,9 @@ class CaregiverResponse(BaseModel):
     caregivers_name: str
     phone_number: str
 
+# message 필드 제거
 class AlertRequest(BaseModel):
     user_id: UUID
-    message: str = "긴급 상황이 발생했습니다."
 
 class CaregiverAlertResponse(BaseModel):
     status: str
@@ -125,7 +125,6 @@ async def update_caregiver(user_id: UUID, req: CaregiverUpdate, session: AsyncSe
 async def send_caregiver_alert(req: AlertRequest, session: AsyncSession = Depends(get_session)):
     user_id_str = str(req.user_id)
     try:
-        # users 테이블에서 current_address를 조회하는 로직 제거
         query = text("""
                      SELECT c.caregivers_name, c.phone_number, u.user_name
                      FROM caregivers c
@@ -138,17 +137,19 @@ async def send_caregiver_alert(req: AlertRequest, session: AsyncSession = Depend
         if not caregiver:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Caregiver not found for this user")
 
+        # 서버에서 자동 메시지 생성
+        auto_message = f"[긴급] {caregiver.user_name}님에게 위급 상황이 발생했습니다. 확인이 필요합니다."
+
         log_query = text("""
                          INSERT INTO dashboard_logs (user_id, log_type, log_data)
                          VALUES (:user_id, 'EMERGENCY_ALERT', :log_data)
                          """)
         await session.execute(log_query, {
             "user_id": user_id_str,
-            "log_data": f"Emergency alert sent to {caregiver.caregivers_name} ({caregiver.phone_number}): {req.message}"
+            "log_data": f"Emergency alert sent to {caregiver.caregivers_name} ({caregiver.phone_number}): {auto_message}"
         })
         await session.commit()
 
-        # current_location을 고정된 값으로 반환
         current_location = "위치 정보 확인 불가"
 
         return CaregiverAlertResponse(
