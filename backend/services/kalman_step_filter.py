@@ -3,7 +3,7 @@ import time
 from typing import Optional, Dict, List, Tuple
 from collections import deque
 from models.fastdepth_models import FastDepthFootData as FootPosition
-from models.common_models import StepResult, TrackingQuality
+from models.step_models import StepCalculationResult, StepMeasurementMethod, StepTrackingQuality, AccuracyLevel, AccuracyConverter
 
 class KalmanStepFilter:
     """단일 발용 칼만 필터"""
@@ -258,14 +258,18 @@ class RealTimeStepTracker:
             if 0.3 <= step_length <= 1.8:
                 self.step_history.append(step_length * 100)  # cm로 변환
    
-    def get_current_step_result(self) -> StepResult:
+    def get_current_step_result(self) -> StepCalculationResult:
         """현재 보폭 측정 결과 반환"""
         if len(self.step_history) == 0:
-            return StepResult(
-                step_length_cm=0.0,
+            # Return minimum valid result for empty history
+            return StepCalculationResult(
+                step_length_cm=1.0,  # Minimum valid value > 0
                 confidence=0.0,
                 step_count=0,
-                tracking_quality=TrackingQuality.POOR
+                tracking_quality=StepTrackingQuality.POOR,
+                accuracy_level=AccuracyLevel.LOW,
+                measurement_method=StepMeasurementMethod.KALMAN_FILTER,
+                source_data={"empty_history": True, "method": "kalman_filter"}
             )
         
         # 평균 보폭 계산 (최근 10개)
@@ -278,13 +282,24 @@ class RealTimeStepTracker:
         overall_confidence = (left_conf + right_conf) / 2
         
         # 추적 품질 평가
-        tracking_quality = self._evaluate_tracking_quality(overall_confidence)
+        tracking_quality_str = self._evaluate_tracking_quality(overall_confidence)
+        tracking_quality = AccuracyConverter.confidence_to_quality(overall_confidence)
+        accuracy_level = AccuracyConverter.confidence_to_korean_level(overall_confidence)
         
-        return StepResult(
-            step_length_cm=round(avg_step, 1),
+        return StepCalculationResult(
+            step_length_cm=max(1.0, round(avg_step, 1)),  # Ensure > 0
             confidence=overall_confidence,
             step_count=len(self.step_history),
-            tracking_quality=TrackingQuality(tracking_quality)
+            tracking_quality=tracking_quality,
+            accuracy_level=accuracy_level,
+            measurement_method=StepMeasurementMethod.KALMAN_FILTER,
+            source_data={
+                "method": "kalman_filter",
+                "left_confidence": left_conf,
+                "right_confidence": right_conf,
+                "recent_steps": recent_steps,
+                "tracking_quality_raw": tracking_quality_str
+            }
         )
    
     def _evaluate_tracking_quality(self, confidence: float) -> str:
@@ -359,4 +374,3 @@ class RealTimeStepTracker:
         self.last_step_time = {'left': 0, 'right': 0}
         
         # frame_count, start_time 제거 - CommandExecutor에서 관리
-

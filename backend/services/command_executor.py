@@ -2,6 +2,7 @@ import asyncio
 import logging
 import requests
 import time
+import numpy as np
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from enum import Enum
@@ -11,9 +12,10 @@ from models.common_models import (
     AppMode, ExecutionStatus, MeasurementType, MeasurementStatus,
     RealTimeMeasurementStatus, TrackingQuality, SchemaConverter
 )
-from models.step_models import StepCalculationResult as StepResult
+from models.step_models import StepCalculationResult as StepResult, StepMeasurementMethod
 from config.settings import get_settings
 from services.kalman_step_filter import RealTimeStepTracker, FootPosition
+from services.unified_step_calculator import get_unified_step_calculator, StepCalculationInput
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -71,6 +73,14 @@ class CommandExecutor:
         self.frame_count = 0
         self.step_tracker = None # RealTimeStepTracker 인스턴스
         self.session_id = None # 측정 세션 ID
+        
+        # 보폭 계산을 위한 데이터 수집
+        self.processed_frames = []  # For UnifiedStepCalculator
+        self.total_distance_traveled = 0.0  # Accumulated distance in meters
+        self.last_position = None  # Last known foot position
+        
+        # UnifiedStepCalculator 인스턴스
+        self.unified_calculator = get_unified_step_calculator()
 
         
     async def execute_command(
@@ -497,6 +507,11 @@ class CommandExecutor:
             self.frame_count = 0
             self.session_id = session_id or f"session_{int(time.time())}"
             
+            # UnifiedStepCalculator 데이터 초기화
+            self.processed_frames.clear()
+            self.total_distance_traveled = 0.0
+            self.last_position = None
+            
             logger.info(f"보폭 측정 시작됨 - 세션: {self.session_id}")
             return True
             
@@ -513,32 +528,32 @@ class CommandExecutor:
                 logger.warning("활성화된 측정이 없습니다")
                 return None
             
-            # 최종 결과 계산 (CommandExecutor 상태를 전달)
-            step_result = self.step_tracker.get_current_step_result()
+            # 1단계: Kalman 필터에서 기본 결과 가져오기
+            kalman_result = self.step_tracker.get_current_step_result()
             performance_metrics = self.step_tracker.get_performance_metrics(
                 frame_count=self.frame_count,
                 start_time=self.measurement_start_time or time.time()
             )
             measurement_duration = time.time() - self.measurement_start_time if self.measurement_start_time else 0
             
+            # 2단계: UnifiedStepCalculator를 사용한 향상된 계산
+            final_result = self._calculate_final_step_result(kalman_result, performance_metrics)
+            
             # 상태 리셋
             self.measurement_active = False
             self.measurement_status = MeasurementStatus.COMPLETED
             
             # 결과가 유효한지 확인
-            if step_result.step_count == 0:
+            if final_result is None or final_result.step_count == 0:
                 self.measurement_status = MeasurementStatus.CANCELLED
                 logger.warning("측정된 보폭이 없음")
                 return None
             
             # 사용자 설정에 보폭 저장
-            self.user_settings["step_length"] = step_result.step_length_cm
+            self.user_settings["step_length"] = final_result.step_length_cm
             
-            # StepResult 반환
-            result = step_result
-            
-            logger.info(f"보폭 측정 완료 - 결과: {step_result.step_length_cm}cm")
-            return result
+            logger.info(f"보폭 측정 완료 - 결과: {final_result.step_length_cm}cm (방법: {final_result.measurement_method.value})")
+            return final_result
             
         except Exception as e:
             logger.error(f"보폭 측정 중지 실패: {e}")
@@ -562,6 +577,11 @@ class CommandExecutor:
             if self.step_tracker:
                 self.step_tracker.reset()
                 self.step_tracker = None
+            
+            # UnifiedStepCalculator 데이터 리셋
+            self.processed_frames.clear()
+            self.total_distance_traveled = 0.0
+            self.last_position = None
             
             logger.info("보폭 측정 취소됨")
             return True
@@ -608,6 +628,9 @@ class CommandExecutor:
             
             self.frame_count += 1
             
+            # 프레임 데이터를 UnifiedStepCalculator용으로 저장
+            self._collect_frame_data_for_calculation(frame_data)
+            
             # 현재 보폭 결과 반환 (CommandExecutor 상태를 전달)
             step_result = self.step_tracker.get_current_step_result()
             performance_metrics = self.step_tracker.get_performance_metrics(
@@ -624,6 +647,160 @@ class CommandExecutor:
             logger.error(f"프레임 처리 오류: {e}")
             return None
     
+    def _collect_frame_data_for_calculation(self, frame_data: Dict[str, Any]):
+        """UnifiedStepCalculator를 위한 프레임 데이터 수집"""
+        try:
+            # 프레임 데이터 저장 (최근 100개만 유지)
+            self.processed_frames.append(frame_data.copy())
+            if len(self.processed_frames) > 100:
+                self.processed_frames = self.processed_frames[-100:]
+            
+            # 거리 계산을 위한 위치 추적
+            current_position = self._extract_best_foot_position(frame_data)
+            if current_position and self.last_position:
+                # 이전 위치와의 거리 계산 (3D 유클리드 거리)
+                distance = np.sqrt(
+                    (current_position[0] - self.last_position[0])**2 +
+                    (current_position[1] - self.last_position[1])**2 +
+                    (current_position[2] - self.last_position[2])**2
+                )
+                
+                # 유효한 이동 거리인지 확인 (노이즈 필터링)
+                if 0.01 <= distance <= 0.5:  # 1cm ~ 50cm 사이의 이동만 유효
+                    self.total_distance_traveled += distance
+            
+            if current_position:
+                self.last_position = current_position
+                
+        except Exception as e:
+            logger.warning(f"프레임 데이터 수집 중 오류: {e}")
+    
+    def _extract_best_foot_position(self, frame_data: Dict[str, Any]) -> Optional[tuple]:
+        """프레임에서 가장 신뢰할 수 있는 발 위치 추출"""
+        try:
+            left_foot = frame_data.get("left_foot")
+            right_foot = frame_data.get("right_foot")
+            
+            if not left_foot and not right_foot:
+                return None
+            
+            # 신뢰도가 높은 발 선택
+            if left_foot and right_foot:
+                left_conf = left_foot.get("confidence", 0)
+                right_conf = right_foot.get("confidence", 0)
+                best_foot = left_foot if left_conf >= right_conf else right_foot
+            else:
+                best_foot = left_foot or right_foot
+            
+            if best_foot and best_foot.get("confidence", 0) >= 0.3:
+                return (best_foot["x"], best_foot["y"], best_foot["z"])
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"발 위치 추출 중 오류: {e}")
+            return None
+    
+    def _calculate_final_step_result(
+        self, 
+        kalman_result: StepResult, 
+        performance_metrics: Dict[str, Any]
+    ) -> Optional[StepResult]:
+        """UnifiedStepCalculator를 사용한 최종 보폭 계산"""
+        try:
+            # Kalman 결과가 충분히 신뢰할 수 있으면 그대로 사용
+            if kalman_result.confidence >= 0.7 and kalman_result.step_count >= 5:
+                logger.info(f"Kalman 결과 사용: 신뢰도 {kalman_result.confidence:.2f}")
+                return kalman_result
+            
+            # UnifiedStepCalculator로 향상된 계산 시도
+            logger.info(f"UnifiedStepCalculator로 향상된 계산 시도 (Kalman 신뢰도: {kalman_result.confidence:.2f})")
+            
+            # 1순위: 프레임 시퀀스 기반 계산
+            if len(self.processed_frames) >= 10:
+                try:
+                    calculation_input = StepCalculationInput(
+                        frame_sequence=self.processed_frames.copy(),
+                        preferred_method=StepMeasurementMethod.KALMAN_FILTER,
+                        force_fallback=False
+                    )
+                    
+                    unified_result = self.unified_calculator.calculate_step_length(calculation_input)
+                    
+                    # 결과 검증
+                    if self._is_result_valid(unified_result) and unified_result.confidence > kalman_result.confidence:
+                        logger.info(f"프레임 기반 계산 사용: {unified_result.step_length_cm}cm (신뢰도: {unified_result.confidence:.2f})")
+                        return unified_result
+                        
+                except Exception as e:
+                    logger.warning(f"프레임 기반 계산 실패: {e}")
+            
+            # 2순위: 거리 및 스텝 수 기반 계산
+            if self.total_distance_traveled > 0 and kalman_result.step_count > 0:
+                try:
+                    calculation_input = StepCalculationInput(
+                        distance_meters=self.total_distance_traveled,
+                        step_count=kalman_result.step_count,
+                        preferred_method=StepMeasurementMethod.DISTANCE_BASED,
+                        force_fallback=True
+                    )
+                    
+                    distance_result = self.unified_calculator.calculate_step_length(calculation_input)
+                    
+                    # 결과 검증 및 선택
+                    if self._is_result_valid(distance_result):
+                        # 두 결과를 비교하여 더 합리적인 것 선택
+                        if self._compare_and_select_result(kalman_result, distance_result):
+                            logger.info(f"거리 기반 계산 사용: {distance_result.step_length_cm}cm (거리: {self.total_distance_traveled:.2f}m)")
+                            return distance_result
+                        else:
+                            logger.info(f"Kalman 결과 유지: {kalman_result.step_length_cm}cm")
+                            return kalman_result
+                            
+                except Exception as e:
+                    logger.warning(f"거리 기반 계산 실패: {e}")
+            
+            # 3순위: Kalman 결과 그대로 사용 (최소한의 데이터라도 있으면)
+            if kalman_result.step_count > 0:
+                logger.info(f"Kalman 결과 사용 (대안 없음): {kalman_result.step_length_cm}cm")
+                return kalman_result
+            
+            # 모든 계산 실패
+            logger.warning("모든 보폭 계산 방법 실패")
+            return None
+            
+        except Exception as e:
+            logger.error(f"최종 보폭 계산 실패: {e}")
+            # 응급 상황에서는 Kalman 결과라도 반환
+            if kalman_result and kalman_result.step_count > 0:
+                return kalman_result
+            return None
+    
+    def _is_result_valid(self, result: StepResult) -> bool:
+        """계산 결과 유효성 검증"""
+        return (
+            result is not None and
+            30 <= result.step_length_cm <= 150 and  # 합리적인 보폭 범위
+            result.step_count > 0 and
+            result.confidence >= 0.1  # 최소 신뢰도
+        )
+    
+    def _compare_and_select_result(self, kalman_result: StepResult, distance_result: StepResult) -> bool:
+        """두 결과를 비교하여 거리 기반 결과 선택 여부 결정"""
+        # 신뢰도 차이
+        confidence_diff = distance_result.confidence - kalman_result.confidence
+        
+        # 보폭 차이 (상대적)
+        step_diff_ratio = abs(distance_result.step_length_cm - kalman_result.step_length_cm) / kalman_result.step_length_cm
+        
+        # 거리 기반 결과 선택 조건:
+        # 1. 신뢰도가 0.2 이상 높거나
+        # 2. 보폭 차이가 20% 이내이고 신뢰도가 더 높은 경우
+        return (
+            confidence_diff >= 0.2 or
+            (step_diff_ratio <= 0.2 and confidence_diff > 0)
+        )
+
     def get_step_measurement_status(self) -> RealTimeMeasurementStatus:
         """현재 보폭 측정 상태 반환 - 통합 상태 API"""
         return SchemaConverter.create_measurement_status_from_executor(self)
@@ -1146,3 +1323,8 @@ class CommandExecutor:
         if self.step_tracker:
             self.step_tracker.reset()
             self.step_tracker = None
+        
+        # UnifiedStepCalculator 데이터도 리셋
+        self.processed_frames.clear()
+        self.total_distance_traveled = 0.0
+        self.last_position = None
