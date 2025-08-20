@@ -1,34 +1,117 @@
 # app/main.py
+import sys
 import os
+import logging
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 import asyncpg
+import logging
+import uvicorn
 
-from api import users, update_name
-from api import voice as voice_module  # /api/users/voice 라우터
+# API 라우터 imports
+from api.speech_routes import router as speech_router
+from api.execution_routes import router as execution_router
+from api.footstep import router as footstep_router
+from api import users, update_name, caregiver
+from api import voice as voice_module
 from api import camera, objects
 
-from fastapi.responses import HTMLResponse
+# Config & Services
+from config.settings import get_settings
+from services.singleton import service_manager
+
+# 로깅 설정
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+settings = get_settings()
 
 app = FastAPI(title="Full App")
 
 load_dotenv()
+logger = logging.getLogger("uvicorn.error")
 
 def _normalize_dsn(dsn: str) -> str:
     return dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
 
+# CORS 설정 (Flutter 앱에서 호출 가능하도록)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 개발용
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)  
+  
 @app.on_event("startup")
 async def on_startup():
+  
+    """서버 시작 시 초기화"""
+    logger.info("🚀 음성 명령 인식 서버 시작")
+    
+    # 데이터베이스 연결 풀 생성
     dsn = _normalize_dsn(os.getenv("DB_URL", "postgresql://appuser:1111@localhost:5432/appdb"))
     app.state.db_pool = await asyncpg.create_pool(dsn=dsn)
+    
+    # 싱글톤 서비스 인스턴스 미리 생성
+    command_executor = service_manager.get_command_executor()
+    speech_analyzer = service_manager.get_speech_analyzer()
+    speech_service = service_manager.get_speech_service()
+    
+    logger.info("✅ 서비스 인스턴스 생성 완료")
+    logger.info("🎤 음성 명령 인식 시스템 준비 완료!")
 
+    try:
+        dsn = _normalize_dsn(os.getenv("DB_URL", "postgresql://appuser:1111@localhost:5432/appdb"))
+        app.state.db_pool = await asyncpg.create_pool(dsn=dsn)
+        logger.info("Database connection pool started successfully.")
+    except Exception as e:
+        logger.critical(f"FATAL: Could not connect to database via asyncpg pool: {e}")
+        
 @app.on_event("shutdown")
 async def on_shutdown():
-    # 존재 확인 후 종료
+    """서버 종료 시 정리"""
+    
+    # 데이터베이스 연결 종료
     pool = getattr(app.state, "db_pool", None)
     if pool:
         await pool.close()
+    
+    logger.info(" 서버 종료 완료")
 
+@app.get("/")
+def root():
+    """서버 상태 확인"""
+    return {
+        "message": "시각장애인 음성 보조 시스템 API 서버",
+        "version": "1.0.0",
+        "status": "running",
+        "endpoints": {
+            "speech_recognition": "/api/users/speech",
+            "command_execution": "/api/users/action", 
+            "user_management": "/users",
+            "voice_synthesis": "/api/users/voice",
+            "api_docs": "/docs"
+        },
+    }
+
+if __name__ == "__main__":
+    logger.info("🚀 시각장애인 음성 보조 시스템 서버 시작")
+    logger.info(f"📍 서버 주소: http://{settings.HOST}:{settings.PORT}")
+    logger.info(f"📖 API 문서: http://{settings.HOST}:{settings.PORT}/docs")
+    
+    uvicorn.run(
+        app, 
+        host=settings.HOST, 
+        port=settings.PORT,
+        reload=settings.DEBUG,
+        log_level="info"
+    )        
+        
 # 음성 확인용 [http://localhost:8000/play]
 @app.get("/play", response_class=HTMLResponse)
 def play_page():
@@ -74,13 +157,6 @@ $("go").onclick = async () => {
 </script>
 """
 
-# 라우터 등록
-app.include_router(users.router)
-app.include_router(update_name.router)
-app.include_router(voice_module.router)  # /api/users/voice
-app.include_router(camera.router)        # /api/camera
-app.include_router(objects.router)       # /api/objects
-
 # 웹캠 테스트용 엔드포인트
 @app.get("/test-camera", response_class=HTMLResponse)
 async def test_camera_page():
@@ -95,3 +171,15 @@ async def test_camera_page():
 def read_root():
     return {"message": "Hello, FastAPI!"}
 
+
+# 라우터 등록
+app.include_router(users.router)
+app.include_router(voice_module.router)  # /api/users/voice
+app.include_router(caregiver.router)
+app.include_router(footstep_router, prefix="/api/users/footstep", tags=["Footstep Measurement"])
+app.include_router(speech_router, prefix="/api/users/speech", tags=["Speech Recognition"])
+app.include_router(execution_router, prefix="/api/users/action", tags=["Command Execution"])
+app.include_router(camera.router)        # /api/camera
+app.include_router(objects.router)       # /api/objects
+app.include_router(camera.router)        # /api/camera
+app.include_router(objects.router)       # /api/objects
