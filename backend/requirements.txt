@@ -73,3 +73,6 @@ uvicorn==0.35.0                     # 🔥 FastAPI 실행용 ASGI 서버
 sqlalchemy>=2.0
 asyncpg
 greenlet>=3.0
+websockets
+h5py
+timm
