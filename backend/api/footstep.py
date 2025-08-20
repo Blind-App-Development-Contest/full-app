@@ -1,87 +1,63 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 from datetime import datetime
+
+# 통합 스텝 모델 import
+from models.step_models import (
+    StepMeasurementRequest,
+    StepMeasurementResponse,
+    StepUpdateRequest,
+    StepModelConverter,
+    StepMeasurementMethod,
+    validate_step_measurement_inputs
+)
+
+# 통합 보폭 계산기 import
+from services.unified_step_calculator import (
+    get_unified_step_calculator,
+    StepCalculationInput
+)
 
 router = APIRouter()
 
-# Pydantic 모델들
-class FootstepDepthMeasurementRequest(BaseModel):
-    """FastDepth 기반 보폭 측정 요청 모델"""
-    distance_meters: float = Field(
-        ...,
-        description="FastDepth로 측정된 거리 (미터)",
-        gt=0.5,  # 최소 0.5미터
-        le=50.0,  # 최대 50미터
-        example=3.0
-    )
-    step_count: int = Field(
-        ...,
-        description="걸음 수",
-        gt=0,
-        le=500,
-        example=45
-    )
-    user_id: Optional[str] = Field(None, description="사용자 ID")
+# 레거시 호환성을 위한 별칭
+FootstepDepthMeasurementRequest = StepMeasurementRequest
+FootstepDepthMeasurementResponse = StepMeasurementResponse
+FootstepUpdateRequest = StepUpdateRequest
 
-class FootstepDepthMeasurementResponse(BaseModel):
-    """FastDepth 기반 보폭 측정 응답 모델"""
-    success: bool = Field(description="측정 성공 여부")
-    message: str = Field(description="응답 메시지")
-    step_length_cm: float = Field(description="계산된 보폭 길이 (cm)")
-    distance_meters: float = Field(description="측정된 거리 (미터)")
-    distance_cm: float = Field(description="측정된 거리 (cm)")
-    step_count: int = Field(description="걸음 수")
-    accuracy_level: str = Field(description="측정 정확도 수준")
-
-class FootstepUpdateRequest(BaseModel):
-    """보폭 업데이트 요청 모델"""
-    step_length: float = Field(
-        ...,
-        description="새로운 보폭 길이 (cm)",
-        gt=30,
-        lt=150,
-        example=65.5
-    )
-
-# 전역 변수로 CommandExecutor 싱글톤 관리
-_command_executor = None
-
-def get_command_executor():
-    """CommandExecutor 싱글톤 인스턴스 반환"""
-    global _command_executor
-    if _command_executor is None:
-        from services.command_executor import CommandExecutor
-        _command_executor = CommandExecutor()
-    return _command_executor
+# 싱글톤 서비스 인스턴스 사용
+from services.singleton import service_manager
+command_executor = service_manager.get_command_executor()
 
 def calculate_step_length_from_distance(distance_meters: float, step_count: int) -> dict:
     """
-    거리와 걸음 수로 보폭 계산
+    거리와 걸음 수로 보폭 계산 (레거시 호환성)
+    
+    이제 통합 계산기를 사용하며, 단순 계산은 응급 대안으로만 사용됩니다.
     
     Args:
-        distance_meters: FastDepth로 측정된 거리 (미터)
+        distance_meters: 측정된 거리 (미터)
         step_count: 걸음 수
         
     Returns:
-        계산 결과 딕셔너리
+        계산 결과 딕셔너리 (레거시 호환성)
     """
-    # 미터를 센티미터로 변환
-    distance_cm = distance_meters * 100
+    # 통합 계산기 사용
+    calculator = get_unified_step_calculator()
     
-    # 보폭 계산: 총 거리 ÷ 걸음 수
-    step_length_cm = distance_cm / step_count
+    # 입력 데이터 준비
+    input_data = StepCalculationInput(
+        distance_meters=distance_meters,
+        step_count=step_count,
+        preferred_method=StepMeasurementMethod.DISTANCE_BASED,
+        force_fallback=True  # 레거시 호출은 단순 계산 강제
+    )
     
-    # 정확도 수준 평가
-    accuracy_level = evaluate_measurement_accuracy(distance_meters, step_count, step_length_cm)
+    # 계산 실행
+    result = calculator.calculate_step_length(input_data)
     
-    return {
-        "step_length_cm": round(step_length_cm, 1),  # 소수점 첫째 자리까지
-        "distance_meters": distance_meters,
-        "distance_cm": distance_cm,
-        "step_count": step_count,
-        "accuracy_level": accuracy_level
-    }
+    # 레거시 딕셔너리 형식으로 변환
+    return StepModelConverter.to_legacy_response_dict(result)
 
 def evaluate_measurement_accuracy(distance_meters: float, step_count: int, step_length_cm: float) -> str:
     """
@@ -119,8 +95,8 @@ def evaluate_measurement_accuracy(distance_meters: float, step_count: int, step_
     else:
         return "낮음"
 
-@router.post("/measurement/depth", response_model=FootstepDepthMeasurementResponse)
-async def measure_footstep_with_depth(request: FootstepDepthMeasurementRequest):
+@router.post("/measurements", response_model=StepMeasurementResponse)
+async def create_footstep_measurement(request: StepMeasurementRequest):
     """
     FastDepth 기반 보폭 측정
     
@@ -135,46 +111,64 @@ async def measure_footstep_with_depth(request: FootstepDepthMeasurementRequest):
         print(f"  - 측정 거리: {request.distance_meters}m")
         print(f"  - 걸음 수: {request.step_count}걸음")
         
-        # 보폭 계산
-        calculation_result = calculate_step_length_from_distance(
-            request.distance_meters, 
-            request.step_count
+        # 고급 통합 보폭 계산 사용
+        calculator = get_unified_step_calculator()
+        
+        # 입력 데이터 준비 (고급 방법 우선 시도)
+        input_data = StepCalculationInput(
+            distance_meters=request.distance_meters,
+            step_count=request.step_count,
+            preferred_method=request.measurement_method,
+            force_fallback=False  # 고급 방법 우선 시도
         )
         
+        # 통합 계산 실행
+        step_result = calculator.calculate_step_length(input_data)
+        
         # CommandExecutor에 보폭 등록
-        command_executor = get_command_executor()
         previous_step_length = command_executor.user_settings.get("step_length")
-        command_executor.user_settings["step_length"] = calculation_result["step_length_cm"]
+        command_executor.user_settings["step_length"] = step_result.step_length_cm
         
         # 로그 출력
         print(f"[FastDepth 보폭 측정] 완료")
-        print(f"  - 계산된 보폭: {calculation_result['step_length_cm']}cm")
-        print(f"  - 정확도: {calculation_result['accuracy_level']}")
-        print(f"  - 이전 보폭: {previous_step_length}cm → 새 보폭: {calculation_result['step_length_cm']}cm")
+        print(f"  - 계산된 보폭: {step_result.step_length_cm}cm")
+        print(f"  - 정확도: {step_result.accuracy_level.value}")
+        print(f"  - 품질: {step_result.tracking_quality.value}")
+        print(f"  - 이전 보폭: {previous_step_length}cm → 새 보폭: {step_result.step_length_cm}cm")
         
         # 정확도에 따른 메시지 생성
         accuracy_msg = ""
-        if calculation_result["accuracy_level"] == "높음":
+        if step_result.accuracy_level.value == "높음":
             accuracy_msg = " (높은 정확도로 측정됨)"
-        elif calculation_result["accuracy_level"] == "낮음":
+        elif step_result.accuracy_level.value == "낮음":
             accuracy_msg = " (더 긴 거리에서 재측정을 권장함)"
         
-        return FootstepDepthMeasurementResponse(
+        # 입력 데이터 준비
+        input_data = {
+            "distance_meters": request.distance_meters,
+            "step_count": request.step_count,
+            "measurement_method": request.measurement_method.value,
+            "user_id": request.user_id
+        }
+        
+        return StepMeasurementResponse(
             success=True,
-            message=f"보폭 측정이 완료되었습니다! 계산된 보폭은 {calculation_result['step_length_cm']}cm입니다.{accuracy_msg}",
-            step_length_cm=calculation_result["step_length_cm"],
-            distance_meters=calculation_result["distance_meters"],
-            distance_cm=calculation_result["distance_cm"],
-            step_count=calculation_result["step_count"],
-            accuracy_level=calculation_result["accuracy_level"]
+            message=f"보폭 측정이 완료되었습니다! 계산된 보폭은 {step_result.step_length_cm}cm입니다.{accuracy_msg}",
+            result=step_result,
+            input_data=input_data,
+            processing_info={
+                "method": "distance_based_calculation",
+                "previous_step_length": previous_step_length,
+                "updated_user_settings": True
+            }
         )
         
     except Exception as e:
         print(f"[오류] FastDepth 보폭 측정 중 오류: {e}")
         raise HTTPException(status_code=500, detail=f"측정 실패: {str(e)}")
 
-@router.get("/current")
-async def get_current_footstep():
+@router.get("/", tags=["Footstep Settings"])
+async def get_footstep_settings():
     """
     현재 설정된 보폭 길이 조회
     
@@ -182,7 +176,7 @@ async def get_current_footstep():
         현재 보폭 정보
     """
     try:
-        command_executor = get_command_executor()
+        # command_executor는 이미 모듈 레벨에서 초기화됨
         current_settings = command_executor.user_settings
         
         step_length = current_settings.get("step_length")
@@ -208,8 +202,8 @@ async def get_current_footstep():
         print(f"[오류] 현재 보폭 조회 중 오류: {e}")
         raise HTTPException(status_code=500, detail=f"보폭 조회 실패: {str(e)}")
 
-@router.put("/update", response_model=Dict[str, Any])
-async def update_footstep(request: FootstepUpdateRequest):
+@router.put("/", response_model=Dict[str, Any], tags=["Footstep Settings"])
+async def update_footstep_settings(request: StepUpdateRequest):
     """
     보폭 수동 업데이트 (설정에서 재설정용)
     
@@ -220,28 +214,29 @@ async def update_footstep(request: FootstepUpdateRequest):
         업데이트 결과
     """
     try:
-        command_executor = get_command_executor()
+        # command_executor는 이미 모듈 레벨에서 초기화됨
         previous_step_length = command_executor.user_settings.get("step_length")
         
         # 새로운 보폭 설정
-        command_executor.user_settings["step_length"] = request.step_length
+        command_executor.user_settings["step_length"] = request.step_length_cm
         
-        print(f"[보폭 업데이트] {previous_step_length}cm → {request.step_length}cm")
+        print(f"[보폭 업데이트] {previous_step_length}cm → {request.step_length_cm}cm")
         
         return {
             "success": True,
-            "message": f"보폭이 {request.step_length}cm로 업데이트되었습니다.",
+            "message": f"보폭이 {request.step_length_cm}cm로 업데이트되었습니다.",
             "previous_step_length": previous_step_length,
-            "new_step_length": request.step_length,
-            "updated_at": datetime.now().isoformat()
+            "new_step_length": request.step_length_cm,
+            "updated_at": datetime.now().isoformat(),
+            "update_reason": request.update_reason
         }
         
     except Exception as e:
         print(f"[오류] 보폭 업데이트 중 오류: {e}")
         raise HTTPException(status_code=500, detail=f"보폭 업데이트 실패: {str(e)}")
 
-@router.post("/validate-measurement")
-async def validate_measurement_data(distance_meters: float, step_count: int):
+@router.post("/measurements/validate", tags=["Footstep Validation"])
+async def validate_measurement_request(distance_meters: float, step_count: int):
     """
     측정 전 데이터 유효성 검증
     
@@ -270,8 +265,16 @@ async def validate_measurement_data(distance_meters: float, step_count: int):
             warnings.append("걸음 수가 적습니다")
             recommendations.append("더 많은 걸음으로 측정하면 정확도가 향상됩니다")
         
-        # 예상 보폭 계산 및 검증
-        expected_step_length = (distance_meters * 100) / step_count
+        # 예상 보폭 계산 및 검증 - UnifiedStepCalculator 사용
+        calculator = get_unified_step_calculator()
+        input_data = StepCalculationInput(
+            distance_meters=distance_meters,
+            step_count=step_count,
+            preferred_method=StepMeasurementMethod.DISTANCE_BASED,
+            force_fallback=True  # 검증용 계산이므로 단순 계산 사용
+        )
+        result = calculator.calculate_step_length(input_data)
+        expected_step_length = result.step_length_cm
         
         if expected_step_length < 30:
             warnings.append("계산될 보폭이 너무 짧습니다")
@@ -280,15 +283,27 @@ async def validate_measurement_data(distance_meters: float, step_count: int):
             warnings.append("계산될 보폭이 너무 깁니다")
             recommendations.append("거리 측정값이나 걸음 수를 확인해주세요")
         
-        validation_result = {
-            "valid": len(warnings) == 0,
-            "expected_step_length": round(expected_step_length, 1),
-            "warnings": warnings,
-            "recommendations": recommendations,
-            "accuracy_prediction": evaluate_measurement_accuracy(distance_meters, step_count, expected_step_length)
-        }
+        # 통합 검증 시스템 사용
+        validation_result = validate_step_measurement_inputs(
+            distance_meters=distance_meters,
+            step_count=step_count,
+            method=StepMeasurementMethod.DISTANCE_BASED
+        )
         
-        return validation_result
+        # 레거시 형식으로 변환 (API 호환성)
+        return {
+            "valid": validation_result.is_valid,
+            "expected_step_length": validation_result.expected_step_length_cm,
+            "warnings": validation_result.warnings,
+            "recommendations": validation_result.recommendations,
+            "accuracy_prediction": validation_result.predicted_accuracy.value if validation_result.predicted_accuracy else "보통",
+            "overall_score": validation_result.overall_score,
+            "detailed_validation": {
+                "distance": validation_result.distance_validation,
+                "step_count": validation_result.step_count_validation,
+                "step_length": validation_result.step_length_validation
+            }
+        }
         
     except Exception as e:
         print(f"[오류] 데이터 검증 중 오류: {e}")

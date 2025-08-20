@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional
+from .common_models import UserSettings, BaseResponse
 
 class SpeechRecognitionRequest(BaseModel):
     """음성 인식 요청 모델"""
@@ -65,16 +66,6 @@ class CommandTestResponse(BaseModel):
     test_results: list[CommandTestResult] = Field(
         description="테스트 결과 목록"
     )
-
-class UserSettings(BaseModel):
-    """사용자 설정 모델"""
-    user_name: Optional[str] = Field(None, description="사용자 이름")
-    step_length: Optional[int] = Field(None, description="보폭 길이 (cm)")
-    voice_gender: str = Field("F", description="음성 종류 (F/M)")
-    voice_speed: float = Field(1.0, description="음성 속도 (0.5~2.0)")
-    caregiver_name: Optional[str] = Field(None, description="보호자 이름")
-    caregiver_phone: Optional[str] = Field(None, description="보호자 전화번호")
-
 class SetupRequest(BaseModel):
     """설정 요청 모델"""
     step: str = Field(description="설정 단계")

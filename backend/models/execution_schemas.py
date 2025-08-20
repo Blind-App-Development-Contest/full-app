@@ -1,15 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 from datetime import datetime
-from enum import Enum
-
-class ExecutionStatus(str, Enum):
-    """명령 실행 상태"""
-    SUCCESS = "success"
-    FAILED = "failed" 
-    PENDING = "pending"
-    NOT_SUPPORTED = "not_supported"
-
+from .common_models import ExecutionStatus
 class CommandExecutionResponse(BaseModel):
     """명령 실행 응답 모델"""
     status: ExecutionStatus = Field(
@@ -41,15 +33,15 @@ class FullCommandRequest(BaseModel):
         description="음성으로 인식된 텍스트 명령",
         example="카메라 모드"
     )
-    user_id: Optional[str] = Field(
-        default=None,
-        description="사용자 ID (선택사항)",
-        example="user123"
-    )
     execute_immediately: bool = Field(
         default=True,
         description="즉시 실행 여부",
         example=True
+    )
+    user_id: Optional[str] = Field(
+        default=None,
+        description="사용자 ID (선택사항)",
+        example="user123"
     )
 
 class FullCommandResponse(BaseModel):
@@ -61,15 +53,3 @@ class FullCommandResponse(BaseModel):
     
     # 실행 결과
     execution: CommandExecutionResponse = Field(description="실행 결과")
-
-class SystemStatusResponse(BaseModel):
-    """시스템 상태 응답"""
-    is_listening: bool = Field(description="음성 인식 활성 상태")
-    current_mode: str = Field(description="현재 모드")
-    last_execution: Optional[Dict[str, Any]] = Field(description="마지막 실행 기록")
-    total_commands: int = Field(description="총 실행된 명령 수")
-
-class ExecutionHistoryResponse(BaseModel):
-    """실행 기록 응답"""
-    history: List[Dict[str, Any]] = Field(description="실행 기록 목록")
-    total_count: int = Field(description="전체 기록 수")

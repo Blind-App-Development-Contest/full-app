@@ -1,31 +1,22 @@
 import asyncio
 import logging
+import requests
+import time
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from enum import Enum
 
 from models.recognition_schemas import SpeechRecognitionResponse 
+from models.common_models import (
+    AppMode, ExecutionStatus, MeasurementType, MeasurementStatus,
+    RealTimeMeasurementStatus, TrackingQuality, SchemaConverter
+)
+from models.step_models import StepCalculationResult as StepResult
 from config.settings import get_settings
+from services.kalman_step_filter import RealTimeStepTracker, FootPosition
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
-
-class ExecutionStatus(Enum):
-    """명령 실행 상태"""
-    SUCCESS = "success"
-    FAILED = "failed"
-    PENDING = "pending"
-    NOT_SUPPORTED = "not_supported"
-
-class AppMode(Enum):
-    """앱 모드"""
-    SETUP = "setup"
-    STANDBY = "standby"
-    CAMERA = "camera"
-    NAVIGATION = "navigation"
-    SETTINGS = "settings"
-    EMERGENCY_CALL = "emergency_call"
-    SCENE_DESCRIPTION = "scene_description"
 
 class SetupStep(Enum):
     """설정 단계"""
@@ -62,7 +53,7 @@ class CommandExecutor:
         self.current_setup_step = SetupStep.START
         self.execution_history = []
 
-        # 사용자 설정 정보 (변수명 통일)
+        # 사용자 설정 정보 
         self.user_settings = {
             "user_name": None,
             "step_length": None,
@@ -72,6 +63,15 @@ class CommandExecutor:
             "caregiver_phone": None,
             "preferred_mode": None
         }
+
+        # 실시간 측정을 위한 상태 변수
+        self.measurement_active = False
+        self.measurement_status = MeasurementStatus.INACTIVE
+        self.measurement_start_time = None
+        self.frame_count = 0
+        self.step_tracker = None # RealTimeStepTracker 인스턴스
+        self.session_id = None # 측정 세션 ID
+
         
     async def execute_command(
         self, 
@@ -123,7 +123,7 @@ class CommandExecutor:
             return await self._setup_user_name(command_text)
 
         elif self.current_setup_step == SetupStep.STEP_LENGTH:
-            return await self._setup_step_length(command_text)  
+            return await self._setup_step_length(intent, entities)  
 
         elif self.current_setup_step == SetupStep.VOICE_GENDER:
             return await self._setup_voice_gender(command_text)
@@ -181,116 +181,483 @@ class CommandExecutor:
                 actions=["tts_announce"]
             )
 
-    async def _execute_footstep_measurement_start(self, entities: Dict[str, Any]) -> CommandExecutionResult:
-        """보폭 측정 시작"""        
-        try:
-            import requests
+    async def _setup_step_length(self, intent: str, entities: Dict[str, Any]) -> CommandExecutionResult:
+        """보폭 측정(칼만 필터 사용)"""
+        # 실시간 칼만 필터 측정 요청
+        if intent in ["FOOTSTEP_MEASUREMENT_START", "FOOTSTEP_MEASUREMENT_START_REALTIME"] or "보폭 측정" in intent or "측정 시작" in intent:
+            return await self._execute_footstep_measurement_start(entities)
+
+        # 측정 완료 요청
+        elif intent == "FOOTSTEP_MEASURMENT_COMPLETE" or "측정 완료" in intent or "완료" in intent:
+            result = await self._execute_footstep_measurement_complete(entities)
+            if result.status == ExecutionStatus.SUCCESS:
+                # 설정 다음 단계로 진행
+                self.current_setup_step = SetupStep.VOICE_GENDER
+                result.message += "보폭 측정이 완료되었습니다. 이제 음성 성별을 설정하겠습니다."
+                result.data.update({
+                    "setup_step": "voice_gender",
+                    "progress": "3/6"
+                })
+                # result.actions.append("tts_announce")
+                result.actions.append("setup_progress_show")
+            return result
+        # 측정 취소 요청
+        elif intent == "FOOTSTEP_MEASUREMENT_CANCEL" or "취소" in intent or "중단" in intent:
+            await self._execute_footstep_measurement_cancel(entities)
+            
+            return CommandExecutionResult(
+                status=ExecutionStatus.PENDING,
+                message="보폭 측정이 취소되었습니다. 다시 측정하시려면 '보폭 측정 시작'이라고 말씀해주세요.",
+                data={"setup_step": "step_length"},
+                actions=["tts_announce"]
+            )
         
-            # 보폭 측정 API 호출
-            response = requests.post(
-                "http://localhost:8000/api/users/footstep/measurement/start",
-                json={"distance_meters": 10.0, "user_id": self.user_settings.get("user_name")},
-                timeout=5
+        else:
+            return CommandExecutionResult(
+                status=ExecutionStatus.PENDING,
+                message="보폭 측정을 시작하려면 '보폭 측정 시작'이라고 말씀해주세요.",
+                data={"setup_step": "step_length"},
+                actions=["tts_announce"]
+            )
+
+    # ===== 칼만 필터 기반 보폭 측정 메서드 =====
+    
+    async def _execute_footstep_measurement_start(self, entities: Dict[str, Any]) -> CommandExecutionResult:
+        """칼만 필터 기반 보폭 측정 시작 - 통합 메서드 사용"""        
+        try:
+            print("[CommandExecutor] 보폭 측정 시작 요청")
+            
+            # 통합 측정 시작 메서드 사용
+            success = self.start_step_measurement()
+            if not success:
+                return CommandExecutionResult(
+                    status=ExecutionStatus.FAILED,
+                    message="이미 보폭 측정이 진행 중입니다. 먼저 측정을 완료하거나 취소해주세요."
+                )
+            
+            print("[CommandExecutor] 보폭 측정 시작 완료")
+            
+            return CommandExecutionResult(
+                status=ExecutionStatus.SUCCESS,
+                message="정밀 보폭 측정을 시작합니다! 자연스럽게 걸어주세요. '측정 완료'라고 말하시면 종료됩니다.",
+                data={
+                    "mode": "footstep_measurement",
+                    "measurement_type": "kalman_filter",
+                    "measurement_status": "active",
+                    "session_id": self.session_id,
+                    "start_time": self.measurement_start_time,
+                    "tracking_active": True
+                },
+                actions=["footstep_measurement_ready", "tts_announce", "fastdepth_activate"]
             )
             
-            if response.status_code == 200:
-                result = response.json()
-                
-                return CommandExecutionResult(
-                    status=ExecutionStatus.SUCCESS,
-                    message="보폭 측정을 시작합니다. 10미터를 걸어주세요. 준비되면 '측정 시작'이라고 말씀해주세요.",
-                    data={
-                        "mode": "footstep_measurement",
-                        "distance_meters": 10.0,
-                        "measurement_status": "준비"
-                    },
-                    actions=["footstep_measurement_ready", "tts_announce"]
-                )
-            else:
-                raise Exception("보폭 측정 API 호출 실패")
-                
         except Exception as e:
+            print(f"[CommandExecutor] 보폭 측정 시작 실패: {e}")
             return CommandExecutionResult(
                 status=ExecutionStatus.FAILED,
                 message=f"보폭 측정 시작 실패: {str(e)}"
             )
 
     async def _execute_footstep_measurement_begin(self, entities: Dict[str, Any]) -> CommandExecutionResult:
-        """보폭 측정 걷기 시작"""
+        """보폭 측정 진행 상태 확인 (칼만 필터)"""
         try:
-            import requests
-        
-            # 걷기 시작 API 호출
-            response = requests.post(
-                "http://localhost:8000/api/users/footstep/measurement/begin",
-                params={"user_id": self.user_settings.get("user_name")},
-                timeout=5
+            if not self.measurement_active or self.step_tracker is None:
+                return CommandExecutionResult(
+                    status=ExecutionStatus.FAILED,
+                    message="보폭 측정이 시작되지 않았습니다. '보폭 측정 시작'이라고 말씀해주세요."
+                )
+            
+            # 현재 측정 상태 반환 (CommandExecutor 상태를 전달)
+            step_result = self.step_tracker.get_current_step_result()
+            performance_metrics = self.step_tracker.get_performance_metrics(
+                frame_count=self.frame_count,
+                start_time=self.measurement_start_time or time.time()
+            )
+            measurement_duration = time.time() - self.measurement_start_time if self.measurement_start_time else 0
+            
+            return CommandExecutionResult(
+                status=ExecutionStatus.SUCCESS,
+                message=f"측정이 진행 중입니다. 현재까지 {step_result.step_count}걸음 측정되었습니다. 계속 걸어주세요.",
+                data={
+                    "mode": "footstep_walking",
+                    "measurement_status": "측정중",
+                    "measurement_type": "kalman_filter",
+                    "current_step_cm": step_result.step_length_cm,
+                    "step_count": step_result.step_count,
+                    "confidence": step_result.confidence,
+                    "tracking_quality": step_result.tracking_quality,
+                    "measurement_duration": round(measurement_duration, 1),
+                    "fps": performance_metrics["fps"]
+                },
+                actions=["footstep_walking_start", "tts_announce"]
             )
             
-            if response.status_code == 200:
-                result = response.json()
-                
-                return CommandExecutionResult(
-                    status=ExecutionStatus.SUCCESS,
-                    message="측정을 시작했습니다! 이제 10미터를 걸어주세요. 도착하면 '측정 완료'라고 말씀해주세요.",
-                    data={
-                        "mode": "footstep_walking",
-                        "measurement_status": "측정중",
-                        "start_time": result.get("start_time")
-                    },
-                    actions=["footstep_walking_start", "tts_announce", "timer_start"]
-                )
-            else:
-                raise Exception("걷기 시작 API 호출 실패")
-                
         except Exception as e:
             return CommandExecutionResult(
                 status=ExecutionStatus.FAILED,
-                message=f"걷기 시작 실패: {str(e)}"
+                message=f"측정 상태 확인 실패: {str(e)}"
             )
 
     async def _execute_footstep_measurement_complete(self, entities: Dict[str, Any]) -> CommandExecutionResult:
-        """보폭 측정 완료"""
+        """칼만 필터 기반 보폭 측정 완료 - 통합 메서드 사용"""
         try:
-            import requests
-        
-            # 걸음 수는 임시로 15걸음으로 설정 (실제로는 센서나 사용자 입력으로 받아야 함)
-            step_count = 15  # 실제 구현에서는 센서 데이터나 사용자 카운트 사용
+            if not self.measurement_active:
+                return CommandExecutionResult(
+                    status=ExecutionStatus.FAILED,
+                    message="진행 중인 보폭 측정이 없습니다."
+                )
             
-            # 측정 완료 API 호출
-            response = requests.post(
-                "http://localhost:8000/api/users/footstep/measurement/complete",
-                params={
-                    "step_count": step_count,
-                    "user_id": self.user_settings.get("user_name")
+            # 통합 측정 중지 메서드 사용
+            result = self.stop_step_measurement()
+            
+            # 측정된 보폭이 없는 경우
+            if result is None:
+                return CommandExecutionResult(
+                    status=ExecutionStatus.FAILED,
+                    message="측정된 보폭이 없습니다. 더 오래 걸어보시거나 다시 시도해주세요.",
+                    data={
+                        "mode": "footstep_no_result",
+                        "measurement_duration": 0,
+                        "frame_count": self.frame_count
+                    },
+                    actions=["footstep_measurement_failed", "tts_announce", "fastdepth_deactivate"]
+                )
+            
+            # 품질에 따른 메시지 생성
+            quality_messages = {
+                TrackingQuality.EXCELLENT: "매우 정확하게 측정되었습니다!",
+                TrackingQuality.GOOD: "정확하게 측정되었습니다!",
+                TrackingQuality.FAIR: "측정이 완료되었습니다. 더 긴 거리에서 재측정하면 정확도가 향상됩니다.",
+                TrackingQuality.POOR: "측정이 완료되었지만 정확도가 낮습니다. 재측정을 권장합니다."
+            }
+            
+            quality_msg = quality_messages.get(result.tracking_quality, "")
+            
+            print(f"[CommandExecutor] 보폭 측정 완료")
+            print(f"  - 측정된 보폭: {result.step_length_cm}cm")
+            print(f"  - 걸음 수: {result.step_count}")
+            print(f"  - 추적 품질: {result.tracking_quality}")
+            print(f"  - 신뢰도: {result.confidence:.2f}")
+            print(f"  - 처리 FPS: {result.fps:.1f}")
+            print(f"  - 측정 시간: {result.measurement_duration:.1f}초")
+            
+            # API 호출로 보폭 저장 (기존 API 호환성)
+            try:
+                response = requests.post(
+                    "http://localhost:8000/api/users/footstep/measurements",
+                    json={
+                        "measurement_type": result.measurement_type.value,
+                        "step_length_cm": result.step_length_cm,
+                        "step_count": result.step_count,
+                        "confidence": result.confidence,
+                        "tracking_quality": result.tracking_quality.value,
+                        "measurement_duration": result.measurement_duration,
+                        "user_id": self.user_settings.get("user_name")
+                    },
+                    timeout=5
+                )
+                print(f"[CommandExecutor] API 저장 결과: {response.status_code}")
+            except Exception as api_error:
+                print(f"[CommandExecutor] API 저장 실패 (무시): {api_error}")
+            
+            return CommandExecutionResult(
+                status=ExecutionStatus.SUCCESS,
+                message=f"보폭 측정이 완료되었습니다! 측정된 보폭은 {result.step_length_cm}cm입니다. {quality_msg}",
+                data={
+                    "mode": "footstep_complete",
+                    "measurement_type": result.measurement_type.value,
+                    "step_length": result.step_length_cm,
+                    "step_count": result.step_count,
+                    "confidence": result.confidence,
+                    "tracking_quality": result.tracking_quality.value,
+                    "measurement_duration": round(result.measurement_duration or 0, 1),
+                    "frame_count": result.frame_count,
+                    "fps": result.fps,
+                    "measurement_status": "완료",
+                    "session_id": result.source_data.get("session_id")
                 },
-                timeout=5
+                actions=["footstep_measurement_complete", "tts_announce", "timer_stop", "fastdepth_deactivate"]
             )
             
-            if response.status_code == 200:
-                result = response.json()
-                calculated_step_length = result.get("step_length")
-                
-                return CommandExecutionResult(
-                    status=ExecutionStatus.SUCCESS,
-                    message=f"보폭 측정이 완료되었습니다! 계산된 보폭은 {calculated_step_length}cm입니다.",
-                    data={
-                        "mode": "footstep_complete",
-                        "step_length": calculated_step_length,
-                        "step_count": step_count,
-                        "measurement_time": result.get("measurement_time"),
-                        "measurement_status": "완료"
-                    },
-                    actions=["footstep_measurement_complete", "tts_announce", "timer_stop"]
-                )
-            else:
-                raise Exception("측정 완료 API 호출 실패")
-                
         except Exception as e:
+            print(f"[CommandExecutor] 보폭 측정 완료 실패: {e}")
+            self.cancel_step_measurement()  # 안전하게 상태 리셋
             return CommandExecutionResult(
                 status=ExecutionStatus.FAILED,
                 message=f"보폭 측정 완료 실패: {str(e)}"
             )
+
+    async def _execute_footstep_measurement_cancel(self, entities: Dict[str, Any]) -> CommandExecutionResult:
+        """보폭 측정 취소 - 통합 메서드 사용"""
+        try:
+            if not self.measurement_active:
+                return CommandExecutionResult(
+                    status=ExecutionStatus.SUCCESS,
+                    message="현재 진행 중인 보폭 측정이 없습니다."
+                )
+            
+            # 통합 측정 취소 메서드 사용
+            success = self.cancel_step_measurement()
+            
+            return CommandExecutionResult(
+                status=ExecutionStatus.SUCCESS,
+                message="보폭 측정이 취소되었습니다.",
+                data={
+                    "mode": "footstep_cancelled",
+                    "measurement_status": "cancelled",
+                    "cancel_success": success
+                },
+                actions=["footstep_measurement_cancel", "tts_announce", "fastdepth_deactivate"]
+            )
+            
+        except Exception as e:
+            print(f"[CommandExecutor] 보폭 측정 취소 실패: {e}")
+            self.cancel_step_measurement()  # 강제 취소
+            return CommandExecutionResult(
+                status=ExecutionStatus.SUCCESS,  # 취소는 항상 성공으로 처리
+                message="측정이 취소되었습니다.",
+                data={"error": str(e)}
+            )
+
+    # ===== FastDepth 프레임 처리 메서드 =====
+    
+    async def process_fastdepth_frame(self, foot_data: Dict[str, Any]) -> Optional[CommandExecutionResult]:
+        """
+        FastDepth 프레임 데이터 처리 (외부에서 호출) 
+        
+        이 메서드는 더 이상 프레임 변환을 하지 않고, 이미 변환된 데이터만 받아서
+        통합된 process_step_frame 메서드로 위임합니다.
+        실제 프레임 변환은 FastDepthProcessor에서 수행되어야 합니다.
+        """
+        try:
+            # 통합 프레임 처리 메서드 위임 (변환은 이미 완료된 상태)
+            result = self.process_step_frame(foot_data)
+            
+            if result is None:
+                return None  # 측정이 비활성화되었거나 결과가 없음
+            
+            # 30프레임마다 중간 결과 업데이트 (1초마다, 30fps 기준)
+            should_announce = self.frame_count % 30 == 0
+            
+            if should_announce and result.step_count > 0:
+                return CommandExecutionResult(
+                    status=ExecutionStatus.SUCCESS,
+                    message=f"측정 중... 현재 보폭: {result.step_length_cm}cm (걸음수: {result.step_count})",
+                    data={
+                        "mode": "footstep_frame_update",
+                        "current_step_cm": result.step_length_cm,
+                        "step_count": result.step_count,
+                        "confidence": result.confidence,
+                        "tracking_quality": result.tracking_quality.value,
+                        "frame_count": result.frame_count,
+                        "fps": result.fps,
+                        "measurement_result": result.dict()
+                    },
+                    actions=["footstep_frame_update"]
+                )
+            else:
+                # 무음 업데이트 (로그만)
+                return CommandExecutionResult(
+                    status=ExecutionStatus.SUCCESS,
+                    message="",  # 무음
+                    data={
+                        "mode": "footstep_frame_silent_update",
+                        "frame_count": self.frame_count,
+                        "measurement_result": result.dict() if result else None
+                    },
+                    actions=[]
+                )
+                
+        except Exception as e:
+            print(f"[CommandExecutor] 프레임 처리 오류: {e}")
+            # 프레임 처리 오류는 무시하고 계속 진행
+            return CommandExecutionResult(
+                status=ExecutionStatus.SUCCESS,
+                message="",
+                data={"mode": "footstep_frame_error", "error": str(e)},
+                actions=[]
+            )
+
+    # ===== 통합 Step Measurement 메서드들 - Single Source of Truth =====
+    
+    def start_step_measurement(self, session_id: Optional[str] = None) -> bool:
+        """보폭 측정 시작 - 모든 컴포넌트에서 사용하는 단일 진입점"""
+        try:
+            if self.measurement_active:
+                logger.warning("이미 측정이 활성화되어 있습니다")
+                return False
+            
+            # RealTimeStepTracker 초기화
+            self.step_tracker = RealTimeStepTracker()
+            
+            # 상태 설정
+            self.measurement_active = True
+            self.measurement_status = MeasurementStatus.ACTIVE
+            self.measurement_start_time = time.time()
+            self.frame_count = 0
+            self.session_id = session_id or f"session_{int(time.time())}"
+            
+            logger.info(f"보폭 측정 시작됨 - 세션: {self.session_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"보폭 측정 시작 실패: {e}")
+            self.measurement_active = False
+            self.measurement_status = MeasurementStatus.INACTIVE
+            return False
+    
+    def stop_step_measurement(self) -> Optional[StepResult]:
+        """보폭 측정 중지 - 최종 결과 반환"""
+        try:
+            if not self.measurement_active or self.step_tracker is None:
+                logger.warning("활성화된 측정이 없습니다")
+                return None
+            
+            # 최종 결과 계산 (CommandExecutor 상태를 전달)
+            step_result = self.step_tracker.get_current_step_result()
+            performance_metrics = self.step_tracker.get_performance_metrics(
+                frame_count=self.frame_count,
+                start_time=self.measurement_start_time or time.time()
+            )
+            measurement_duration = time.time() - self.measurement_start_time if self.measurement_start_time else 0
+            
+            # 상태 리셋
+            self.measurement_active = False
+            self.measurement_status = MeasurementStatus.COMPLETED
+            
+            # 결과가 유효한지 확인
+            if step_result.step_count == 0:
+                self.measurement_status = MeasurementStatus.CANCELLED
+                logger.warning("측정된 보폭이 없음")
+                return None
+            
+            # 사용자 설정에 보폭 저장
+            self.user_settings["step_length"] = step_result.step_length_cm
+            
+            # StepResult 반환
+            result = step_result
+            
+            logger.info(f"보폭 측정 완료 - 결과: {step_result.step_length_cm}cm")
+            return result
+            
+        except Exception as e:
+            logger.error(f"보폭 측정 중지 실패: {e}")
+            self.measurement_active = False
+            self.measurement_status = MeasurementStatus.CANCELLED
+            return None
+    
+    def cancel_step_measurement(self) -> bool:
+        """보폭 측정 취소"""
+        try:
+            if not self.measurement_active:
+                return True
+            
+            # 상태 리셋
+            self.measurement_active = False
+            self.measurement_status = MeasurementStatus.CANCELLED
+            self.measurement_start_time = None
+            self.frame_count = 0
+            self.session_id = None
+            
+            if self.step_tracker:
+                self.step_tracker.reset()
+                self.step_tracker = None
+            
+            logger.info("보폭 측정 취소됨")
+            return True
+            
+        except Exception as e:
+            logger.error(f"보폭 측정 취소 실패: {e}")
+            return False
+    
+    def process_step_frame(self, frame_data: Dict[str, Any]) -> Optional[StepResult]:
+        """FastDepth 프레임 처리 - 통합 진입점"""
+        try:
+            if not self.measurement_active or self.step_tracker is None:
+                return None
+            
+            # 발 위치 데이터 처리
+            left_result = None
+            right_result = None
+            
+            if frame_data.get("left_foot"):
+                lf = frame_data["left_foot"]
+                left_pos = FootPosition(
+                    x=lf.get("x", 0),
+                    y=lf.get("y", 0),
+                    z=lf.get("z", 0),
+                    confidence=lf.get("confidence", 1.0),
+                    timestamp=frame_data.get("timestamp", time.time())
+                )
+                left_result = self.step_tracker.add_foot_measurement('left', left_pos)
+            else:
+                left_result = self.step_tracker.add_foot_measurement('left', None)
+            
+            if frame_data.get("right_foot"):
+                rf = frame_data["right_foot"]
+                right_pos = FootPosition(
+                    x=rf.get("x", 0),
+                    y=rf.get("y", 0),
+                    z=rf.get("z", 0),
+                    confidence=rf.get("confidence", 1.0),
+                    timestamp=frame_data.get("timestamp", time.time())
+                )
+                right_result = self.step_tracker.add_foot_measurement('right', right_pos)
+            else:
+                right_result = self.step_tracker.add_foot_measurement('right', None)
+            
+            self.frame_count += 1
+            
+            # 현재 보폭 결과 반환 (CommandExecutor 상태를 전달)
+            step_result = self.step_tracker.get_current_step_result()
+            performance_metrics = self.step_tracker.get_performance_metrics(
+                frame_count=self.frame_count,
+                start_time=self.measurement_start_time or time.time()
+            )
+            
+            if step_result.step_count > 0:
+                return step_result
+            
+            return None
+                
+        except Exception as e:
+            logger.error(f"프레임 처리 오류: {e}")
+            return None
+    
+    def get_step_measurement_status(self) -> RealTimeMeasurementStatus:
+        """현재 보폭 측정 상태 반환 - 통합 상태 API"""
+        return SchemaConverter.create_measurement_status_from_executor(self)
+    
+    # ===== 기존 호환성 메서드들 =====
+    
+    def is_measurement_active(self) -> bool:
+        """보폭 측정 활성 상태 확인 (기존 호환성)"""
+        return self.measurement_active
+    
+    def is_realtime_measurement_active(self) -> bool:
+        """실시간 측정 활성 상태 확인 (기존 호환성)"""
+        return self.measurement_active
+    
+    def get_measurement_progress(self) -> Dict[str, Any]:
+        """측정 진행 상황 반환 (기존 호환성)"""
+        if not self.measurement_active:
+            return {"active": False}
+        
+        return {
+            "active": True,
+            "start_time": self.measurement_start_time,
+            "duration": time.time() - self.measurement_start_time if self.measurement_start_time else 0,
+            "frame_count": self.frame_count,
+            "tracker_status": {
+                "current_step": self.step_tracker.get_current_step_result() if self.step_tracker else None,
+                "performance": (
+                    self.step_tracker.get_performance_metrics(
+                        frame_count=self.frame_count,
+                        start_time=self.measurement_start_time or time.time()
+                    ) if self.step_tracker else None
+                )
+            }
+        }
 
     async def _setup_voice_gender(self, command_text: str) -> CommandExecutionResult:
         """음성 성별 설정"""
@@ -448,6 +815,7 @@ class CommandExecutor:
             'FOOTSTEP_MEASUREMENT_START': self._execute_footstep_measurement_start,
             'FOOTSTEP_MEASUREMENT_BEGIN': self._execute_footstep_measurement_begin,
             'FOOTSTEP_MEASUREMENT_COMPLETE': self._execute_footstep_measurement_complete,
+            'FOOTSTEP_MEASUREMENT_CANCEL': self._execute_footstep_measurement_cancel,
         }
 
         if intent in execution_map:
@@ -750,7 +1118,9 @@ class CommandExecutor:
             "user_settings": self.user_settings,
             "setup_complete": setup_complete,
             "last_execution": self.execution_history[-1] if self.execution_history else None,
-            "total_commands": len(self.execution_history)
+            "total_commands": len(self.execution_history),
+            "measurement_active": self.measurement_active,
+            "measurement_progress": self.get_measurement_progress()
         }
     
     def get_execution_history(self, limit: int = 10) -> List[Dict[str, Any]]:
@@ -768,5 +1138,11 @@ class CommandExecutor:
             "voice_speed": 1.0,
             "caregiver_name": None,
             "caregiver_phone": None,
-            "preferred_mode": None
         }
+         # 측정 상태도 리셋
+        self.measurement_active = False
+        self.measurement_start_time = None
+        self.frame_count = 0
+        if self.step_tracker:
+            self.step_tracker.reset()
+            self.step_tracker = None
