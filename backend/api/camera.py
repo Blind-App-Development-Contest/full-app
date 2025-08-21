@@ -13,6 +13,12 @@ import numpy as np
 from .objects import detect_objects_yolo, DetectedObject, calculate_threat_level, VibrationPattern, save_threat_to_log
 from core.cache import latest_detection_results
 
+# 보폭 측정 기능을 위한 추가 임포트
+from services.singleton import service_manager
+from utils.fastdepth_processor import get_fastdepth_processor
+from models.step_models import StepCalculationResult
+from typing import Optional
+
 logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/api/camera", tags=["camera"])
@@ -54,6 +60,23 @@ def _base64_to_image(base64_str: str) -> np.ndarray:
     img_arr = np.frombuffer(img_bytes, dtype=np.uint8)
     image = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
     return image
+
+def _check_measurement_session(user_id_str: str) -> bool:
+    """
+    사용자의 활성 측정 세션 확인 (기존 기능에 영향 없음)
+    
+    Args:
+        user_id_str: 사용자 ID 문자열
+        
+    Returns:
+        bool: 측정 세션이 활성화되어 있으면 True
+    """
+    try:
+        command_executor = service_manager.get_command_executor()
+        return command_executor.is_measurement_active()
+    except Exception as e:
+        logger.warning(f"측정 세션 확인 실패 (user: {user_id_str}): {e}")
+        return False
 
 @router.websocket("/stream/{user_id}")
 async def camera_stream(websocket: WebSocket, user_id: UUID):

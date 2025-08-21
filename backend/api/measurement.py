@@ -2,36 +2,27 @@
 
 from fastapi import APIRouter, HTTPException
 from typing import Optional, Dict, Any
-import time
 import asyncio
 import logging
 
 from models.fastdepth_models import (
-    FastDepthFootData,
     FastDepthFrameData,
     EnhancedCommandRequest
 )
-from models.common_models import (
-    MeasurementStatusResponse,
-    SystemStatusResponse,
-    MeasurementProgress,
-    AppMode,
-    UserSettings
-)
 from models.execution_schemas import (
-    FullCommandRequest,
-    FullCommandResponse,
-    CommandExecutionResponse
+    FullCommandResponse
 )
-from services.command_executor import CommandExecutionResult
 from api.speech_helpers import (
     get_current_context,
     process_fastdepth_frame,
     process_speech_command_with_context,
-    build_enhanced_response,
-    get_available_commands_for_context
+    build_enhanced_response
 )
 from utils.fastdepth_processor import get_fastdepth_processor
+
+# 카메라 모드 통합을 위한 임포트
+from api.camera import manager as camera_manager
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -41,6 +32,11 @@ from services.singleton import service_manager
 
 speech_analyzer = service_manager.get_speech_analyzer()
 command_executor = service_manager.get_command_executor()
+
+# 측정 세션 제어를 위한 모델
+class MeasurementSessionRequest(BaseModel):
+    user_id: str
+
 
 @router.post("/commands/enhanced", response_model=FullCommandResponse)
 async def execute_enhanced_speech_commands(request: EnhancedCommandRequest):
@@ -140,80 +136,154 @@ async def process_fastdepth_frame_only(frame_data: FastDepthFrameData):
         logger.error(f"FastDepth 프레임 처리 중 오류: {e}")
         raise HTTPException(status_code=500, detail=f"프레임 처리 오류: {str(e)}")
 
-@router.get("/status", response_model=MeasurementStatusResponse)
-async def get_measurement_status():
-    """
-    현재 보폭 측정 상태 조회 - StatusService 통합
-    """
-    try:
-        from services.status_service import get_status_service
-        
-        status_service = get_status_service()
-        result = status_service.get_measurement_status()
-        
-        if not result.success:
-            raise HTTPException(status_code=500, detail=result.error)
-        
-        return result.data
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"측정 상태 조회 중 오류: {e}")
-        raise HTTPException(status_code=500, detail=f"상태 조회 오류: {str(e)}")
-
-@router.get("/system/status", response_model=SystemStatusResponse)
-async def get_system_status():
-    """
-    전체 시스템 상태 조회 - StatusService 통합
-    """
-    try:
-        from services.status_service import get_status_service
-        
-        status_service = get_status_service()
-        result = status_service.get_system_status()
-        
-        if not result.success:
-            raise HTTPException(status_code=500, detail=result.error)
-        
-        return result.data
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"시스템 상태 조회 중 오류: {e}")
-        raise HTTPException(status_code=500, detail=f"시스템 상태 조회 오류: {str(e)}")
 
 @router.post("/reset")
 async def reset_measurement():
     """
-    진행 중인 보폭 측정 리셋 (상태 서비스와 연동)
+    진행 중인 보폭 측정 리셋
     """
     try:
         if command_executor.is_measurement_active():
             # 측정 취소 실행
-            result = await command_executor._execute_footstep_measurement_cancel({})
-            
-            # 상태 캐시 무효화 (측정 리셋 후)
-            status_service = get_status_service()
-            status_service.clear_cache()
+            await command_executor._execute_footstep_measurement_cancel({})
             
             return {
                 "success": True,
-                "message": "측정이 리셋되었습니다.",
-                "previous_status": "active",
-                "reset_result": {
-                    "status": result.status.value,
-                    "message": result.message
-                }
+                "message": "측정이 리셋되었습니다."
             }
         else:
             return {
                 "success": True,
-                "message": "진행 중인 측정이 없습니다.",
-                "previous_status": "inactive"
+                "message": "진행 중인 측정이 없습니다."
             }
         
     except Exception as e:
         print(f"[오류] 측정 리셋 중 오류: {e}")
         raise HTTPException(status_code=500, detail=f"리셋 오류: {str(e)}")
+
+@router.post("/session/start")
+async def start_measurement_session(request: MeasurementSessionRequest):
+    """
+    측정 세션 시작 및 카메라 모드 자동 전환
+    
+    Args:
+        request: 사용자 ID 포함된 요청
+        
+    Returns:
+        측정 세션 시작 결과 및 카메라 모드 상태
+    """
+    try:
+        user_id = request.user_id
+        logger.info(f"측정 세션 시작 요청 - 사용자: {user_id}")
+        
+        # 이미 측정이 활성화되어 있는지 확인
+        if command_executor.is_measurement_active():
+            return {
+                "status": "already_active",
+                "message": "측정 세션이 이미 활성화되어 있습니다.",
+                "session_active": True,
+                "camera_mode": camera_manager.user_modes.get(user_id, "realtime")
+            }
+        
+        # 측정 세션 시작
+        session_started = command_executor.start_step_measurement()
+        
+        if not session_started:
+            return {
+                "status": "failed",
+                "message": "측정 세션 시작에 실패했습니다.",
+                "session_active": False,
+                "camera_mode": camera_manager.user_modes.get(user_id, "realtime")
+            }
+        
+        # 카메라가 연결되어 있으면 측정 모드로 자동 전환
+        camera_mode_switched = False
+        if user_id in camera_manager.active_connections:
+            previous_mode = camera_manager.user_modes.get(user_id, "realtime")
+            camera_manager.user_modes[user_id] = "measurement"
+            camera_mode_switched = True
+            logger.info(f"카메라 모드 자동 전환: {previous_mode} → measurement (user: {user_id})")
+        
+        # 세션 정보 생성
+        session_info = {
+            "status": "started",
+            "message": "측정 세션이 시작되었습니다.",
+            "session_active": True,
+            "camera_mode": camera_manager.user_modes.get(user_id, "realtime"),
+            "camera_connected": user_id in camera_manager.active_connections,
+            "camera_mode_switched": camera_mode_switched
+        }
+        
+        return session_info
+        
+    except Exception as e:
+        logger.error(f"측정 세션 시작 오류: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"측정 세션 시작 중 오류가 발생했습니다: {str(e)}"
+        )
+
+@router.post("/session/stop")
+async def stop_measurement_session(request: MeasurementSessionRequest):
+    """
+    측정 세션 중지 및 카메라 모드 자동 복원
+    
+    Args:
+        request: 사용자 ID 포함된 요청
+        
+    Returns:
+        측정 세션 완료 결과 및 카메라 모드 상태
+    """
+    try:
+        user_id = request.user_id
+        logger.info(f"측정 세션 중지 요청 - 사용자: {user_id}")
+        
+        # 현재 측정 상태 확인
+        if not command_executor.is_measurement_active():
+            return {
+                "status": "not_active",
+                "message": "활성화된 측정 세션이 없습니다.",
+                "session_active": False,
+                "camera_mode": camera_manager.user_modes.get(user_id, "realtime")
+            }
+        
+        
+        # 측정 세션 중지
+        await command_executor._execute_footstep_measurement_cancel({})
+        
+        # 카메라가 연결되어 있으면 실시간 모드로 자동 복원
+        camera_mode_switched = False
+        if user_id in camera_manager.active_connections:
+            previous_mode = camera_manager.user_modes.get(user_id, "measurement")
+            camera_manager.user_modes[user_id] = "realtime"
+            camera_mode_switched = True
+            logger.info(f"카메라 모드 자동 복원: {previous_mode} → realtime (user: {user_id})")
+        
+        
+        # 완료 정보 생성
+        completion_info = {
+            "status": "completed",
+            "message": "측정 세션이 완료되었습니다.",
+            "session_active": False,
+            "camera_mode": camera_manager.user_modes.get(user_id, "realtime"),
+            "camera_connected": user_id in camera_manager.active_connections,
+            "camera_mode_switched": camera_mode_switched
+        }
+        
+        return completion_info
+        
+    except Exception as e:
+        logger.error(f"측정 세션 중지 오류: {e}")
+        # 오류 발생 시에도 강제로 측정 중지 및 모드 복원
+        try:
+            command_executor.cancel_step_measurement()
+            if user_id in camera_manager.active_connections:
+                camera_manager.user_modes[user_id] = "realtime"
+        except:
+            pass
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"측정 세션 중지 중 오류가 발생했습니다: {str(e)}"
+        )
+

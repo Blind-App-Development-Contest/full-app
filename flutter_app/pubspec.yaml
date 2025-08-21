@@ -30,7 +30,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  
+
+  # 카메라
+  camera: ^0.10.5+9
   # 음성 녹음
   record: ^4.4.4
   # 파일 경로 관리

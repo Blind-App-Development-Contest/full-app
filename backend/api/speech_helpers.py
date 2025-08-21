@@ -27,11 +27,8 @@ command_executor = service_manager.get_command_executor()
 def get_current_context() -> str:
     """현재 컨텍스트 조회"""
     try:
-        status = command_executor.get_current_status()
-        if status.get("measurement_active", False):
+        if command_executor.is_measurement_active():
             return "measurement_active"
-        elif status.get("current_mode") == "setup" and status.get("setup_step") == "step_length":
-            return "setup_step_length"
         else:
             return "default"
     except Exception as e:
@@ -111,22 +108,16 @@ def build_enhanced_response(command_result, frame_result, context: str):
     )
 
 
-def get_available_commands_for_context(status: Dict[str, Any]) -> List[str]:
-    """현재 컨텍스트에서 사용 가능한 명령어들 반환"""
-    if status.get("measurement_active"):
+def get_available_commands_for_context() -> List[str]:
+    """사용 가능한 기본 명령어들 반환"""
+    if command_executor.is_measurement_active():
         return [
             "측정 완료", "보폭 측정 완료", "완료",
-            "측정 취소", "측정 중단", "취소",
-            "측정 상태", "보폭 상태"
-        ]
-    elif status.get("current_mode") == "setup" and status.get("setup_step") == "step_length":
-        return [
-            "보폭 측정 시작", "측정 시작"
+            "측정 취소", "측정 중단", "취소"
         ]
     else:
         return [
-            "보폭 측정 시작", "보폭 재측정", "측정 시작",
-            "보폭 상태", "현재 보폭", "측정 상태"
+            "보폭 측정 시작", "보폭 재측정", "측정 시작"
         ]
 
 
@@ -156,14 +147,10 @@ def analyze_speech_command_with_context(command_text: str, context: str = None) 
     # SpeechAnalyzer로 명령 분석 (컨텍스트 포함)
     recognition_result = speech_analyzer.analyze_command(command_text, context)
     
-    # 보폭 측정 관련 의도인 경우 추가 컨텍스트 정보 제공
+    # 보폭 측정 관련 의도인 경우 기본 컨텍스트 정보 제공
     if recognition_result.intent.startswith("FOOTSTEP_"):
-        current_status = command_executor.get_current_status()
         measurement_context = {
-            "measurement_active": current_status.get("measurement_active", False),
-            "current_mode": current_status.get("current_mode"),
-            "setup_step": current_status.get("setup_step"),
-            "available_commands": get_available_commands_for_context(current_status),
+            "measurement_active": command_executor.is_measurement_active(),
             "measurement_type": "kalman_filter"
         }
         
@@ -246,5 +233,5 @@ def get_supported_intents_with_kalman():
         "keyword_mapping": speech_analyzer.KEYWORD_MAPPING,
         "kalman_filter_intents": kalman_intents,
         "measurement_types": ["kalman_filter"],
-        "current_system_status": command_executor.get_current_status()
+        "measurement_active": command_executor.is_measurement_active()
     }
