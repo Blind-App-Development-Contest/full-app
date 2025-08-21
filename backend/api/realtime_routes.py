@@ -1,9 +1,12 @@
 """실시간 FastDepth 프레임 처리 전용 라우터"""
 
 from fastapi import APIRouter, HTTPException
-from typing import Optional
+from typing import Optional, Dict, Any
 import logging
 import time
+import base64
+import cv2
+import numpy as np
 
 from models.fastdepth_models import (
     FastDepthFrameData, FrameProcessRequest, FrameProcessResponse
@@ -12,6 +15,8 @@ from models.common_models import (
     RealTimeMeasurementStatus, SchemaConverter
 )
 from services.singleton import service_manager
+# 카메라 스트림 통합을 위한 추가 임포트
+from utils.fastdepth_processor import get_fastdepth_processor
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
