@@ -21,6 +21,8 @@ from api.execution import router as execution_router
 from api.footstep import router as footstep_router
 from api import users, update_name, caregiver
 from api import voice as voice_module
+from api import camera, objects
+from api import realtime_routes
 
 # Config & Services
 from config.settings import get_settings
@@ -122,6 +124,7 @@ if __name__ == "__main__":
 # 음성 확인용 [http://localhost:8000/play]
 @app.get("/play", response_class=HTMLResponse)
 def play_page():
+    # ... (HTML content is long, keeping it as is)
     return """
 <!doctype html><meta charset="utf-8">
 <h2>TTS Quick Play</h2>
@@ -163,6 +166,21 @@ $("go").onclick = async () => {
 </script>
 """
 
+# 웹캠 테스트용 엔드포인트
+@app.get("/test-camera", response_class=HTMLResponse)
+async def test_camera_page():
+    """웹캠 객체 탐지 테스트 페이지를 반환합니다."""
+    try:
+        with open("templates/camera_test.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>Test page not found.</h1>", status_code=404)
+
+@app.get("/")
+def read_root():
+    return {"message": "Hello, FastAPI!"}
+
+
 # 라우터 등록
 app.include_router(users.router)
 app.include_router(voice_module.router)  # /api/users/voice
@@ -173,6 +191,9 @@ app.include_router(measurement_router, prefix="/api/users/measurement", tags=["M
 app.include_router(execution_router, prefix="/api/users/action", tags=["Command Execution"])
 
 # 테스트용 라우터
-from api import realtime_routes
 app.include_router(realtime_routes.router, prefix="/api/realtime", tags=["Real-time FastDepth Processing"])
 
+app.include_router(camera.router)        # /api/camera
+app.include_router(objects.router)       # /api/objects
+app.include_router(camera.router)        # /api/camera
+app.include_router(objects.router)       # /api/objects

@@ -31,15 +31,15 @@ class CaregiverResponse(BaseModel):
     caregivers_name: str
     phone_number: str
 
+# message 필드 제거
 class AlertRequest(BaseModel):
     user_id: UUID
-    message: str = "긴급 상황이 발생했습니다."
 
 class CaregiverAlertResponse(BaseModel):
     status: str
     message: str
     caregiver_phone: str
-    current_location: str  # Optional 제거, 항상 표시
+    current_location: str = Field(..., description="사용자의 현재 위치 주소", example="서울시 강남구 테헤란로 123")
 
 # ─────────────────────────────────────────────────────────────
 # POST /api/users/caregiver : 보호자 정보 등록
@@ -126,7 +126,7 @@ async def send_caregiver_alert(req: AlertRequest, session: AsyncSession = Depend
     user_id_str = str(req.user_id)
     try:
         query = text("""
-                     SELECT c.caregivers_name, c.phone_number, u.user_name, u.current_address
+                     SELECT c.caregivers_name, c.phone_number, u.user_name
                      FROM caregivers c
                               JOIN users u ON c.user_id = u.user_id
                      WHERE c.user_id = :user_id
@@ -137,18 +137,20 @@ async def send_caregiver_alert(req: AlertRequest, session: AsyncSession = Depend
         if not caregiver:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Caregiver not found for this user")
 
+        # 서버에서 자동 메시지 생성
+        auto_message = f"[긴급] {caregiver.user_name}님에게 위급 상황이 발생했습니다. 확인이 필요합니다."
+
         log_query = text("""
                          INSERT INTO dashboard_logs (user_id, log_type, log_data)
                          VALUES (:user_id, 'EMERGENCY_ALERT', :log_data)
                          """)
         await session.execute(log_query, {
             "user_id": user_id_str,
-            "log_data": f"Emergency alert sent to {caregiver.caregivers_name} ({caregiver.phone_number}): {req.message}"
+            "log_data": f"Emergency alert sent to {caregiver.caregivers_name} ({caregiver.phone_number}): {auto_message}"
         })
         await session.commit()
 
-        # u.current_address가 NULL이거나 빈 문자열일 경우를 대비해 기본값 설정
-        current_location = caregiver.current_address or "주소 정보 없음"
+        current_location = "위치 정보 확인 불가"
 
         return CaregiverAlertResponse(
             status="success",
