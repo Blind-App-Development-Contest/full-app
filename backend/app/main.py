@@ -1,4 +1,3 @@
-# app/main.py
 import sys
 import os
 import logging
@@ -12,13 +11,18 @@ import asyncpg
 import logging
 import uvicorn
 
+# 통합 에러 처리 미들웨어
+from middleware.error_handler import ErrorHandlerMiddleware
+
 # API 라우터 imports
-from api.speech_routes import router as speech_router
-from api.execution_routes import router as execution_router
+from api.speech import router as speech_router
+from api.measurement import router as measurement_router
+from api.execution import router as execution_router
 from api.footstep import router as footstep_router
 from api import users, update_name, caregiver
 from api import voice as voice_module
 from api import camera, objects
+from api import realtime_routes
 
 # Config & Services
 from config.settings import get_settings
@@ -37,6 +41,9 @@ logger = logging.getLogger("uvicorn.error")
 
 def _normalize_dsn(dsn: str) -> str:
     return dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
+
+# 통합 에러 처리 미들웨어
+app.add_middleware(ErrorHandlerMiddleware)
 
 # CORS 설정 (Flutter 앱에서 호출 가능하도록)
 app.add_middleware(
@@ -91,8 +98,10 @@ def root():
         "version": "1.0.0",
         "status": "running",
         "endpoints": {
-            "speech_recognition": "/api/users/speech",
+            "speech_processing": "/api/users/speech",
+            "measurement_system": "/api/users/measurement",
             "command_execution": "/api/users/action", 
+            "footstep_management": "/api/users/footstep",
             "user_management": "/users",
             "voice_synthesis": "/api/users/voice",
             "api_docs": "/docs"
@@ -176,9 +185,14 @@ def read_root():
 app.include_router(users.router)
 app.include_router(voice_module.router)  # /api/users/voice
 app.include_router(caregiver.router)
-app.include_router(footstep_router, prefix="/api/users/footstep", tags=["Footstep Measurement"])
-app.include_router(speech_router, prefix="/api/users/speech", tags=["Speech Recognition"])
+app.include_router(footstep_router, prefix="/api/users/footstep", tags=["Footstep Management"])
+app.include_router(speech_router, prefix="/api/users/speech", tags=["Speech Processing"])
+app.include_router(measurement_router, prefix="/api/users/measurement", tags=["Measurement System"])
 app.include_router(execution_router, prefix="/api/users/action", tags=["Command Execution"])
+
+# 테스트용 라우터
+app.include_router(realtime_routes.router, prefix="/api/realtime", tags=["Real-time FastDepth Processing"])
+
 app.include_router(camera.router)        # /api/camera
 app.include_router(objects.router)       # /api/objects
 app.include_router(camera.router)        # /api/camera
