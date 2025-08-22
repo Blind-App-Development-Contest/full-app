@@ -339,5 +339,3 @@ async def trigger_vibration(vibration: VibrationPattern):
         "duration_ms": vibration.duration_ms,
         "reason": vibration.reason
     }
-
-
