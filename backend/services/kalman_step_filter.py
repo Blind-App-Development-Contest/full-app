@@ -6,10 +6,11 @@ from models.fastdepth_models import FastDepthFootData as FootPosition
 from models.step_models import StepCalculationResult, StepMeasurementMethod, StepTrackingQuality, AccuracyLevel, AccuracyConverter
 
 class KalmanStepFilter:
-    """단일 발용 칼만 필터"""
+    """시각장애인용 칼만 필터 - 신중한 보행 패턴에 최적화"""
    
-    def __init__(self, measurement_noise: float = 0.05, process_noise: float = 0.1):
-        self.measurement_noise = measurement_noise
+    def __init__(self, measurement_noise: float = 0.08, process_noise: float = 0.15):
+        # 시각장애인 보행 특성에 맞춘 노이즈 설정
+        self.measurement_noise = measurement_noise  # 더 신중한 보행으로 높은 노이즈
         self.process_noise = process_noise
         self.dt = 1/30.0  # 30fps
         
@@ -159,14 +160,17 @@ class KalmanStepFilter:
 
 class RealTimeStepTracker:
     """
-    실시간 보폭 추적기 - CommandExecutor로부터 상태를 전달받는 순수 계산 엔진
+    시각장애인용 실시간 보폭 추적기 - 신중한 보행 패턴에 최적화
     
-    이 클래스는 더 이상 측정 세션 상태(frame_count, start_time)를 직접 관리하지 않습니다.
-    CommandExecutor가 Single Source of Truth로 모든 상태를 관리합니다.
+    CommandExecutor로부터 상태를 전달받는 순수 계산 엔진으로
+    시각장애인의 보행 특성을 기본적으로 반영합니다.
     """
    
-    def __init__(self):
-        # 양발 칼만 필터
+    def __init__(self, user_characteristics: Optional[Dict] = None):
+        # 사용자 특성 정보 (키, 보조기구 사용 여부 등)
+        self.user_characteristics = user_characteristics or {}
+        
+        # 시각장애인용 양발 칼만 필터
         self.left_filter = KalmanStepFilter()
         self.right_filter = KalmanStepFilter()
         
@@ -212,10 +216,11 @@ class RealTimeStepTracker:
         }
    
     def _detect_step(self, foot: str, position: np.ndarray, velocity: np.ndarray) -> bool:
-        """발걸음 검출"""
-        # 발이 땅에 닿았는지 판단
-        ground_threshold = 0.08  # 8cm 이내
-        velocity_threshold = 0.03  # 3cm/s 이하
+        """시각장애인 보행 패턴에 특화된 발걸음 검출"""
+        # 시각장애인 보행 특성: 더 신중하고 안정적인 걸음
+        ground_threshold = 0.12  # 12cm (더 신중한 보행으로 발 높이 낮음)
+        velocity_threshold = 0.05  # 5cm/s (더 느리고 안정적인 움직임)
+        min_step_interval = 0.4  # 0.4초 (더 긴 지지기)
         
         is_on_ground = (position[1] < ground_threshold and 
                        abs(velocity[1]) < velocity_threshold)
@@ -224,9 +229,9 @@ class RealTimeStepTracker:
         current_time = time.time()
         
         if self.foot_states[foot] == 'air' and is_on_ground:
-            # 착지 검출 - 최소 간격 체크
+            # 착지 검출 - 시각장애인의 더 긴 스텝 주기 반영
             time_since_last = current_time - self.last_step_time[foot]
-            if time_since_last > 0.3:  # 최소 0.3초 간격
+            if time_since_last > min_step_interval:
                 self.foot_states[foot] = 'ground'
                 self.step_positions[foot].append(position.copy())
                 self.last_step_time[foot] = current_time
@@ -240,7 +245,7 @@ class RealTimeStepTracker:
         return step_detected
    
     def _calculate_step(self, foot: str, current_position: np.ndarray):
-        """보폭 계산"""
+        """시각장애인 보행 특성을 반영한 보폭 계산"""
         opposite_foot = 'right' if foot == 'left' else 'left'
         opposite_positions = self.step_positions[opposite_foot]
         
@@ -254,8 +259,9 @@ class RealTimeStepTracker:
                 (current_position[2] - last_opposite_pos[2])**2
             )
             
-            # 유효한 보폭인지 확인 (30cm ~ 180cm)
-            if 0.3 <= step_length <= 1.8:
+            # 시각장애인 보폭 범위: 더 보수적인 범위 (25cm ~ 160cm)
+            # 신중한 보행으로 일반인보다 약간 작은 범위
+            if 0.25 <= step_length <= 1.6:
                 self.step_history.append(step_length * 100)  # cm로 변환
    
     def get_current_step_result(self) -> StepCalculationResult:
@@ -303,19 +309,19 @@ class RealTimeStepTracker:
         )
    
     def _evaluate_tracking_quality(self, confidence: float) -> str:
-        """추적 품질 평가"""
+        """시각장애인용 추적 품질 평가 - 더 관대한 기준"""
         step_consistency = self._calculate_step_consistency()
-        fps = self._calculate_fps()
+        # fps 계산 제거 - 시각장애인은 느린 보행이 정상
         
-        # 성능 점수 계산
-        fps_score = min(fps / 25.0, 1.0)  # 25fps 기준
-        combined_score = (confidence * 0.5 + step_consistency * 0.3 + fps_score * 0.2)
+        # 시각장애인 특성 반영: 일관성과 신뢰도 중심
+        combined_score = (confidence * 0.6 + step_consistency * 0.4)
         
-        if combined_score >= 0.85:
+        # 시각장애인용 더 관대한 품질 기준
+        if combined_score >= 0.75:
             return "excellent"
-        elif combined_score >= 0.7:
-            return "good"
-        elif combined_score >= 0.5:
+        elif combined_score >= 0.6:
+            return "good"  
+        elif combined_score >= 0.4:
             return "fair"
         else:
             return "poor"
@@ -359,18 +365,12 @@ class RealTimeStepTracker:
         }
    
     def reset(self):
-        """
-        추적기 완전 리셋 - 순수한 계산 상태만 리셋
-        
-        프레임 카운트와 시작 시간은 CommandExecutor에서 관리하므로 여기서 리셋하지 않습니다.
-        """
+        """시각장애인용 추적기 리셋 - 계산 상태 초기화"""
         self.left_filter.reset()
         self.right_filter.reset()
         self.step_history.clear()
         self.step_positions['left'].clear()
         self.step_positions['right'].clear()
-        self.step_count = 0  # 스텝 검출 카운트만 리셋
+        self.step_count = 0
         self.foot_states = {'left': 'air', 'right': 'air'}
         self.last_step_time = {'left': 0, 'right': 0}
-        
-        # frame_count, start_time 제거 - CommandExecutor에서 관리

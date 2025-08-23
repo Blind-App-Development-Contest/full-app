@@ -41,7 +41,7 @@ class _VoiceTestScreenState extends State<VoiceTestScreen> {
                   : 'No speech detected';
           _isListening = false;
         });
-        print('Voice workflow completed: $_recognizedText');
+        debugPrint('Voice workflow completed: $_recognizedText');
       }
     }
   }

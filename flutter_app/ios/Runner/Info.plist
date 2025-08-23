@@ -39,7 +39,7 @@
 				<key>NSExceptionMinimumTLSVersion</key>
 				<string>TLSv1.0</string>
 			</dict>
-			<key>192.168.45.217</key>
+			<key>192.168.45.74</key>
 			<dict>
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>
 				<true/>

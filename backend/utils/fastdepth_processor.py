@@ -40,6 +40,41 @@ class ProcessedFrameData:
     confidence_score: float
     processing_time: float
 
+@dataclass
+class FrameSequenceBuffer:
+    """프레임 시퀀스 버퍼 관리"""
+    user_id: str
+    frames: List[Dict[str, Any]]
+    max_frames: int = 10
+    min_frames_for_kalman: int = 5
+    last_update: float = 0.0
+    
+    def add_frame(self, frame_dict: Dict[str, Any]) -> None:
+        """새 프레임 추가"""
+        frame_dict['buffer_timestamp'] = time.time()
+        self.frames.append(frame_dict)
+        self.last_update = time.time()
+        
+        # 최대 프레임 수 제한
+        if len(self.frames) > self.max_frames:
+            self.frames.pop(0)  # 가장 오래된 프레임 제거
+    
+    def get_recent_sequence(self) -> List[Dict[str, Any]]:
+        """최근 프레임 시퀀스 반환"""
+        return self.frames.copy()
+    
+    def is_ready_for_kalman(self) -> bool:
+        """칼만 필터 사용 가능한지 확인"""
+        return len(self.frames) >= self.min_frames_for_kalman
+    
+    def clear_old_frames(self, max_age_seconds: float = 30.0) -> None:
+        """오래된 프레임들 정리"""
+        current_time = time.time()
+        self.frames = [
+            frame for frame in self.frames 
+            if current_time - frame.get('buffer_timestamp', 0) < max_age_seconds
+        ]
+
 # StepLengthResult는 models.step_models.StepCalculationResult로 대체
 # 하위 호환성을 위한 별칭
 StepLengthResult = StepCalculationResult
@@ -59,12 +94,255 @@ class FastDepthProcessor:
         self.min_confidence = 0.3
         self.max_depth_range = 10.0  # 미터
         self.min_depth_range = 0.1   # 미터
+        
+        # 프레임 시퀀스 버퍼링 시스템
+        self.frame_buffers: Dict[str, FrameSequenceBuffer] = {}
+        self.buffer_cleanup_interval = 60.0  # 1분마다 정리
+        self.last_cleanup = time.time()
+        
         self.frame_processing_stats = {
             "total_processed": 0,
             "valid_frames": 0,
             "invalid_frames": 0,
-            "average_processing_time": 0.0
+            "average_processing_time": 0.0,
+            "kalman_calculations": 0,
+            "sequence_calculations": 0
         }
+    
+    def get_or_create_buffer(self, user_id: str) -> FrameSequenceBuffer:
+        """사용자별 프레임 버퍼 가져오기 또는 생성"""
+        if user_id not in self.frame_buffers:
+            self.frame_buffers[user_id] = FrameSequenceBuffer(
+                user_id=user_id,
+                frames=[]
+            )
+        return self.frame_buffers[user_id]
+    
+    def cleanup_old_buffers(self) -> None:
+        """오래된 버퍼들 정리"""
+        current_time = time.time()
+        if current_time - self.last_cleanup < self.buffer_cleanup_interval:
+            return
+        
+        # 30분 이상 사용되지 않은 버퍼 제거
+        inactive_threshold = 30 * 60  # 30분
+        users_to_remove = []
+        
+        for user_id, buffer in self.frame_buffers.items():
+            if current_time - buffer.last_update > inactive_threshold:
+                users_to_remove.append(user_id)
+            else:
+                buffer.clear_old_frames()
+        
+        for user_id in users_to_remove:
+            del self.frame_buffers[user_id]
+        
+        self.last_cleanup = current_time
+    
+    def extract_foot_positions_from_frame(self, frame_dict: Dict[str, Any]) -> Tuple[Optional['FootPosition'], Optional['FootPosition']]:
+        """
+        프레임에서 발 위치 데이터 추출 (칼만 필터용)
+        
+        Args:
+            frame_dict: FastDepth 프레임 딕셔너리
+            
+        Returns:
+            Tuple[left_foot_pos, right_foot_pos]: 발 위치 데이터 (없으면 None)
+        """
+        try:
+            # 지연 import로 순환 참조 방지
+            from models.fastdepth_models import FastDepthFootData as FootPosition
+            
+            left_foot_pos = None
+            right_foot_pos = None
+            
+            # 왼발 데이터 추출
+            if 'left_foot' in frame_dict:
+                left_data = frame_dict['left_foot']
+                if (left_data.get('confidence', 0) >= self.min_confidence and 
+                    not left_data.get('filtered', False)):
+                    
+                    left_foot_pos = FootPosition(
+                        x=float(left_data.get('x', 0)),
+                        y=float(left_data.get('y', 0)), 
+                        z=float(left_data.get('z', 0)),
+                        confidence=float(left_data.get('confidence', 0)),
+                        timestamp=frame_dict.get('timestamp', time.time())
+                    )
+            
+            # 오른발 데이터 추출
+            if 'right_foot' in frame_dict:
+                right_data = frame_dict['right_foot']
+                if (right_data.get('confidence', 0) >= self.min_confidence and 
+                    not right_data.get('filtered', False)):
+                    
+                    right_foot_pos = FootPosition(
+                        x=float(right_data.get('x', 0)),
+                        y=float(right_data.get('y', 0)),
+                        z=float(right_data.get('z', 0)),
+                        confidence=float(right_data.get('confidence', 0)),
+                        timestamp=frame_dict.get('timestamp', time.time())
+                    )
+            
+            return left_foot_pos, right_foot_pos
+            
+        except Exception as e:
+            logger.error(f"발 위치 추출 오류: {e}")
+            return None, None
+    
+    def convert_frame_sequence_to_foot_positions(self, frame_sequence: List[Dict[str, Any]]) -> Tuple[List['FootPosition'], List['FootPosition']]:
+        """
+        프레임 시퀀스를 발 위치 리스트로 변환
+        
+        Args:
+            frame_sequence: 프레임 딕셔너리들의 리스트
+            
+        Returns:
+            Tuple[left_positions, right_positions]: 발 위치 리스트들
+        """
+        left_positions = []
+        right_positions = []
+        
+        for frame_dict in frame_sequence:
+            left_pos, right_pos = self.extract_foot_positions_from_frame(frame_dict)
+            
+            if left_pos:
+                left_positions.append(left_pos)
+            if right_pos:
+                right_positions.append(right_pos)
+        
+        return left_positions, right_positions
+    
+    def _calculate_with_direct_kalman_filter(self, frame_sequence: List[Dict[str, Any]]) -> Optional[StepCalculationResult]:
+        """
+        순환 참조 방지를 위해 칼만 필터를 직접 호출
+        
+        Args:
+            frame_sequence: 프레임 시퀀스 데이터
+            
+        Returns:
+            StepCalculationResult: 칼만 필터 계산 결과 또는 None
+        """
+        try:
+            # 순환 참조 방지를 위한 지연 import
+            from services.kalman_step_filter import RealTimeStepTracker
+            
+            # 프레임 시퀀스를 발 위치 데이터로 변환
+            left_positions, right_positions = self.convert_frame_sequence_to_foot_positions(frame_sequence)
+            
+            if not left_positions and not right_positions:
+                logger.warning("[FastDepth] 발 위치 데이터가 없어 칼만 필터 사용 불가")
+                return None
+            
+            # 새로운 칼만 추적기 인스턴스 생성 (세션별)
+            tracker = RealTimeStepTracker()
+            
+            # 발 위치 데이터를 순서대로 추가
+            for pos in left_positions:
+                tracker.add_foot_measurement("left", pos)
+            
+            for pos in right_positions:
+                tracker.add_foot_measurement("right", pos)
+            
+            # 칼만 필터 결과 가져오기
+            result = tracker.get_current_step_result()
+            
+            # FastDepth 처리 정보 추가
+            if result:
+                result.source_data.update({
+                    "method": "direct_kalman_filter",
+                    "fastdepth_frame_count": len(frame_sequence),
+                    "left_foot_points": len(left_positions),
+                    "right_foot_points": len(right_positions),
+                    "tracking_mode": "direct_fastdepth_integration"
+                })
+                
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"[FastDepth] 직접 칼만 필터 호출 실패: {e}")
+            return None
+    
+    def _calculate_with_simple_distance(self, frame_sequence: List[Dict[str, Any]]) -> StepCalculationResult:
+        """
+        단순 거리 기반 계산 (fallback)
+        
+        Args:
+            frame_sequence: 프레임 시퀀스 데이터
+            
+        Returns:
+            StepCalculationResult: 단순 계산 결과
+        """
+        try:
+            valid_frames = [f for f in frame_sequence if not self._is_frame_filtered(f)]
+            
+            if len(valid_frames) < 2:
+                raise ValueError("유효한 프레임이 부족합니다 (최소 2개 필요)")
+            
+            # 거리 계산
+            total_distance = 0.0
+            step_count = 0
+            confidence_scores = []
+            
+            for i in range(1, len(valid_frames)):
+                prev_frame = valid_frames[i-1]
+                curr_frame = valid_frames[i]
+                
+                # 발 위치 변화 계산
+                distance = self._calculate_frame_distance(prev_frame, curr_frame)
+                if distance > 0.1:  # 최소 이동 거리
+                    total_distance += distance
+                    step_count += 1
+                
+                # 신뢰도 수집
+                frame_confidence = self._get_frame_confidence(curr_frame)
+                confidence_scores.append(frame_confidence)
+            
+            if step_count == 0:
+                raise ValueError("유효한 스텝이 감지되지 않았습니다")
+            
+            # 평균 보폭 계산
+            avg_step_length_m = total_distance / step_count
+            avg_step_length_cm = avg_step_length_m * 100
+            
+            # 신뢰도 계산
+            avg_confidence = np.mean(confidence_scores) if confidence_scores else 0.5
+            
+            # 결과 생성
+            result = StepCalculationResult(
+                step_length_cm=round(avg_step_length_cm, 1),
+                confidence=round(avg_confidence, 3),
+                step_count=step_count,
+                tracking_quality=AccuracyConverter.confidence_to_quality(avg_confidence),
+                accuracy_level=AccuracyConverter.confidence_to_korean_level(avg_confidence),
+                measurement_method=StepMeasurementMethod.DISTANCE_BASED,
+                source_data={
+                    "method": "simple_distance_fastdepth",
+                    "total_distance_m": total_distance,
+                    "frame_count": len(frame_sequence),
+                    "valid_frame_count": len(valid_frames),
+                    "average_confidence": avg_confidence
+                }
+            )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"[FastDepth] 단순 거리 계산 실패: {e}")
+            # 응급 기본값 반환
+            return StepCalculationResult(
+                step_length_cm=60.0,
+                confidence=0.2,
+                step_count=1,
+                tracking_quality=StepTrackingQuality.POOR,
+                accuracy_level=AccuracyLevel.LOW,
+                measurement_method=StepMeasurementMethod.DISTANCE_BASED,
+                source_data={
+                    "method": "emergency_fallback",
+                    "error": str(e)
+                }
+            )
     
     def validate_frame(self, frame_data: FastDepthFrameData) -> FrameValidationResult:
         """
@@ -224,7 +502,6 @@ class FastDepthProcessor:
             # 통계 업데이트
             self._update_processing_stats(processing_time, True)
             
-            logger.debug(f"[FastDepth] 프레임 변환 완료 (처리시간: {processing_time:.3f}s)")
             
             return ProcessedFrameData(
                 frame_dict=frame_dict,
@@ -241,43 +518,6 @@ class FastDepthProcessor:
             logger.error(f"[FastDepth] 프레임 변환 실패: {e}")
             raise ValueError(f"프레임 변환 실패: {str(e)}")
     
-    def preprocess_for_depth_estimation(self, frame_data: FastDepthFrameData) -> Dict[str, Any]:
-        """
-        깊이 추정을 위한 전처리
-        
-        Args:
-            frame_data: 전처리할 프레임 데이터
-            
-        Returns:
-            전처리된 데이터
-        """
-        try:
-            processed = self.convert_frame_to_dict(frame_data)
-            
-            # 좌표 정규화
-            normalized_data = self._normalize_coordinates(processed.frame_dict)
-            
-            # 노이즈 필터링
-            filtered_data = self._apply_noise_filter(normalized_data)
-            
-            # 깊이 보정
-            calibrated_data = self._calibrate_depth_values(filtered_data)
-            
-            # 전처리 메타데이터 추가
-            calibrated_data['preprocessing'] = {
-                'normalization_applied': True,
-                'noise_filter_applied': True,
-                'depth_calibration_applied': True,
-                'original_confidence': processed.confidence_score,
-                'preprocessing_timestamp': time.time()
-            }
-            
-            logger.debug("[FastDepth] 깊이 추정 전처리 완료")
-            return calibrated_data
-            
-        except Exception as e:
-            logger.error(f"[FastDepth] 깊이 추정 전처리 실패: {e}")
-            raise ValueError(f"전처리 실패: {str(e)}")
     
     def postprocess_for_step_calculation(
         self,
@@ -285,41 +525,32 @@ class FastDepthProcessor:
         measurement_method: str = "kalman_filter"
     ) -> StepCalculationResult:
         """
-        보폭 계산을 위한 후처리
+        보폭 계산을 위한 후처리 - 순환 참조 방지를 위해 직접 칼만 필터 호출
         
         Args:
             frame_sequence: 프레임 시퀀스 데이터
             measurement_method: 측정 방법 ("kalman_filter", "simple_distance")
             
         Returns:
-            StepLengthResult: 보폭 계산 결과
+            StepCalculationResult: 보폭 계산 결과
         """
         try:
             if not frame_sequence:
                 raise ValueError("프레임 시퀀스가 비어있습니다")
             
-            logger.info(f"[FastDepth] 통합 보폭 계산 시작 - 방법: {measurement_method}, 프레임 수: {len(frame_sequence)}")
             
-            # 통합 계산기 사용 (지연 import로 순환 참조 방지)
-            from services.unified_step_calculator import get_unified_step_calculator, StepCalculationInput
+            # 칼만 필터 방법 시도
+            if measurement_method == "kalman_filter" and len(frame_sequence) >= 3:
+                result = self._calculate_with_direct_kalman_filter(frame_sequence)
+                if result and result.confidence >= 0.3:
+                    self.frame_processing_stats["kalman_calculations"] += 1
+                    return result
+                else:
+                    logger.warning("[FastDepth] 칼만 필터 신뢰도 낮음 - 단순 방법으로 fallback")
             
-            calculator = get_unified_step_calculator()
-            
-            # 입력 데이터 준비
-            input_data = StepCalculationInput(
-                frame_sequence=frame_sequence,
-                preferred_method=(
-                    StepMeasurementMethod.KALMAN_FILTER 
-                    if measurement_method == "kalman_filter" 
-                    else StepMeasurementMethod.DISTANCE_BASED
-                ),
-                force_fallback=(measurement_method == "simple_distance")
-            )
-            
-            # 통합 계산 실행
-            result = calculator.calculate_step_length(input_data)
-            
-            logger.info(f"[FastDepth] 통합 보폭 계산 완료: {result.step_length_cm}cm (신뢰도: {result.confidence:.2f})")
+            # 단순 거리 기반 계산으로 fallback
+            result = self._calculate_with_simple_distance(frame_sequence)
+            self.frame_processing_stats["sequence_calculations"] += 1
             return result
             
         except Exception as e:
@@ -328,102 +559,7 @@ class FastDepthProcessor:
             logger.warning("[FastDepth] 응급 로컬 계산 시도")
             return self._emergency_local_calculation(frame_sequence, str(e))
     
-    def _normalize_coordinates(self, frame_dict: Dict[str, Any]) -> Dict[str, Any]:
-        """좌표 정규화"""
-        normalized = frame_dict.copy()
-        
-        for foot_key in ['left_foot', 'right_foot']:
-            if foot_key in normalized:
-                foot_data = normalized[foot_key]
-                # Z 좌표 정규화 (0-10m 범위를 0-1로)
-                if 'z' in foot_data:
-                    foot_data['z_normalized'] = np.clip(foot_data['z'] / self.max_depth_range, 0, 1)
-                
-                # XY 좌표 정규화 (-50~50m 범위를 -1~1로)
-                if 'x' in foot_data:
-                    foot_data['x_normalized'] = np.clip(foot_data['x'] / 50.0, -1, 1)
-                if 'y' in foot_data:
-                    foot_data['y_normalized'] = np.clip(foot_data['y'] / 50.0, -1, 1)
-        
-        return normalized
     
-    def _apply_noise_filter(self, frame_dict: Dict[str, Any]) -> Dict[str, Any]:
-        """노이즈 필터링 적용"""
-        filtered = frame_dict.copy()
-        
-        for foot_key in ['left_foot', 'right_foot']:
-            if foot_key in filtered:
-                foot_data = filtered[foot_key]
-                
-                # 신뢰도 기반 필터링
-                if foot_data.get('confidence', 0) < self.min_confidence:
-                    foot_data['filtered'] = True
-                    foot_data['filter_reason'] = 'low_confidence'
-                
-                # 극값 필터링
-                if foot_data.get('z', 0) > self.max_depth_range * 0.9:
-                    foot_data['filtered'] = True
-                    foot_data['filter_reason'] = 'extreme_depth'
-        
-        return filtered
-    
-    def _calibrate_depth_values(self, frame_dict: Dict[str, Any]) -> Dict[str, Any]:
-        """깊이 값 보정"""
-        calibrated = frame_dict.copy()
-        
-        # 간단한 선형 보정 (실제 환경에서는 더 복잡한 보정 필요)
-        depth_calibration_factor = 1.05  # 5% 보정
-        
-        for foot_key in ['left_foot', 'right_foot']:
-            if foot_key in calibrated and not calibrated[foot_key].get('filtered', False):
-                foot_data = calibrated[foot_key]
-                if 'z' in foot_data:
-                    foot_data['z_calibrated'] = foot_data['z'] * depth_calibration_factor
-        
-        return calibrated
-    
-    def _calculate_step_length_kalman(self, frame_sequence: List[Dict[str, Any]]) -> StepCalculationResult:
-        """칼만 필터 기반 보폭 계산"""
-        # 실제 칼만 필터 구현 대신 시뮬레이션
-        valid_frames = [f for f in frame_sequence if not self._is_frame_filtered(f)]
-        
-        if len(valid_frames) < 2:
-            raise ValueError("유효한 프레임이 부족합니다 (최소 2개 필요)")
-        
-        # 거리 계산 시뮬레이션
-        total_distance = 0.0
-        step_count = 0
-        confidence_scores = []
-        
-        for i in range(1, len(valid_frames)):
-            prev_frame = valid_frames[i-1]
-            curr_frame = valid_frames[i]
-            
-            # 발 위치 변화 계산
-            distance = self._calculate_frame_distance(prev_frame, curr_frame)
-            if distance > 0.1:  # 최소 이동 거리
-                total_distance += distance
-                step_count += 1
-            
-            # 신뢰도 수집
-            frame_confidence = self._get_frame_confidence(curr_frame)
-            confidence_scores.append(frame_confidence)
-        
-        if step_count == 0:
-            raise ValueError("유효한 스텝이 감지되지 않았습니다")
-        
-        # UnifiedStepCalculator로 계산 위임
-        from services.unified_step_calculator import get_unified_step_calculator, StepCalculationInput
-        
-        calculator = get_unified_step_calculator()
-        input_data = StepCalculationInput(
-            distance_meters=total_distance,
-            step_count=step_count,
-            preferred_method=StepMeasurementMethod.KALMAN_FILTER,
-            force_fallback=True  # 이미 계산된 데이터이므로 직접 계산 사용
-        )
-        
-        result = calculator.calculate_step_length(input_data)
         
         # FastDepth 처리 정보 추가
         result.source_data.update({
@@ -631,6 +767,225 @@ class FastDepthProcessor:
             "invalid_frames": 0,
             "average_processing_time": 0.0
         }
+    
+    async def process_frame_for_measurement(self, cv_image, user_id: str = 'current_user') -> Optional[StepCalculationResult]:
+        """
+        이미지 파일을 프레임 시퀀스 버퍼에 추가하고 칼만 필터로 보폭 측정 처리
+        
+        Args:
+            cv_image: OpenCV 이미지 (numpy.ndarray)
+            user_id: 사용자 ID
+            
+        Returns:
+            StepCalculationResult: 보폭 계산 결과, 또는 실패시 None
+        """
+        try:
+            import cv2
+            import numpy as np
+            
+            start_time = time.time()
+            logger.info(f'[FastDepth] 시퀀스 기반 이미지 처리 시작: {user_id}')
+            
+            # 0. 버퍼 정리 (주기적)
+            self.cleanup_old_buffers()
+            
+            # 1. 이미지 검증
+            if cv_image is None or cv_image.size == 0:
+                raise ValueError('유효하지 않은 이미지')
+            
+            height, width = cv_image.shape[:2]
+            logger.info(f'[FastDepth] 이미지 크기: {width}x{height}')
+            
+            # 2. 이미지를 FastDepth가 처리할 수 있는 frame_dict 형식으로 변환
+            frame_dict = self._convert_cv_image_to_frame_dict(cv_image, user_id)
+            
+            # 3. 사용자별 프레임 버퍼에 추가
+            buffer = self.get_or_create_buffer(user_id)
+            buffer.add_frame(frame_dict)
+            
+            logger.info(f'[FastDepth] 버퍼 상태: {len(buffer.frames)}개 프레임, 칼만 필터 준비: {buffer.is_ready_for_kalman()}')
+            
+            # 4. 칼만 필터 사용 가능한지 확인
+            if buffer.is_ready_for_kalman():
+                # 칼만 필터로 계산
+                frame_sequence = buffer.get_recent_sequence()
+                step_result = self.postprocess_for_step_calculation(frame_sequence, "kalman_filter")
+                
+                if step_result and step_result.confidence >= 0.3:
+                    logger.info(f'[FastDepth] 칼만 필터 성공: {step_result.step_length_cm}cm')
+                    self.frame_processing_stats["kalman_calculations"] += 1
+                else:
+                    # 단순 방법으로 fallback
+                    logger.warning('[FastDepth] 칼만 필터 신뢰도 낮음 - 단순 방법 사용')
+                    step_result = self.postprocess_for_step_calculation(frame_sequence, "simple_distance")
+                    self.frame_processing_stats["sequence_calculations"] += 1
+            else:
+                # 프레임이 부족하면 단일 프레임 기반 단순 계산
+                logger.info(f'[FastDepth] 프레임 부족 ({len(buffer.frames)}개) - 단일 프레임 계산')
+                step_result = await self._calculate_step_from_single_frame(frame_dict, user_id)
+            
+            processing_time = time.time() - start_time
+            
+            if step_result:
+                # 처리 시간 정보 추가
+                step_result.source_data.update({
+                    "processing_time_ms": int(processing_time * 1000),
+                    "image_dimensions": f"{width}x{height}",
+                    "direct_image_processing": True
+                })
+                logger.info(f'[FastDepth] 직접 처리 완료: {step_result.step_length_cm:.1f}cm (처리시간: {processing_time:.3f}s)')
+            else:
+                logger.warning('[FastDepth] 보폭 계산 실패')
+            
+            return step_result
+            
+        except Exception as e:
+            logger.error(f'[FastDepth] 직접 이미지 처리 오류: {e}')
+            return None
+
+    def _convert_cv_image_to_frame_dict(self, cv_image, user_id: str = 'current_user') -> Dict[str, Any]:
+        """
+        OpenCV 이미지를 FastDepth가 이해할 수 있는 frame_dict로 변환
+        
+        Args:
+            cv_image: OpenCV 이미지
+            user_id: 사용자 ID
+            
+        Returns:
+            Dict: FastDepth 프레임 딕셔너리 형식
+        """
+        try:
+            import cv2
+            import base64
+            
+            # 이미지를 JPEG로 인코딩 (압축률 90%)
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
+            result, encimg = cv2.imencode('.jpg', cv_image, encode_param)
+            
+            if not result:
+                raise ValueError('이미지 인코딩 실패')
+            
+            # Base64로 인코딩
+            img_base64 = base64.b64encode(encimg).decode('utf-8')
+            
+            # 단순화된 frame_dict 형식으로 변환 (실제 측정 시뮬레이션용)
+            frame_dict = {
+                'frame_data': cv_image.tolist(),  # numpy array를 list로 변환 (API 호환성)
+                'frame_data_base64': img_base64,  # Base64 인코딩된 이미지
+                'timestamp': time.time(),
+                'user_id': user_id,
+                'width': cv_image.shape[1],
+                'height': cv_image.shape[0],
+                'channels': cv_image.shape[2] if len(cv_image.shape) > 2 else 1
+            }
+            
+            logger.debug(f'이미지 변환 완료 - 크기: {cv_image.shape}, Base64 길이: {len(img_base64)}')
+            return frame_dict
+            
+        except Exception as e:
+            logger.error(f'이미지 변환 오류: {e}')
+            raise
+
+    async def _calculate_step_from_single_frame(self, frame_dict: Dict[str, Any], user_id: str) -> Optional[StepCalculationResult]:
+        """
+        단일 프레임에서 실제 보폭 계산 - 발 위치 데이터 기반
+        
+        Args:
+            frame_dict: 변환된 프레임 딕셔너리
+            user_id: 사용자 ID
+            
+        Returns:
+            StepCalculationResult: 계산 결과 또는 None
+        """
+        try:
+            logger.info(f'[FastDepth] 단일 프레임 실제 보폭 계산 시작: {user_id}')
+            
+            # 프레임에서 발 위치 데이터 추출
+            left_foot_pos, right_foot_pos = self.extract_foot_positions_from_frame(frame_dict)
+            
+            if not left_foot_pos and not right_foot_pos:
+                logger.warning('[FastDepth] 발 위치 데이터 없음 - 계산 불가')
+                return None
+            
+            # 이미지 품질 기반 기본 신뢰도 계산
+            width = frame_dict.get('width', 640)
+            height = frame_dict.get('height', 480)
+            resolution_factor = min(1.0, (width * height) / (1920 * 1080))
+            
+            # 두 발이 모두 감지된 경우 - 현재 거리 계산
+            if left_foot_pos and right_foot_pos:
+                # 두 발 사이의 거리 계산 (3D 유클리드 거리)
+                dx = left_foot_pos.x - right_foot_pos.x
+                dy = left_foot_pos.y - right_foot_pos.y
+                dz = left_foot_pos.z - right_foot_pos.z
+                foot_distance_m = (dx**2 + dy**2 + dz**2)**0.5
+                
+                # 발 사이 거리를 보폭으로 사용 (cm 단위)
+                step_length_cm = foot_distance_m * 100
+                
+                # 신뢰도: 두 발의 신뢰도와 해상도 결합
+                confidence = (left_foot_pos.confidence + right_foot_pos.confidence) / 2
+                confidence = confidence * (0.7 + resolution_factor * 0.3)
+                
+                # 보폭 합리성 검증
+                if 30 <= step_length_cm <= 120:
+                    quality_multiplier = 1.0
+                elif 25 <= step_length_cm <= 150:
+                    quality_multiplier = 0.8
+                    logger.warning(f'[FastDepth] 비정상적 보폭 감지: {step_length_cm:.1f}cm')
+                else:
+                    # 너무 비정상적인 경우 기본값 사용
+                    step_length_cm = 65.0
+                    quality_multiplier = 0.4
+                    logger.warning(f'[FastDepth] 극도로 비정상적 보폭 -> 기본값 사용: {step_length_cm:.1f}cm')
+                
+                confidence *= quality_multiplier
+                method_name = "single_frame_dual_foot"
+                
+            else:
+                # 한 발만 감지된 경우 - 추정 계산
+                detected_foot = left_foot_pos or right_foot_pos
+                
+                # 발 위치의 Z값(깊이)을 기반으로 추정
+                depth_m = abs(detected_foot.z)
+                estimated_step_cm = min(max(depth_m * 80, 40), 90)  # 깊이 기반 추정
+                
+                step_length_cm = estimated_step_cm
+                confidence = detected_foot.confidence * 0.6 * (0.7 + resolution_factor * 0.3)
+                method_name = "single_frame_single_foot"
+                logger.info(f'[FastDepth] 단일 발 감지 - 추정 보폭: {step_length_cm:.1f}cm')
+            
+            # 최종 보정
+            step_length_cm = max(30.0, min(120.0, step_length_cm))
+            confidence = max(0.2, min(0.95, confidence))
+            
+            # 결과 생성
+            result = StepCalculationResult(
+                step_length_cm=round(step_length_cm, 1),
+                confidence=round(confidence, 3),
+                step_count=1,  # 단일 프레임이므로
+                tracking_quality=AccuracyConverter.confidence_to_quality(confidence),
+                accuracy_level=AccuracyConverter.confidence_to_korean_level(confidence),
+                measurement_method=StepMeasurementMethod.DISTANCE_BASED,
+                timestamp=frame_dict.get('timestamp', time.time()),
+                user_id=user_id,
+                source_data={
+                    "method": method_name,
+                    "image_resolution": f"{width}x{height}",
+                    "resolution_factor": round(resolution_factor, 3),
+                    "left_foot_detected": left_foot_pos is not None,
+                    "right_foot_detected": right_foot_pos is not None,
+                    "frame_timestamp": frame_dict.get('timestamp'),
+                    "processing_mode": "direct_image_real_calculation"
+                }
+            )
+            
+            logger.info(f'[FastDepth] 단일 프레임 계산 완료: {step_length_cm:.1f}cm (신뢰도: {confidence:.3f})')
+            return result
+            
+        except Exception as e:
+            logger.error(f'단일 프레임 보폭 계산 오류: {e}')
+            return None
 
 # 싱글톤 인스턴스
 _fastdepth_processor = None

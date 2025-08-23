@@ -1,7 +1,6 @@
 """측정 관련 라우터 - FastDepth 프레임 처리 및 보폭 측정"""
 
-from fastapi import APIRouter, HTTPException
-from typing import Optional, Dict, Any
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 import asyncio
 import logging
 
@@ -36,6 +35,7 @@ command_executor = service_manager.get_command_executor()
 # 측정 세션 제어를 위한 모델
 class MeasurementSessionRequest(BaseModel):
     user_id: str
+
 
 
 @router.post("/commands/enhanced", response_model=FullCommandResponse)
@@ -136,6 +136,54 @@ async def process_fastdepth_frame_only(frame_data: FastDepthFrameData):
         logger.error(f"FastDepth 프레임 처리 중 오류: {e}")
         raise HTTPException(status_code=500, detail=f"프레임 처리 오류: {str(e)}")
 
+@router.post("/frame")
+async def process_measurement_frame(
+    file: UploadFile = File(...),
+    user_id: str = Form('current_user')
+):
+    """
+    측정용 프레임 처리 - 간소화된 버전
+    """
+    try:
+        logger.info(f'[측정 프레임] 사용자: {user_id}, 파일: {file.filename}')
+        
+        # 1. 측정 세션 활성 상태 확인
+        if not hasattr(command_executor, 'is_measurement_active') or not command_executor.is_measurement_active():
+            return {
+                'success': False,
+                'error': '활성화된 측정 세션이 없습니다',
+                'message': '먼저 보폭 측정을 시작해주세요'
+            }
+        
+        # 2. 이미지 파일 읽기 및 OpenCV 변환
+        frame_data = await file.read()
+        import cv2
+        import numpy as np
+        nparr = np.frombuffer(frame_data, np.uint8)
+        cv_image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if cv_image is None:
+            raise ValueError('유효하지 않은 이미지 데이터')
+        
+        # 3. FastDepth 직접 처리 (모든 변환과 계산이 내부에서 처리됨)
+        from utils.fastdepth_processor import get_fastdepth_processor
+        fastdepth_processor = get_fastdepth_processor()
+        
+        measurement_result = await fastdepth_processor.process_frame_for_measurement(cv_image, user_id)
+        
+        # 4. 간단한 응답 반환
+        return {
+            'success': True,
+            'measurement': measurement_result.model_dump() if measurement_result else None,
+            'session_active': True,
+            'message': '프레임 처리 완료',
+            'user_id': user_id
+        }
+        
+    except Exception as e:
+        logger.error(f'[측정 프레임] 처리 오류: {e}')
+        raise HTTPException(status_code=500, detail=f'프레임 처리 실패: {str(e)}')
+
 
 @router.post("/reset")
 async def reset_measurement():
@@ -196,23 +244,40 @@ async def start_measurement_session(request: MeasurementSessionRequest):
                 "camera_mode": camera_manager.user_modes.get(user_id, "realtime")
             }
         
-        # 카메라가 연결되어 있으면 측정 모드로 자동 전환
+        # 카메라 모드를 측정 모드로 설정 (안전한 오류 처리 포함)
         camera_mode_switched = False
-        if user_id in camera_manager.active_connections:
-            previous_mode = camera_manager.user_modes.get(user_id, "realtime")
-            camera_manager.user_modes[user_id] = "measurement"
-            camera_mode_switched = True
-            logger.info(f"카메라 모드 자동 전환: {previous_mode} → measurement (user: {user_id})")
+        camera_error = None
+        try:
+            if hasattr(camera_manager, 'set_user_mode'):
+                camera_manager.set_user_mode(user_id, 'measurement')
+                camera_mode_switched = True
+                logger.info(f'카메라 모드를 측정 모드로 변경: {user_id}')
+            elif user_id in camera_manager.active_connections:
+                # Fallback to direct mode setting
+                previous_mode = camera_manager.user_modes.get(user_id, "realtime")
+                camera_manager.user_modes[user_id] = "measurement"
+                camera_mode_switched = True
+                logger.info(f"카메라 모드 자동 전환: {previous_mode} → measurement (user: {user_id})")
+        except Exception as e:
+            camera_error = str(e)
+            logger.warning(f'카메라 모드 설정 실패 (측정은 계속): {e}')
         
         # 세션 정보 생성
         session_info = {
+            "success": True,
             "status": "started",
             "message": "측정 세션이 시작되었습니다.",
             "session_active": True,
+            "user_id": user_id,
             "camera_mode": camera_manager.user_modes.get(user_id, "realtime"),
             "camera_connected": user_id in camera_manager.active_connections,
             "camera_mode_switched": camera_mode_switched
         }
+        
+        # 카메라 오류가 있는 경우 경고 포함
+        if camera_error:
+            session_info["camera_warning"] = f"카메라 모드 설정 실패: {camera_error}"
+            session_info["message"] = "측정 세션이 시작되었습니다 (카메라 모드 설정 경고 있음)."
         
         return session_info
         
@@ -251,24 +316,41 @@ async def stop_measurement_session(request: MeasurementSessionRequest):
         # 측정 세션 중지
         await command_executor._execute_footstep_measurement_cancel({})
         
-        # 카메라가 연결되어 있으면 실시간 모드로 자동 복원
+        # 카메라 모드를 실시간 모드로 복원 (안전한 오류 처리 포함)
         camera_mode_switched = False
-        if user_id in camera_manager.active_connections:
-            previous_mode = camera_manager.user_modes.get(user_id, "measurement")
-            camera_manager.user_modes[user_id] = "realtime"
-            camera_mode_switched = True
-            logger.info(f"카메라 모드 자동 복원: {previous_mode} → realtime (user: {user_id})")
+        camera_error = None
+        try:
+            if hasattr(camera_manager, 'set_user_mode'):
+                camera_manager.set_user_mode(user_id, 'realtime')
+                camera_mode_switched = True
+                logger.info(f'카메라 모드를 실시간 모드로 복원: {user_id}')
+            elif user_id in camera_manager.active_connections:
+                # Fallback to direct mode setting
+                previous_mode = camera_manager.user_modes.get(user_id, "measurement")
+                camera_manager.user_modes[user_id] = "realtime"
+                camera_mode_switched = True
+                logger.info(f"카메라 모드 자동 복원: {previous_mode} → realtime (user: {user_id})")
+        except Exception as e:
+            camera_error = str(e)
+            logger.warning(f'카메라 모드 복원 실패: {e}')
         
         
         # 완료 정보 생성
         completion_info = {
+            "success": True,
             "status": "completed",
             "message": "측정 세션이 완료되었습니다.",
             "session_active": False,
+            "user_id": user_id,
             "camera_mode": camera_manager.user_modes.get(user_id, "realtime"),
             "camera_connected": user_id in camera_manager.active_connections,
             "camera_mode_switched": camera_mode_switched
         }
+        
+        # 카메라 오류가 있는 경우 경고 포함
+        if camera_error:
+            completion_info["camera_warning"] = f"카메라 모드 복원 실패: {camera_error}"
+            completion_info["message"] = "측정 세션이 완료되었습니다 (카메라 모드 복원 경고 있음)."
         
         return completion_info
         
