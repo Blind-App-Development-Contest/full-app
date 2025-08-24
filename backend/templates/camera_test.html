@@ -19,6 +19,7 @@
         <input type="text" id="user_id" placeholder="DB에 있는 유효한 UUID 입력">
         <button id="startBtn">테스트 시작</button>
         <button id="stopBtn" disabled>중지</button>
+        <button id="describeBtn" disabled>화면 설명</button>
     </div>
     <div id="status">상태: 대기 중</div>
     <div id="threat_level_display">현재 위험도: -</div>
@@ -33,6 +34,7 @@
         const ctx = canvas.getContext('2d');
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
+        const describeBtn = document.getElementById('describeBtn');
         const userIdInput = document.getElementById('user_id');
         const statusDiv = document.getElementById('status');
 
@@ -61,7 +63,6 @@
 
             // 2. WebSocket 연결
             const wsUrl = `ws://${window.location.host}/api/camera/stream/${userId}`;
-            console.log("Connecting to WebSocket:", wsUrl); // 디버깅용 로그 추가
             websocket = new WebSocket(wsUrl);
 
             websocket.onopen = () => {
@@ -69,6 +70,7 @@
                 statusDiv.textContent = '상태: 연결됨. 실시간 탐지 중...';
                 startBtn.disabled = true;
                 stopBtn.disabled = false;
+                describeBtn.disabled = false;
 
                 // 3. 1초에 5번 (200ms 마다) 프레임 전송
                 intervalId = setInterval(() => {
@@ -78,16 +80,30 @@
 
             websocket.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                if (data.status === 'processed') {
-                    // 4. 탐지 결과 그리기
+
+                if (data.status === 'error') {
+                    console.error("서버 에러:", data.message);
+                    statusDiv.textContent = `서버 에러: ${data.message}`;
+                    return;
+                }
+
+                if (data.type === 'object_list') {
+                    const objectList = data.objects.length > 0 ? data.objects.join(', ') : '없음';
+                    alert(`탐지된 객체 목록: ${objectList}`);
+                    statusDiv.textContent = '상태: 객체 목록을 받았습니다.';
+                    setTimeout(() => {
+                        if (websocket && websocket.readyState === WebSocket.OPEN) {
+                            statusDiv.textContent = '상태: 연결됨. 실시간 탐지 중...';
+                        }
+                    }, 2000);
+
+                } else if (data.type === 'threat_detection') {
                     if (data.objects) {
                         drawDetections(data.objects);
                     }
 
-                    // 5. 진동 처리 및 상태 업데이트
                     if (data.vibration) {
                         statusDiv.textContent = `상태: [${data.vibration.pattern_type.toUpperCase()}] ${data.vibration.reason}`;
-                        // 브라우저의 진동 API 호출
                         if ('vibrate' in navigator) {
                             navigator.vibrate(data.vibration.duration_ms);
                         }
@@ -95,17 +111,12 @@
                         statusDiv.textContent = '상태: 연결됨. 실시간 탐지 중...';
                     }
 
-                } else if (data.status === 'error') {
-                    console.error("서버 에러:", data.message);
-                    statusDiv.textContent = `서버 에러: ${data.message}`;
-                }
-
-                // 위험도 숫자 표시 업데이트
-                const threatLevelDisplay = document.getElementById('threat_level_display');
-                if (data.highest_threat_level !== undefined) {
-                    threatLevelDisplay.textContent = `현재 위험도: ${data.highest_threat_level}`;
-                } else {
-                    threatLevelDisplay.textContent = `현재 위험도: -`;
+                    const threatLevelDisplay = document.getElementById('threat_level_display');
+                    if (data.highest_threat_level !== undefined) {
+                        threatLevelDisplay.textContent = `현재 위험도: ${data.highest_threat_level}`;
+                    } else {
+                        threatLevelDisplay.textContent = `현재 위험도: -`;
+                    }
                 }
             };
 
@@ -133,16 +144,15 @@
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             startBtn.disabled = false;
             stopBtn.disabled = true;
+            describeBtn.disabled = true;
             video.srcObject = null;
             statusDiv.textContent = '상태: 대기 중';
         }
 
         function sendFrame() {
             if (websocket.readyState === WebSocket.OPEN) {
-                // 비디오 프레임을 캔버스에 그리고 Base64로 인코딩
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
                 const frame = canvas.toDataURL('image/jpeg', 0.8);
-
                 const data = {
                     frame: frame,
                     timestamp: new Date().toISOString()
@@ -151,21 +161,32 @@
             }
         }
 
+        function requestObjectList() {
+            if (websocket.readyState === WebSocket.OPEN) {
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const frame = canvas.toDataURL('image/jpeg', 0.8);
+                const data = {
+                    action: "list_all_objects",
+                    frame: frame,
+                    timestamp: new Date().toISOString()
+                };
+                websocket.send(JSON.stringify(data));
+                statusDiv.textContent = '상태: 화면 설명을 요청했습니다...';
+            } else {
+                alert('스트리밍을 먼저 시작하세요.');
+            }
+        }
+
         function drawDetections(objects) {
-            // 이전 그림 지우기 (새로운 프레임은 sendFrame에서 그림)
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
             objects.forEach(obj => {
                 const { name, confidence, bbox } = obj;
                 const { x, y, width, height } = bbox;
-
-                // Bounding box 그리기
                 ctx.strokeStyle = 'red';
                 ctx.lineWidth = 2;
                 ctx.strokeRect(x, y, width, height);
-
-                // Label 그리기
                 ctx.fillStyle = 'red';
                 ctx.font = '16px sans-serif';
                 const text = `${name} (${(confidence * 100).toFixed(1)}%)`;
@@ -175,6 +196,7 @@
 
         startBtn.addEventListener('click', startStreaming);
         stopBtn.addEventListener('click', stopStreaming);
+        describeBtn.addEventListener('click', requestObjectList);
     </script>
 </body>
 </html>
