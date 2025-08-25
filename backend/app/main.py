@@ -45,15 +45,20 @@ def _normalize_dsn(dsn: str) -> str:
 # 통합 에러 처리 미들웨어
 app.add_middleware(ErrorHandlerMiddleware)
 
-# CORS 설정 (Flutter 앱에서 호출 가능하도록)
+# CORS 설정 (Flutter 앱 및 웹 테스트 페이지에서 호출 가능하도록)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 개발용
+    allow_origins=[
+        "http://localhost",
+        "http://localhost:8000",
+        "http://127.0.0.1",
+        "http://127.0.0.1:8000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)  
-  
+)
+
 @app.on_event("startup")
 async def on_startup():
   
@@ -125,7 +130,7 @@ if __name__ == "__main__":
 @app.get("/play", response_class=HTMLResponse)
 def play_page():
     # ... (HTML content is long, keeping it as is)
-    return """
+    return '''
 <!doctype html><meta charset="utf-8">
 <h2>TTS Quick Play</h2>
 <label>User ID <input id="uid" style="width:320px" placeholder="users 테이블의 ID"/></label><br><br>
@@ -164,7 +169,7 @@ $("go").onclick = async () => {
   }
 };
 </script>
-"""
+'''
 
 # 웹캠 테스트용 엔드포인트
 @app.get("/test-camera", response_class=HTMLResponse)

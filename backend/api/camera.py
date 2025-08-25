@@ -9,24 +9,19 @@ import time
 import cv2
 import numpy as np
 
-# api.objects 모듈에서 객체 탐지 함수와 모델을 임포트
+# api.objects 모듈에서 필요한 함수와 클래스를 가져옵니다.
 from .objects import detect_objects_yolo, DetectedObject, calculate_threat_level, VibrationPattern, save_threat_to_log
 from core.cache import latest_detection_results
-
-# 보폭 측정 기능을 위한 추가 임포트
-from services.singleton import service_manager
-from utils.fastdepth_processor import get_fastdepth_processor
-from models.step_models import StepCalculationResult
-from typing import Optional
 
 logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/api/camera", tags=["camera"])
 
-# (사용자 ID, 객체 이름)을 키로, 마지막 로그 시간을 값으로 저장
+# (사용자 ID, 객체 이름)을 키로, 마지막 로그 시간을 값으로 저장하여 중복 로깅을 방지합니다.
 last_threat_log_time: dict[tuple[str, str], float] = {}
 
 class ConnectionManager:
+    """WebSocket 연결을 관리하는 클래스"""
     def __init__(self):
         self.active_connections: dict[str, WebSocket] = {}
         self.user_modes: dict[str, str] = {}  # Track camera mode for each user
@@ -40,14 +35,17 @@ class ConnectionManager:
     def disconnect(self, user_id: str):
         if user_id in self.active_connections:
             del self.active_connections[user_id]
+
         if user_id in self.user_modes:
             del self.user_modes[user_id]
+            
         # 사용자 연결 종료 시, 해당 사용자의 로그 기록 삭제
         keys_to_del = [key for key in last_threat_log_time if key[0] == user_id]
         for key in keys_to_del:
             del last_threat_log_time[key]
         logger.info(f"User {user_id} disconnected from camera stream.")
 
+        
     async def send_personal_message(self, message: str, user_id: str):
         if user_id in self.active_connections:
             websocket = self.active_connections[user_id]
@@ -65,38 +63,20 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 def _base64_to_image(base64_str: str) -> np.ndarray:
-    """Base64 문자열을 OpenCV 이미지(np.ndarray)로 디코딩"""
+    """Base64 문자열을 OpenCV 이미지로 디코딩하는 헬퍼 함수"""
     if "," in base64_str:
         base64_str = base64_str.split(',')[1]
-    
     img_bytes = base64.b64decode(base64_str)
     img_arr = np.frombuffer(img_bytes, dtype=np.uint8)
-    image = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
-    return image
-
-def _check_measurement_session(user_id_str: str) -> bool:
-    """
-    사용자의 활성 측정 세션 확인 (기존 기능에 영향 없음)
-    
-    Args:
-        user_id_str: 사용자 ID 문자열
-        
-    Returns:
-        bool: 측정 세션이 활성화되어 있으면 True
-    """
-    try:
-        command_executor = service_manager.get_command_executor()
-        return command_executor.is_measurement_active()
-    except Exception as e:
-        logger.warning(f"측정 세션 확인 실패 (user: {user_id_str}): {e}")
-        return False
+    return cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
 
 @router.websocket("/stream/{user_id}")
 async def camera_stream(websocket: WebSocket, user_id: UUID):
     """
-    실시간 카메라 스트리밍 및 객체 탐지 WebSocket
-    클라이언트에서 Base64로 인코딩된 카메라 프레임을 전송하면,
-    객체 탐지 결과를 JSON 형태로 응답합니다.
+    실시간 카메라 스트리밍 WebSocket 엔드포인트.
+    - 기본 동작: 프레임을 받아 위험도를 분석하고, 위험도에 따른 진동 패턴을 응답합니다.
+    - 'action' 필드 포함 시: 요청에 맞는 특별 동작을 수행합니다.
+      - action='list_all_objects': 해당 프레임의 모든 객체 목록을 응답합니다.
     """
     user_id_str = str(user_id)
     await manager.connect(websocket, user_id_str)
@@ -105,66 +85,70 @@ async def camera_stream(websocket: WebSocket, user_id: UUID):
         while True:
             data = await websocket.receive_text()
             try:
+                # 클라이언트로부터 받은 JSON 데이터를 파싱합니다.
                 frame_data = json.loads(data)
             except json.JSONDecodeError:
-                logger.warning(f"Received invalid JSON from user {user_id_str}")
+                logger.warning(f"Received invalid JSON from {user_id_str}")
                 continue
 
-            if "frame" in frame_data and isinstance(frame_data["frame"], str):
-                cv_image = _base64_to_image(frame_data["frame"])
-                if cv_image is None:
-                    logger.warning(f"Could not decode image from user {user_id_str}")
-                    continue
-                
-                try:
-                    detected_objects = detect_objects_yolo(cv_image)
-                    
+            # 프레임 데이터에 'action' 필드가 있는지 확인합니다.
+            action = frame_data.get("action")
+
+            if "frame" not in frame_data or not isinstance(frame_data["frame"], str):
+                logger.warning(f"Invalid frame data from {user_id_str}")
+                continue
+
+            cv_image = _base64_to_image(frame_data["frame"])
+            if cv_image is None:
+                logger.warning(f"Could not decode image from {user_id_str}")
+                continue
+            
+            try:
+                # YOLO 모델로 객체 탐지를 수행합니다. (두 기능 모두 공통으로 필요)
+                detected_objects = detect_objects_yolo(cv_image)
+
+                # ─── 1. [새로운 기능] 객체 목록 요청 처리 ───
+                if action == "list_all_objects":
+                    # 탐지된 모든 객체의 이름만 추출하여 리스트를 만듭니다.
+                    object_names = [obj.name for obj in detected_objects]
+                    response = {
+                        "type": "object_list",
+                        "objects": object_names,
+                        "timestamp": frame_data.get("timestamp"),
+                    }
+                    # 생성된 객체 목록을 클라이언트에 전송합니다.
+                    await websocket.send_text(json.dumps(response))
+
+                # ─── 2. [기존 기능] 실시간 위협 탐지 처리 ───
+                else:
                     vibration_pattern = None
                     highest_threat_level = 0
                     
-                    threats = [(obj, calculate_threat_level(obj)) for obj in detected_objects]
-                    
-                    if threats:
+                    if detected_objects:
+                        threats = [(obj, calculate_threat_level(obj)) for obj in detected_objects]
                         highest_threat_obj, highest_threat_level = max(threats, key=lambda item: item[1])
 
+                        # 위험도 레벨에 따라 진동 패턴을 결정합니다.
                         if highest_threat_level >= 2:
-                            # 세분화된 진동 패턴 매핑
-                            if highest_threat_level == 5:
-                                pattern_type, intensity, duration_ms = "danger", 10, 1500 # 즉각적인 위험
-                            elif highest_threat_level == 4:
-                                pattern_type, intensity, duration_ms = "warning", 8, 800  # 높은 위협
-                            elif highest_threat_level == 3:
-                                pattern_type, intensity, duration_ms = "warning", 5, 400  # 중간 위협
-                            elif highest_threat_level == 2:
-                                pattern_type, intensity, duration_ms = "info", 3, 200    # 낮은 위협/인지
-                            else: # highest_threat_level == 1 (안전)
-                                pattern_type, intensity, duration_ms = "info", 1, 100 # 매우 미미한 진동 또는 없음
+                            if highest_threat_level == 5: pattern_type, intensity, duration_ms = "danger", 10, 1500
+                            elif highest_threat_level == 4: pattern_type, intensity, duration_ms = "warning", 8, 800
+                            elif highest_threat_level == 3: pattern_type, intensity, duration_ms = "warning", 5, 400
+                            else: pattern_type, intensity, duration_ms = "info", 3, 200
                             
                             vibration_pattern = VibrationPattern(
-                                user_id=user_id,
-                                pattern_type=pattern_type,
-                                intensity=intensity,
-                                duration_ms=duration_ms,
-                                reason=f"'{highest_threat_obj.name}' detected"
+                                user_id=user_id, pattern_type=pattern_type, intensity=intensity,
+                                duration_ms=duration_ms, reason=f"'{highest_threat_obj.name}' detected"
                             )
                             
-                            # ─── 5초에 한 번만 로그 저장하는 로직 ───
+                            # 5초에 한 번만 위험 로그를 DB에 저장합니다.
                             log_key = (user_id_str, highest_threat_obj.name)
                             current_time = time.time()
-                            last_log_time = last_threat_log_time.get(log_key, 0)
-
-                            if current_time - last_log_time > 5:
+                            if current_time - last_threat_log_time.get(log_key, 0) > 5:
                                 pool = websocket.app.state.db_pool
-                                await save_threat_to_log(
-                                    pool=pool, 
-                                    user_id=user_id, 
-                                    obj=highest_threat_obj, 
-                                    threat_level=highest_threat_level
-                                )
+                                await save_threat_to_log(pool, user_id, highest_threat_obj, highest_threat_level)
                                 last_threat_log_time[log_key] = current_time
-                                logger.info(f"Threat log saved for {log_key}")
-                            # ────────────────────────────────────────
 
+                           
                     objects_list = [obj.model_dump() for obj in detected_objects]
                     
                     # === 새로운 기능: 측정 모드일 때 보폭 측정 처리 ===
@@ -213,6 +197,7 @@ async def camera_stream(websocket: WebSocket, user_id: UUID):
                     
                     # 향상된 응답 (기존 객체 탐지 + 새로운 측정 데이터)
                     response = {
+                        "type": "threat_detection",
                         "status": "processed",
                         "timestamp": frame_data.get("timestamp"),
                         "user_id": user_id_str,
@@ -225,22 +210,16 @@ async def camera_stream(websocket: WebSocket, user_id: UUID):
                         "measurement": measurement_result
                     }
                     
-                    # 최신 결과를 캐시에 저장
+                    # 최신 결과를 캐시에 저장합니다.
                     latest_detection_results[user_id_str] = response
-                    
                     await websocket.send_text(json.dumps(jsonable_encoder(response)))
 
-                except Exception as e:
-                    logger.exception(f"Error during object detection for user {user_id_str}")
-                    # 에러 발생 시 클라이언트에게 알림
-                    error_response = {
-                        "status": "error",
-                        "message": str(e)
-                    }
-                    await websocket.send_text(json.dumps(error_response))
+            except Exception as e:
+                logger.exception(f"Error during object detection for {user_id_str}")
+                await websocket.send_text(json.dumps({"status": "error", "message": str(e)}))
 
     except WebSocketDisconnect:
         manager.disconnect(user_id_str)
     except Exception as e:
-        logger.exception(f"An unexpected error occurred in camera stream for user {user_id_str}")
+        logger.exception(f"An unexpected error in stream for {user_id_str}")
         manager.disconnect(user_id_str)
