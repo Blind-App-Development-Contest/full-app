@@ -73,6 +73,13 @@
             ReferencedContainer = "container:Runner.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
+      <EnvironmentVariables>
+         <EnvironmentVariable
+            key = "DART_DEFINES"
+            value = "QkFDS0VORF9CQVNFX1VSTD1odHRwOi8vMjAuMjIuNy4yNDo4MDAw"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+      </EnvironmentVariables>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Profile"

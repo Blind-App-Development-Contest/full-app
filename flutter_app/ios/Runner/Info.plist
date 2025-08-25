@@ -2,88 +2,116 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CADisableMinimumFrameDurationOnPhone</key>
-	<true/>
-	<key>CFBundleDevelopmentRegion</key>
-	<string>$(DEVELOPMENT_LANGUAGE)</string>
-	<key>CFBundleDisplayName</key>
-	<string>Flutter App</string>
-	<key>CFBundleExecutable</key>
-	<string>$(EXECUTABLE_NAME)</string>
-	<key>CFBundleIdentifier</key>
-	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-	<key>CFBundleInfoDictionaryVersion</key>
-	<string>6.0</string>
-	<key>CFBundleName</key>
-	<string>flutter_app</string>
-	<key>CFBundlePackageType</key>
-	<string>APPL</string>
-	<key>CFBundleShortVersionString</key>
-	<string>$(FLUTTER_BUILD_NAME)</string>
-	<key>CFBundleSignature</key>
-	<string>????</string>
-	<key>CFBundleVersion</key>
-	<string>$(FLUTTER_BUILD_NUMBER)</string>
-	<key>LSRequiresIPhoneOS</key>
-	<true/>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsArbitraryLoads</key>
-		<true/>
-		<key>NSExceptionDomains</key>
-		<dict>
-			<key>127.0.0.1</key>
-			<dict>
-				<key>NSExceptionAllowsInsecureHTTPLoads</key>
-				<true/>
-				<key>NSExceptionMinimumTLSVersion</key>
-				<string>TLSv1.0</string>
-			</dict>
-			<key>192.168.45.217</key>
-			<dict>
-				<key>NSExceptionAllowsInsecureHTTPLoads</key>
-				<true/>
-				<key>NSIncludesSubdomains</key>
-				<true/>
-			</dict>
-			<key>20.22.5.228</key>
-			<dict>
-				<key>NSExceptionAllowsInsecureHTTPLoads</key>
-				<true/>
-				<key>NSIncludesSubdomains</key>
-				<true/>
-			</dict>
-			<key>localhost</key>
-			<dict>
-				<key>NSExceptionAllowsInsecureHTTPLoads</key>
-				<true/>
-				<key>NSExceptionMinimumTLSVersion</key>
-				<string>TLSv1.0</string>
-			</dict>
-		</dict>
-	</dict>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>음성 녹음을 위해 마이크 접근이 필요합니다.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>음성 인식을 위해 접근이 필요합니다.</string>
-	<key>UIApplicationSupportsIndirectInputEvents</key>
-	<true/>
-	<key>UILaunchStoryboardName</key>
-	<string>LaunchScreen</string>
-	<key>UIMainStoryboardFile</key>
-	<string>Main</string>
-	<key>UISupportedInterfaceOrientations</key>
-	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
-	</array>
-	<key>UISupportedInterfaceOrientations~ipad</key>
-	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationPortraitUpsideDown</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
-	</array>
+
+  <!-- Flutter/런타임 기본 -->
+  <key>CADisableMinimumFrameDurationOnPhone</key>
+  <true/>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>$(DEVELOPMENT_LANGUAGE)</string>
+  <key>CFBundleDisplayName</key>
+  <string>Flutter App</string>
+  <key>CFBundleExecutable</key>
+  <string>$(EXECUTABLE_NAME)</string>
+  <key>CFBundleIdentifier</key>
+  <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>flutter_app</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$(FLUTTER_BUILD_NAME)</string>
+  <key>CFBundleSignature</key>
+  <string>????</string>
+  <key>CFBundleVersion</key>
+  <string>$(FLUTTER_BUILD_NUMBER)</string>
+  <key>LSRequiresIPhoneOS</key>
+  <true/>
+
+  <!-- 🧭 Flutter 플랫폼뷰(네이버 지도 등) 표시 허용 -->
+  <key>io.flutter.embedded_views_preview</key>
+  <true/>
+
+  <!-- ⚙️ ATS: 개발용 로컬/내부 IP HTTP 허용(필요한 도메인만 예외) -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <false/>
+    <key>NSExceptionDomains</key>
+    <dict>
+      <!-- iOS 시뮬레이터/로컬 -->
+      <key>127.0.0.1</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        <key>NSIncludesSubdomains</key><false/>
+      </dict>
+      <key>localhost</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        <key>NSIncludesSubdomains</key><false/>
+      </dict>
+
+      <!-- Android 에뮬레이터 루프백 -->
+      <key>10.0.2.2</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        <key>NSIncludesSubdomains</key><false/>
+      </dict>
+
+      <!-- 개발 PC/LAN IP (실기기에서 접속 시) -->
+      <key>192.168.45.217</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        <key>NSIncludesSubdomains</key><true/>
+      </dict>
+
+      <!-- 외부 테스트 서버(IP로 접근 시) -->
+      <key>20.22.5.228</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        <key>NSIncludesSubdomains</key><true/>
+      </dict>
+    </dict>
+  </dict>
+
+  <!-- 🎤 마이크/음성 권한 -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>음성 녹음을 위해 마이크 접근이 필요합니다.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>음성 인식을 위해 접근이 필요합니다.</string>
+
+  <!-- 📍 위치 권한(현재 위치/파란 점) -->
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>내 위치를 사용해 길찾기 및 주변 정보를 제공합니다.</string>
+  <!-- 항상 권한이 정말 필요하지 않다면 아래 키는 삭제해도 됩니다. -->
+  <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+  <string>내 위치를 사용해 길찾기 및 주변 정보를 제공합니다.</string>
+
+  <!-- 📷 카메라 권한(카메라/객체 인식 사용 시) -->
+  <key>NSCameraUsageDescription</key>
+  <string>카메라 기능을 사용합니다.</string>
+
+  <!-- Launch -->
+  <key>UIApplicationSupportsIndirectInputEvents</key>
+  <true/>
+  <key>UILaunchStoryboardName</key>
+  <string>LaunchScreen</string>
+
+  <!-- 회전 -->
+  <key>UISupportedInterfaceOrientations</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
+  <key>UISupportedInterfaceOrientations~ipad</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationPortraitUpsideDown</string>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
+
 </dict>
 </plist>

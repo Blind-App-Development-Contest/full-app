@@ -45,6 +45,7 @@ pyasn1==0.6.1
 pyasn1_modules==0.4.2
 pydantic==2.11.7                    # ⚙️ 데이터 검증 및 FastAPI 모델링
 pydantic_core==2.33.2
+pydantic-settings==2.6.1   # ⚙️ Pydantic 환경 설정 관리
 pyparsing==3.2.3
 python-dateutil==2.9.0.post0
 python-dotenv==1.1.1                # 🔐 .env 파일에서 API 키 불러오기

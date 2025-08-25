@@ -4,29 +4,29 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     """앱 설정 관리"""
-    
+
     # 서버 설정
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     DEBUG: bool = False
-    
+
     # CORS 설정
     ALLOWED_ORIGINS: List[str] = ["*"]  # 개발용, 운영환경에서는 구체적인 도메인 지정
-    
-    # 음성 인식 설정
+
+    # 음성/검색 설정
     MAX_FILE_SIZE_MB: int = 50
     SUPPORTED_AUDIO_TYPES: List[str] = ["audio/", "application/octet-stream"]
     DEFAULT_SEARCH_RADIUS: int = 500
     POI_SEARCH_RADIUS: int = 1000
-    
-    # API 키들 (기존 환경 변수 지원)
+
+    # API 키들 (환경 변수 매핑)
     google_tts_api_key: Optional[str] = None
-    google_maps_api_key: Optional[str] = None
+    google_maps_api_key: Optional[str] = None  # ✅ 서버에서 호출할 Google Maps/Directions/Places용 키
     openai_api_key: Optional[str] = None
-    
+
     # 데이터베이스 설정
     db_url: Optional[str] = None
-    
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
@@ -34,6 +34,6 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 @lru_cache()
-def get_settings():
+def get_settings() -> Settings:
     """설정 싱글톤 인스턴스 반환"""
     return Settings()
