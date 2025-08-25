@@ -10,8 +10,9 @@ import cv2
 import numpy as np
 
 # api.objects 모듈에서 필요한 함수와 클래스를 가져옵니다.
-from .objects import detect_objects_yolo, DetectedObject, calculate_threat_level, VibrationPattern, save_threat_to_log
+from .objects import detect_objects_yolo, calculate_threat_level, VibrationPattern, save_threat_to_log
 from core.cache import latest_detection_results
+from utils.fastdepth_processor import get_fastdepth_processor
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -157,7 +158,10 @@ async def camera_stream(websocket: WebSocket, user_id: UUID):
                     
                     if user_mode == 'measurement':
                         # 측정 세션이 활성화되어 있을 때만 프레임 처리
-                        if _check_measurement_session(user_id_str):
+                        from services.singleton import service_manager
+                        command_executor = service_manager.get_command_executor()
+                        
+                        if command_executor.is_measurement_active():
                             try:
                                 # 통합 FastDepth 프로세서를 통한 직접 이미지 처리
                                 fastdepth_processor = get_fastdepth_processor()
@@ -177,7 +181,8 @@ async def camera_stream(websocket: WebSocket, user_id: UUID):
                                     measurement_result = {
                                         'success': False,
                                         'message': '측정 세션이 비활성화 상태입니다.',
-                                        'processing_status': 'inactive'
+                                        'processing_status': 'inactive',
+                                        'action_required': 'start_measurement_session'
                                     }
                                     
                             except Exception as measurement_error:
@@ -185,14 +190,17 @@ async def camera_stream(websocket: WebSocket, user_id: UUID):
                                 measurement_result = {
                                     'success': False,
                                     'message': f'측정 처리 오류: {str(measurement_error)}',
-                                    'processing_status': 'error'
+                                    'processing_status': 'error',
+                                    'error_type': 'processing_failed'
                                 }
                         else:
-                            # 측정 세션이 비활성화된 경우
+                            # 측정 세션이 비활성화된 경우 - 사용자에게 권한 재요청 필요
                             measurement_result = {
                                 'success': False,
                                 'message': '측정 세션이 시작되지 않았습니다.',
-                                'processing_status': 'no_session'
+                                'processing_status': 'no_session',
+                                'action_required': 'request_camera_permission',
+                                'user_message': '보폭 측정을 위해 카메라 권한을 다시 허용해주세요.'
                             }
                     
                     # 향상된 응답 (기존 객체 탐지 + 새로운 측정 데이터)

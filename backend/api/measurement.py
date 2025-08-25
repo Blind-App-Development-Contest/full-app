@@ -166,7 +166,6 @@ async def process_measurement_frame(
             raise ValueError('유효하지 않은 이미지 데이터')
         
         # 3. FastDepth 직접 처리 (모든 변환과 계산이 내부에서 처리됨)
-        from utils.fastdepth_processor import get_fastdepth_processor
         fastdepth_processor = get_fastdepth_processor()
         
         measurement_result = await fastdepth_processor.process_frame_for_measurement(cv_image, user_id)

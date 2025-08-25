@@ -75,9 +75,6 @@ class FrameSequenceBuffer:
             if current_time - frame.get('buffer_timestamp', 0) < max_age_seconds
         ]
 
-# StepLengthResult는 models.step_models.StepCalculationResult로 대체
-# 하위 호환성을 위한 별칭
-StepLengthResult = StepCalculationResult
 
 @dataclass
 class FrameValidationResult:
@@ -263,86 +260,6 @@ class FastDepthProcessor:
         except Exception as e:
             logger.error(f"[FastDepth] 직접 칼만 필터 호출 실패: {e}")
             return None
-    
-    def _calculate_with_simple_distance(self, frame_sequence: List[Dict[str, Any]]) -> StepCalculationResult:
-        """
-        단순 거리 기반 계산 (fallback)
-        
-        Args:
-            frame_sequence: 프레임 시퀀스 데이터
-            
-        Returns:
-            StepCalculationResult: 단순 계산 결과
-        """
-        try:
-            valid_frames = [f for f in frame_sequence if not self._is_frame_filtered(f)]
-            
-            if len(valid_frames) < 2:
-                raise ValueError("유효한 프레임이 부족합니다 (최소 2개 필요)")
-            
-            # 거리 계산
-            total_distance = 0.0
-            step_count = 0
-            confidence_scores = []
-            
-            for i in range(1, len(valid_frames)):
-                prev_frame = valid_frames[i-1]
-                curr_frame = valid_frames[i]
-                
-                # 발 위치 변화 계산
-                distance = self._calculate_frame_distance(prev_frame, curr_frame)
-                if distance > 0.1:  # 최소 이동 거리
-                    total_distance += distance
-                    step_count += 1
-                
-                # 신뢰도 수집
-                frame_confidence = self._get_frame_confidence(curr_frame)
-                confidence_scores.append(frame_confidence)
-            
-            if step_count == 0:
-                raise ValueError("유효한 스텝이 감지되지 않았습니다")
-            
-            # 평균 보폭 계산
-            avg_step_length_m = total_distance / step_count
-            avg_step_length_cm = avg_step_length_m * 100
-            
-            # 신뢰도 계산
-            avg_confidence = np.mean(confidence_scores) if confidence_scores else 0.5
-            
-            # 결과 생성
-            result = StepCalculationResult(
-                step_length_cm=round(avg_step_length_cm, 1),
-                confidence=round(avg_confidence, 3),
-                step_count=step_count,
-                tracking_quality=AccuracyConverter.confidence_to_quality(avg_confidence),
-                accuracy_level=AccuracyConverter.confidence_to_korean_level(avg_confidence),
-                measurement_method=StepMeasurementMethod.DISTANCE_BASED,
-                source_data={
-                    "method": "simple_distance_fastdepth",
-                    "total_distance_m": total_distance,
-                    "frame_count": len(frame_sequence),
-                    "valid_frame_count": len(valid_frames),
-                    "average_confidence": avg_confidence
-                }
-            )
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"[FastDepth] 단순 거리 계산 실패: {e}")
-            # 응급 기본값 반환
-            return StepCalculationResult(
-                step_length_cm=60.0,
-                confidence=0.2,
-                step_count=1,
-                tracking_quality=StepTrackingQuality.POOR,
-                accuracy_level=AccuracyLevel.LOW,
-                measurement_method=StepMeasurementMethod.DISTANCE_BASED,
-                source_data={
-                    "method": "emergency_fallback",
-                    "error": str(e)
-                }
-            )
     
     def validate_frame(self, frame_data: FastDepthFrameData) -> FrameValidationResult:
         """
@@ -548,8 +465,26 @@ class FastDepthProcessor:
                 else:
                     logger.warning("[FastDepth] 칼만 필터 신뢰도 낮음 - 단순 방법으로 fallback")
             
-            # 단순 거리 기반 계산으로 fallback
-            result = self._calculate_with_simple_distance(frame_sequence)
+            # UnifiedStepCalculator의 단순 fallback 사용
+            from services.unified_step_calculator import get_unified_step_calculator, StepCalculationInput
+            
+            valid_frames = [f for f in frame_sequence if not self._is_frame_filtered(f)]
+            if len(valid_frames) >= 2:
+                first_frame = valid_frames[0]
+                last_frame = valid_frames[-1]
+                distance = self._calculate_frame_distance(first_frame, last_frame)
+                estimated_steps = max(len(valid_frames) // 3, 1)
+                
+                calculator = get_unified_step_calculator()
+                input_data = StepCalculationInput(
+                    distance_meters=distance,
+                    step_count=estimated_steps,
+                    preferred_method=StepMeasurementMethod.DISTANCE_BASED,
+                    force_fallback=True
+                )
+                result = calculator.calculate_step_length(input_data)
+            else:
+                raise ValueError("유효한 프레임 부족")
             self.frame_processing_stats["sequence_calculations"] += 1
             return result
             
@@ -664,66 +599,37 @@ class FastDepthProcessor:
     
     def _emergency_local_calculation(self, frame_sequence: List[Dict[str, Any]], error: str) -> StepCalculationResult:
         """
-        응급 로컬 계산 - UnifiedStepCalculator 호출 실패 시에만 사용
-        
-        Note: 가능한 한 UnifiedStepCalculator 사용을 권장하며, 이는 최후의 수단입니다.
+        응급 계산 - UnifiedStepCalculator._emergency_calculation 위임
         """
-        logger.warning(f"[FastDepth] 응급 로컬 계산 실행: {error}")
+        logger.warning(f"[FastDepth] 응급 계산 실행: {error}")
         
         try:
-            # 마지막 시도: UnifiedStepCalculator의 단순 fallback 사용
+            # UnifiedStepCalculator의 응급 계산 사용
             from services.unified_step_calculator import get_unified_step_calculator, StepCalculationInput
             
             valid_frames = [f for f in frame_sequence if not self._is_frame_filtered(f)]
+            distance = 2.0  # 기본 거리
+            steps = max(len(valid_frames) // 3, 1)
             
             if len(valid_frames) >= 2:
-                # 거리 기반 계산을 위한 데이터 준비
                 first_frame = valid_frames[0]
                 last_frame = valid_frames[-1]
-                distance = self._calculate_frame_distance(first_frame, last_frame)
-                estimated_steps = max(len(valid_frames) // 3, 1)
-                
-                # UnifiedStepCalculator의 단순 fallback 사용
-                calculator = get_unified_step_calculator()
-                input_data = StepCalculationInput(
-                    distance_meters=distance,
-                    step_count=estimated_steps,
-                    preferred_method=StepMeasurementMethod.DISTANCE_BASED,
-                    force_fallback=True  # 응급 계산이므로 fallback 강제
-                )
-                
-                result = calculator.calculate_step_length(input_data)
-                
-                # 응급 계산임을 표시하기 위해 source_data 업데이트
-                result.source_data.update({
-                    "emergency_fallback": True,
-                    "original_error": error,
-                    "frame_count": len(frame_sequence),
-                    "valid_frame_count": len(valid_frames)
-                })
-                
-                return result
-                
-            else:
-                # 정말 최후의 수단: 기본 보폭값 반환
-                logger.error("[FastDepth] 프레임 부족 - 기본 보폭값 사용")
-                return StepCalculationResult(
-                    step_length_cm=65.0,  # 평균적인 보폭
-                    confidence=0.1,
-                    step_count=len(frame_sequence),
-                    tracking_quality=AccuracyConverter.confidence_to_quality(0.1),
-                    accuracy_level=AccuracyConverter.confidence_to_korean_level(0.1),
-                    measurement_method=StepMeasurementMethod.DISTANCE_BASED,
-                    source_data={
-                        "method": "absolute_emergency_default",
-                        "error": error,
-                        "frame_count": len(frame_sequence),
-                        "warning": "모든 계산 불가 - 기본값 사용"
-                    }
-                )
-                
+                distance = self._calculate_frame_distance(first_frame, last_frame) or 2.0
+            
+            calculator = get_unified_step_calculator()
+            input_data = StepCalculationInput(
+                distance_meters=distance,
+                step_count=steps,
+                preferred_method=StepMeasurementMethod.DISTANCE_BASED
+            )
+            
+            # UnifiedStepCalculator의 _emergency_calculation 직접 사용
+            result = calculator._emergency_calculation(input_data, error)
+            result.source_data["fastdepth_emergency"] = True
+            return result
+            
         except Exception as emergency_error:
-            logger.error(f"[FastDepth] 응급 계산조차 실패: {emergency_error}")
+            logger.error(f"[FastDepth] 최종 응급 계산 실패: {emergency_error}")
             # 절대 최후의 수단
             return StepCalculationResult(
                 step_length_cm=65.0,
@@ -735,8 +641,7 @@ class FastDepthProcessor:
                 source_data={
                     "method": "absolute_fallback",
                     "original_error": error,
-                    "emergency_error": str(emergency_error),
-                    "warning": "모든 계산 실패 - 절대 기본값"
+                    "emergency_error": str(emergency_error)
                 }
             )
     
