@@ -34,13 +34,24 @@ class _StepMeasurementResultScreenState
   }
 
   Future<void> _announceResults() async {
-    // TODO: TTS 구현 - 음성 안내
-    // await _voiceService.speak("측정이 완료되었습니다.");
-    // await _voiceService.speak(
-    //   "측정된 보폭은 ${measurementResult.stepLength.toStringAsFixed(1)}센티미터입니다. "
-    //   "총 ${measurementResult.stepCount}걸음을 측정했습니다."
-    // );
-    // await _voiceService.speak("화면을 터치하면 다음 단계로 진행합니다.");
+    // 시각장애인용 상세 음성 안내
+    await _voiceService.speak("보폭 측정 결과를 안내드리겠습니다.");
+    
+    await Future.delayed(const Duration(milliseconds: 500));
+    await _voiceService.speak(
+      "측정된 평균 보폭은 ${measurementResult.stepLength.toStringAsFixed(1)} 센티미터 입니다."
+    );
+    
+    await Future.delayed(const Duration(milliseconds: 500));
+    await _voiceService.speak(
+      "총 ${measurementResult.stepCount} 걸음을 측정하였습니다."
+    );
+    
+    await Future.delayed(const Duration(milliseconds: 500));
+    await _voiceService.speak(
+      "화면의 아무 곳이나 터치하시면 메인 화면으로 돌아갑니다.", 
+      speed: 0.9
+    );
 
     setState(() {
       _isAnnouncementComplete = true;
@@ -56,8 +67,8 @@ class _StepMeasurementResultScreenState
 
   void _onContinue() async {
     HapticFeedback.lightImpact();
-    // TODO: TTS 구현 - 진행 안내
-    // await _voiceService.speak("다음 단계로 진행합니다.");
+    // 시각장애인용 진행 안내
+    await _voiceService.speak("메인 화면으로 이동합니다.");
     if (widget.onContinue != null) {
       widget.onContinue!();
     }

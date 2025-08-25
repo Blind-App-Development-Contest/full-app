@@ -112,9 +112,9 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
   }
 
   /// 측정 결과를 처리하고 결과 화면으로 전환
-  void _showMeasurementResult(Map<String, dynamic> result) {
-    // TODO: TTS 구현 - 측정 완료 음성 안내
-    // await _voiceService?.speak("측정이 완료되었습니다.");
+  void _showMeasurementResult(Map<String, dynamic> result) async {
+    // 시각장애인용 음성 안내
+    await _voiceService?.speak("보폭 측정이 완료되었습니다. 잠시만 기다려주세요.");
     
     // 측정 결과를 StepMeasurementResult 모델로 변환
     StepMeasurementResult measurementResult;

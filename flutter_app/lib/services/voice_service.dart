@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
+import 'package:just_audio/just_audio.dart';
+import 'package:http_parser/http_parser.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
@@ -14,9 +16,10 @@ enum VoiceState { idle, listening, processing }
 
 class VoiceService with ChangeNotifier {
   final Record _audioRecorder = Record();
+  final AudioPlayer _audioPlayer = AudioPlayer();
 
   // === 서버 설정 ===
-  static const String baseUrl = 'http://192.168.45.74:8000';
+  static const String baseUrl = 'http://20.22.6.21:8000';
 
   // === 상태 관리 ===
   VoiceState _currentState = VoiceState.idle;
@@ -47,7 +50,7 @@ class VoiceService with ChangeNotifier {
     // 마이크 권한 확인
     await _checkMicrophonePermission();
 
-    _setStatus("초기화 완료 - 음성 인식 준비됨");
+    _setStatus("초기화 완료 - 음성 인식 및 출력 준비됨");
     _addDebugLog("=== 초기화 완료 ===");
   }
 
@@ -235,7 +238,8 @@ class VoiceService with ChangeNotifier {
       case 'BEGIN_WALKING':
       case 'FOOTSTEP_MEASUREMENT_START':
       case 'FOOTSTEP_MEASUREMENT_BEGIN':
-        _setStatus("보폭 측정 시작 명령 인식됨");
+        _setStatus("보폭 측정을 시작하겠습니다");
+        await speak("보폭 측정을 시작하겠습니다. 카메라 화면으로 이동합니다.", speed: 0.9);
         _startMeasurementAndNavigate();
         break;
       case 'FOOTSTEP_MEASUREMENT_COMPLETE':
@@ -243,12 +247,14 @@ class VoiceService with ChangeNotifier {
       case 'FINISH_MEASURING':
       case 'END_WALKING':
       case 'MEASUREMENT_COMPLETE':
-        _setStatus("보폭 측정 완료 명령 인식됨");
+        _setStatus("측정을 완료하겠습니다");
+        await speak("보폭 측정을 완료하겠습니다. 잠시만 기다려주세요.", speed: 0.9);
         await stopMeasurementWorkflow();
         break;
       case 'STOP_LISTENING':
       case 'FOOTSTEP_MEASUREMENT_CANCEL':
-        _setStatus("중단 명령 인식됨");
+        _setStatus("측정을 중단하겠습니다");
+        await speak("측정을 중단하겠습니다.", speed: 0.9);
         stopAutoRecognitionCycle();
         break;
       default:
@@ -374,7 +380,13 @@ class VoiceService with ChangeNotifier {
       final request = http.MultipartRequest('POST', Uri.parse(url));
 
       // 파일 첨부
-      request.files.add(await http.MultipartFile.fromPath('file', filePath));
+      request.files.add(
+        await http.MultipartFile.fromPath(
+          'file',
+          filePath,
+          contentType: MediaType('audio', 'm4a'),
+        ),
+      );
       _addDebugLog("오디오 파일 첨부 완료 (경로: $filePath)");
 
       // 요청 전송 및 응답 받기 (60초 타임아웃)
@@ -622,9 +634,73 @@ class VoiceService with ChangeNotifier {
     _setStatus("중단됨");
   }
 
+  /// Google Cloud TTS를 통한 음성 출력
+  Future<void> speak(
+    String text, {
+    String gender = "female",
+    double speed = 1.0,
+  }) async {
+    try {
+      _addDebugLog("🔊 음성 출력: $text");
+
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/api/users/voice'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'user_id': 'c63427ae-ac05-4292-a52f-c967f36b3861',
+              'text': text,
+              'gender': gender,
+              'speed': speed,
+            }),
+          )
+          .timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 200) {
+        _addDebugLog("✅ TTS 응답 성공 (200 OK)");
+        _addDebugLog("🔊 수신된 오디오 데이터 크기: ${response.bodyBytes.length} bytes");
+
+        // 데이터 크기가 0이거나 너무 작으면 재생 시도 전에 차단
+        if (response.bodyBytes.length < 100) {
+          _addDebugLog("❌ 수신된 오디오 데이터가 너무 작아 재생할 수 없습니다.");
+          return;
+        }
+        
+        // 임시 파일로 저장 후 재생
+        final directory = await getApplicationDocumentsDirectory();
+        final timestamp = DateTime.now().millisecondsSinceEpoch;
+        final audioFile = File('${directory.path}/tts_$timestamp.mp3');
+        
+        await audioFile.writeAsBytes(response.bodyBytes);
+        _addDebugLog("🔊 TTS 파일 저장: ${audioFile.path}");
+        
+        // 오디오 플레이어 정지 후 새 파일 재생
+        await _audioPlayer.stop();
+        await _audioPlayer.setAudioSource(AudioSource.file(audioFile.path));
+        await _audioPlayer.play();
+        
+        // 재생이 완료될 때까지 대기 후 파일 삭제
+        _audioPlayer.processingStateStream.where((state) => 
+          state == ProcessingState.completed
+        ).take(1).listen((_) async {
+          await Future.delayed(const Duration(milliseconds: 500));
+          if (audioFile.existsSync()) {
+            audioFile.deleteSync();
+            _addDebugLog("🔊 임시 TTS 파일 삭제됨");
+          }
+        });
+      } else {
+        _addDebugLog("❌ TTS 실패: ${response.statusCode}");
+      }
+    } catch (e) {
+      _addDebugLog("❌ TTS 오류: $e");
+    }
+  }
+
   @override
   void dispose() {
     _audioRecorder.dispose();
+    _audioPlayer.dispose();
     super.dispose();
   }
 }
