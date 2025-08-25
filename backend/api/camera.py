@@ -24,19 +24,41 @@ class ConnectionManager:
     """WebSocket 연결을 관리하는 클래스"""
     def __init__(self):
         self.active_connections: dict[str, WebSocket] = {}
+        self.user_modes: dict[str, str] = {}  # Track camera mode for each user
 
-    async def connect(self, websocket: WebSocket, user_id: str):
+    async def connect(self, websocket: WebSocket, user_id: str, mode: str = "realtime"):
         await websocket.accept()
         self.active_connections[user_id] = websocket
-        logger.info(f"User {user_id} connected to camera stream.")
+        self.user_modes[user_id] = mode
+        logger.info(f"User {user_id} connected to camera stream in {mode} mode.")
 
     def disconnect(self, user_id: str):
         if user_id in self.active_connections:
             del self.active_connections[user_id]
+
+        if user_id in self.user_modes:
+            del self.user_modes[user_id]
+            
+        # 사용자 연결 종료 시, 해당 사용자의 로그 기록 삭제
         keys_to_del = [key for key in last_threat_log_time if key[0] == user_id]
         for key in keys_to_del:
             del last_threat_log_time[key]
         logger.info(f"User {user_id} disconnected from camera stream.")
+
+        
+    async def send_personal_message(self, message: str, user_id: str):
+        if user_id in self.active_connections:
+            websocket = self.active_connections[user_id]
+            await websocket.send_text(message)
+    
+    def set_user_mode(self, user_id: str, mode: str):
+        """Set camera mode for user"""
+        self.user_modes[user_id] = mode
+        logger.info(f"User {user_id} camera mode set to {mode}")
+    
+    def get_user_mode(self, user_id: str) -> str:
+        """Get camera mode for user"""
+        return self.user_modes.get(user_id, "realtime")
 
 manager = ConnectionManager()
 
@@ -126,12 +148,66 @@ async def camera_stream(websocket: WebSocket, user_id: UUID):
                                 await save_threat_to_log(pool, user_id, highest_threat_obj, highest_threat_level)
                                 last_threat_log_time[log_key] = current_time
 
-                    # 기존의 실시간 위협 감지 응답을 생성합니다.
+                           
+                    objects_list = [obj.model_dump() for obj in detected_objects]
+                    
+                    # === 새로운 기능: 측정 모드일 때 보폭 측정 처리 ===
+                    measurement_result = None
+                    user_mode = manager.get_user_mode(user_id_str)
+                    
+                    if user_mode == 'measurement':
+                        # 측정 세션이 활성화되어 있을 때만 프레임 처리
+                        if _check_measurement_session(user_id_str):
+                            try:
+                                # 통합 FastDepth 프로세서를 통한 직접 이미지 처리
+                                fastdepth_processor = get_fastdepth_processor()
+                                step_result = await fastdepth_processor.process_frame_for_measurement(cv_image, user_id_str)
+                                
+                                if step_result:
+                                    measurement_result = {
+                                        'success': True,
+                                        'step_length_cm': step_result.step_length_cm,
+                                        'confidence': step_result.confidence,
+                                        'tracking_quality': step_result.tracking_quality.value,
+                                        'accuracy_level': step_result.accuracy_level.value,
+                                        'processing_status': 'active'
+                                    }
+                                    logger.debug(f'측정 프레임 처리 완료: {user_id_str} - {step_result.step_length_cm}cm')
+                                else:
+                                    measurement_result = {
+                                        'success': False,
+                                        'message': '측정 세션이 비활성화 상태입니다.',
+                                        'processing_status': 'inactive'
+                                    }
+                                    
+                            except Exception as measurement_error:
+                                logger.error(f'측정 프레임 처리 오류 (user: {user_id_str}): {measurement_error}')
+                                measurement_result = {
+                                    'success': False,
+                                    'message': f'측정 처리 오류: {str(measurement_error)}',
+                                    'processing_status': 'error'
+                                }
+                        else:
+                            # 측정 세션이 비활성화된 경우
+                            measurement_result = {
+                                'success': False,
+                                'message': '측정 세션이 시작되지 않았습니다.',
+                                'processing_status': 'no_session'
+                            }
+                    
+                    # 향상된 응답 (기존 객체 탐지 + 새로운 측정 데이터)
                     response = {
                         "type": "threat_detection",
-                        "objects": [obj.model_dump() for obj in detected_objects],
-                        "highest_threat_level": highest_threat_level,
-                        "vibration": vibration_pattern.model_dump() if vibration_pattern else None
+                        "status": "processed",
+                        "timestamp": frame_data.get("timestamp"),
+                        "user_id": user_id_str,
+                        "mode": user_mode,  # 현재 카메라 모드 포함
+                        # 기존 객체 탐지 데이터
+                        "objects": objects_list,
+                        "highest_threat_level": highest_threat_level, # 추가된 부분
+                        "vibration": vibration_pattern.model_dump() if vibration_pattern else None,
+                        # 새로운 측정 데이터
+                        "measurement": measurement_result
                     }
                     
                     # 최신 결과를 캐시에 저장합니다.

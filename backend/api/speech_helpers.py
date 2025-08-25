@@ -1,9 +1,7 @@
 """speech_routes.py의 헬퍼 함수들"""
 
-import time
-import asyncio
 import logging
-from typing import Dict, Any, List
+from typing import List
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -13,8 +11,6 @@ from models.recognition_schemas import SpeechRecognitionResponse
 from models.execution_schemas import CommandExecutionResponse, FullCommandResponse
 from models.fastdepth_models import FastDepthFrameData, EnhancedCommandRequest
 from services.command_executor import CommandExecutionResult
-from services.speech_analyzer import SpeechAnalyzer
-from services.command_executor import CommandExecutor
 from utils.fastdepth_processor import get_fastdepth_processor
 
 # 싱글톤 서비스 인스턴스 가져오기
@@ -142,7 +138,6 @@ def analyze_speech_command_with_context(command_text: str, context: str = None) 
     if context is None:
         context = get_current_context()
     
-    logger.debug(f"음성 명령 분석: '{command_text}', 컨텍스트: {context}")
     
     # SpeechAnalyzer로 명령 분석 (컨텍스트 포함)
     recognition_result = speech_analyzer.analyze_command(command_text, context)
@@ -157,7 +152,6 @@ def analyze_speech_command_with_context(command_text: str, context: str = None) 
         # entities에 컨텍스트 정보 추가
         recognition_result.entities.update({"measurement_context": measurement_context})
     
-    logger.debug(f"분석 결과: 의도={recognition_result.intent}, 신뢰도={recognition_result.confidence}")
     return recognition_result
 
 

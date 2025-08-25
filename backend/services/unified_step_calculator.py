@@ -60,8 +60,20 @@ class UnifiedStepCalculator:
         # 설정
         self.min_frames_for_kalman = 5
         self.min_confidence_threshold = 0.3
+    
+    def reset_for_new_measurement(self):
+        """새로운 측정을 위한 상태 완전 초기화"""
+        logger.info("[UnifiedStepCalculator] 새로운 측정을 위한 상태 초기화")
         
-        logger.info("[UnifiedStepCalculator] 통합 보폭 계산기 초기화 완료")
+        # Kalman tracker 완전 초기화
+        self.kalman_tracker = RealTimeStepTracker()
+        
+        # FastDepth processor 초기화
+        self.fastdepth_processor = FastDepthProcessor()
+        
+        # 통계는 유지하되 현재 측정 관련 데이터는 초기화
+        logger.info("[UnifiedStepCalculator] 상태 초기화 완료")
+        
     
     def calculate_step_length(self, input_data: StepCalculationInput) -> StepCalculationResult:
         """
@@ -89,7 +101,6 @@ class UnifiedStepCalculator:
             
             # 1. Kalman 필터 실시간 추적 시도
             if self._can_use_kalman_tracking(input_data):
-                logger.info("[UnifiedStepCalculator] Kalman 실시간 추적 사용")
                 result = self._calculate_with_kalman_tracking(input_data)
                 if self._is_result_reliable(result):
                     self.calculation_stats["kalman_success"] += 1
@@ -97,7 +108,6 @@ class UnifiedStepCalculator:
             
             # 2. FastDepth 프레임 시퀀스 분석 시도
             if self._can_use_fastdepth_analysis(input_data):
-                logger.info("[UnifiedStepCalculator] FastDepth 프레임 분석 사용")
                 result = self._calculate_with_fastdepth_analysis(input_data)
                 if self._is_result_reliable(result):
                     self.calculation_stats["fastdepth_success"] += 1
@@ -297,30 +307,6 @@ class UnifiedStepCalculator:
             }
         )
     
-    def get_calculation_stats(self) -> Dict[str, Any]:
-        """계산 통계 반환"""
-        total = self.calculation_stats["total_calculations"]
-        if total == 0:
-            return self.calculation_stats
-        
-        return {
-            **self.calculation_stats,
-            "success_rates": {
-                "kalman_rate": self.calculation_stats["kalman_success"] / total,
-                "fastdepth_rate": self.calculation_stats["fastdepth_success"] / total,
-                "fallback_rate": self.calculation_stats["fallback_used"] / total
-            }
-        }
-    
-    def reset_tracker(self):
-        """Kalman 추적기 리셋"""
-        self.kalman_tracker.reset()
-        logger.info("[UnifiedStepCalculator] Kalman 추적기 리셋 완료")
-    
-    def set_confidence_threshold(self, threshold: float):
-        """신뢰도 임계값 설정"""
-        self.min_confidence_threshold = max(0.1, min(1.0, threshold))
-        logger.info(f"[UnifiedStepCalculator] 신뢰도 임계값 설정: {self.min_confidence_threshold}")
 
 # 싱글톤 인스턴스
 _unified_calculator = None

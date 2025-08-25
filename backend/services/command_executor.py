@@ -9,7 +9,7 @@ from enum import Enum
 
 from models.recognition_schemas import SpeechRecognitionResponse 
 from models.common_models import (
-    AppMode, ExecutionStatus, MeasurementType, MeasurementStatus,
+    AppMode, ExecutionStatus, MeasurementStatus,
     RealTimeMeasurementStatus, TrackingQuality, SchemaConverter
 )
 from models.step_models import StepCalculationResult as StepResult, StepMeasurementMethod
@@ -99,7 +99,6 @@ class CommandExecutor:
         intent = recognition_result.intent
         entities = recognition_result.entities
         
-        logger.info(f"명령 실행 시작: {intent}, 현재 모드: {self.current_mode.value}")
         
         try:
             # 설정 모드인 경우 설정 단계별 처리
@@ -112,7 +111,6 @@ class CommandExecutor:
             # 실행 기록 저장
             self._save_execution_history(intent, entities, result)
             
-            logger.info(f"명령 실행 완료: {result.status.value}")
             return result
             
         except Exception as e:
@@ -232,7 +230,7 @@ class CommandExecutor:
 
     # ===== 칼만 필터 기반 보폭 측정 메서드 =====
     
-    async def _execute_footstep_measurement_start(self, entities: Dict[str, Any]) -> CommandExecutionResult:
+    async def _execute_footstep_measurement_start(self, _entities: Dict[str, Any]) -> CommandExecutionResult:
         """칼만 필터 기반 보폭 측정 시작 - 통합 메서드 사용"""        
         try:
             print("[CommandExecutor] 보폭 측정 시작 요청")
@@ -283,7 +281,6 @@ class CommandExecutor:
                 frame_count=self.frame_count,
                 start_time=self.measurement_start_time or time.time()
             )
-            measurement_duration = time.time() - self.measurement_start_time if self.measurement_start_time else 0
             
             return CommandExecutionResult(
                 status=ExecutionStatus.SUCCESS,
@@ -296,7 +293,7 @@ class CommandExecutor:
                     "step_count": step_result.step_count,
                     "confidence": step_result.confidence,
                     "tracking_quality": step_result.tracking_quality,
-                    "measurement_duration": round(measurement_duration, 1),
+                    "measurement_duration": round(time.time() - self.measurement_start_time if self.measurement_start_time else 0, 1),
                     "fps": performance_metrics["fps"]
                 },
                 actions=["footstep_walking_start", "tts_announce"]
@@ -308,7 +305,7 @@ class CommandExecutor:
                 message=f"측정 상태 확인 실패: {str(e)}"
             )
 
-    async def _execute_footstep_measurement_complete(self, entities: Dict[str, Any]) -> CommandExecutionResult:
+    async def _execute_footstep_measurement_complete(self, _entities: Dict[str, Any]) -> CommandExecutionResult:
         """칼만 필터 기반 보폭 측정 완료 - 통합 메서드 사용"""
         try:
             if not self.measurement_active:
@@ -397,7 +394,7 @@ class CommandExecutor:
                 message=f"보폭 측정 완료 실패: {str(e)}"
             )
 
-    async def _execute_footstep_measurement_cancel(self, entities: Dict[str, Any]) -> CommandExecutionResult:
+    async def _execute_footstep_measurement_cancel(self, _entities: Dict[str, Any]) -> CommandExecutionResult:
         """보폭 측정 취소 - 통합 메서드 사용"""
         try:
             if not self.measurement_active:
@@ -461,7 +458,7 @@ class CommandExecutor:
                         "tracking_quality": result.tracking_quality.value,
                         "frame_count": result.frame_count,
                         "fps": result.fps,
-                        "measurement_result": result.dict()
+                        "measurement_result": result.model_dump()
                     },
                     actions=["footstep_frame_update"]
                 )
@@ -473,7 +470,7 @@ class CommandExecutor:
                     data={
                         "mode": "footstep_frame_silent_update",
                         "frame_count": self.frame_count,
-                        "measurement_result": result.dict() if result else None
+                        "measurement_result": result.model_dump() if result else None
                     },
                     actions=[]
                 )
@@ -497,7 +494,19 @@ class CommandExecutor:
                 logger.warning("이미 측정이 활성화되어 있습니다")
                 return False
             
-            # RealTimeStepTracker 초기화
+            # 이전 step_tracker 정리 (혹시 남아있는 경우)
+            if self.step_tracker:
+                logger.info("이전 step_tracker 정리 중...")
+                self.step_tracker.reset()
+                self.step_tracker = None
+            
+            # UnifiedStepCalculator 완전 초기화
+            logger.info("UnifiedStepCalculator 상태 초기화")
+            unified_calculator = get_unified_step_calculator()
+            unified_calculator.reset_for_new_measurement()
+            
+            # 새로운 RealTimeStepTracker 초기화
+            logger.info("새로운 RealTimeStepTracker 생성")
             self.step_tracker = RealTimeStepTracker()
             
             # 상태 설정
@@ -512,7 +521,6 @@ class CommandExecutor:
             self.total_distance_traveled = 0.0
             self.last_position = None
             
-            logger.info(f"보폭 측정 시작됨 - 세션: {self.session_id}")
             return True
             
         except Exception as e:
@@ -534,7 +542,6 @@ class CommandExecutor:
                 frame_count=self.frame_count,
                 start_time=self.measurement_start_time or time.time()
             )
-            measurement_duration = time.time() - self.measurement_start_time if self.measurement_start_time else 0
             
             # 2단계: UnifiedStepCalculator를 사용한 향상된 계산
             final_result = self._calculate_final_step_result(kalman_result, performance_metrics)
@@ -552,7 +559,20 @@ class CommandExecutor:
             # 사용자 설정에 보폭 저장
             self.user_settings["step_length"] = final_result.step_length_cm
             
-            logger.info(f"보폭 측정 완료 - 결과: {final_result.step_length_cm}cm (방법: {final_result.measurement_method.value})")
+            # CRITICAL: 측정 완료 후 step_tracker 완전 정리
+            logger.info("측정 완료 - step_tracker 및 관련 데이터 정리 중...")
+            if self.step_tracker:
+                self.step_tracker.reset()
+                self.step_tracker = None
+            
+            # 측정 관련 데이터 완전 정리
+            self.measurement_start_time = None
+            self.frame_count = 0
+            self.session_id = None
+            self.processed_frames.clear()
+            self.total_distance_traveled = 0.0
+            self.last_position = None
+            
             return final_result
             
         except Exception as e:
@@ -583,7 +603,6 @@ class CommandExecutor:
             self.total_distance_traveled = 0.0
             self.last_position = None
             
-            logger.info("보폭 측정 취소됨")
             return True
             
         except Exception as e:
@@ -597,9 +616,6 @@ class CommandExecutor:
                 return None
             
             # 발 위치 데이터 처리
-            left_result = None
-            right_result = None
-            
             if frame_data.get("left_foot"):
                 lf = frame_data["left_foot"]
                 left_pos = FootPosition(
@@ -609,9 +625,9 @@ class CommandExecutor:
                     confidence=lf.get("confidence", 1.0),
                     timestamp=frame_data.get("timestamp", time.time())
                 )
-                left_result = self.step_tracker.add_foot_measurement('left', left_pos)
+                self.step_tracker.add_foot_measurement('left', left_pos)
             else:
-                left_result = self.step_tracker.add_foot_measurement('left', None)
+                self.step_tracker.add_foot_measurement('left', None)
             
             if frame_data.get("right_foot"):
                 rf = frame_data["right_foot"]
@@ -622,9 +638,9 @@ class CommandExecutor:
                     confidence=rf.get("confidence", 1.0),
                     timestamp=frame_data.get("timestamp", time.time())
                 )
-                right_result = self.step_tracker.add_foot_measurement('right', right_pos)
+                self.step_tracker.add_foot_measurement('right', right_pos)
             else:
-                right_result = self.step_tracker.add_foot_measurement('right', None)
+                self.step_tracker.add_foot_measurement('right', None)
             
             self.frame_count += 1
             
@@ -633,10 +649,6 @@ class CommandExecutor:
             
             # 현재 보폭 결과 반환 (CommandExecutor 상태를 전달)
             step_result = self.step_tracker.get_current_step_result()
-            performance_metrics = self.step_tracker.get_performance_metrics(
-                frame_count=self.frame_count,
-                start_time=self.measurement_start_time or time.time()
-            )
             
             if step_result.step_count > 0:
                 return step_result
