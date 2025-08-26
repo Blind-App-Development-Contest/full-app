@@ -74,13 +74,31 @@ ios/Runner.xcworkspace/
 ios/Podfile.lock
 ios/Podfile
 
+# Flutter 앱 iOS 관련
+flutter_app/ios/Pods/
+flutter_app/ios/.symlinks/
+flutter_app/ios/Flutter/Flutter.framework
+flutter_app/ios/Flutter/Flutter.podspec
+flutter_app/ios/Flutter/Generated.xcconfig
+flutter_app/ios/Flutter/ephemeral/
+flutter_app/ios/Flutter/flutter_export_environment.sh
+flutter_app/ios/Runner.xcworkspace/
+flutter_app/ios/Runner/GeneratedPluginRegistrant.*
+
 # Android
 android/.gradle/
 android/.idea/
 android/local.properties
-android/app/debug
-android/app/profile
-android/app/release
+android/app/debug/
+android/app/profile/
+android/app/release/
+flutter_app/android/.gradle/
+flutter_app/android/.idea/
+flutter_app/android/local.properties
+flutter_app/android/app/debug/
+flutter_app/android/app/profile/
+flutter_app/android/app/release/
+flutter_app/android/key.properties
 
 # Symbolication & Obfuscation
 app.*.symbols

@@ -43,19 +43,26 @@ async def _ncloud_get(url: str, params: dict, cid: str, csec: str, *, strict: bo
     headers = {
         "X-NCP-APIGW-API-KEY-ID": cid,
         "X-NCP-APIGW-API-KEY": csec,
+        "Referer": "http://20.22.176.12" # 서버 주소 명시 
     }
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
             r = await client.get(url, params=params, headers=headers)
     except httpx.RequestError as e:
+        print(f"[NCloud GET] Request error: {e!s}")
+        if not strict:
+            return {"_status": 503, "error": f"Request error: {e!s}"}
         raise HTTPException(502, f"Naver upstream request error: {e!s}")
 
-    print(f"[NCloud GET] {url} params={params} -> {r.status_code}")
+    print(f"[NCloud GET] {url} params={params} -> {r.status_code} content_length={len(r.content)}")
 
     if r.status_code == 200:
         try:
             return r.json()
-        except Exception:
+        except Exception as e:
+            print(f"[NCloud GET] JSON parse error: {e!s}, content: {r.text[:200]}")
+            if not strict:
+                return {"_status": 200, "error": f"Non-JSON response", "raw": r.text[:500]}
             raise HTTPException(502, "Naver upstream returned non-JSON response")
 
     if strict:
@@ -86,48 +93,122 @@ def _parse_latlng(s: str) -> Optional[Tuple[float, float]]:
         raise HTTPException(400, "Invalid lat/lng")
     return (lat, lng)
 
+async def _geocode_nominatim(
+    query: str,
+    bias: Optional[Tuple[float, float]] = (37.5665, 126.9780),  # default: 서울시청
+) -> Tuple[float, float]:
+    """
+    OpenStreetMap Nominatim Geocoding API fallback (free, no key required)
+    """
+    q = re.sub(r"\s+", " ", (query or "").strip())
+    if not q:
+        raise HTTPException(400, "Empty query for geocoding")
+    
+    params = {
+        "q": q,
+        "format": "json", 
+        "limit": 1,
+        "countrycodes": "kr",  # 한국으로 제한
+        "addressdetails": 1,
+    }
+    if bias:
+        lat, lng = bias
+        params["viewbox"] = f"{lng-1},{lat+1},{lng+1},{lat-1}"  # bias 주변 1도 범위
+        params["bounded"] = 1
+    
+    headers = {
+        "User-Agent": "BlindApp/1.0 (walking directions app)"  # Nominatim 요구사항
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            r = await client.get("https://nominatim.openstreetmap.org/search", 
+                                params=params, headers=headers)
+        
+        print(f"[Nominatim Geocoding] query={q} -> {r.status_code}")
+        
+        if r.status_code == 200:
+            data = r.json()
+            if data and len(data) > 0:
+                result = data[0]
+                lat = float(result["lat"])
+                lng = float(result["lon"])
+                print(f"[Nominatim Geocoding] Found: {lat},{lng} for '{q}' ({result.get('display_name', 'N/A')})")
+                return (lat, lng)
+            else:
+                print(f"[Nominatim Geocoding] No results for '{q}'")
+        else:
+            print(f"[Nominatim Geocoding] HTTP error: {r.status_code} {r.text[:200]}")
+    except Exception as e:
+        print(f"[Nominatim Geocoding] Request error: {e}")
+    
+    raise HTTPException(404, f"Nominatim geocoding failed for: {q}")
+
 async def _geocode_naver(
     query: str,
     cid: str,
     csec: str,
-    bias: Optional[Tuple[float, float]] = None,  # (lat,lng)
+    bias: Optional[Tuple[float, float]] = (37.5665, 126.9780),  # default: 서울시청
 ) -> Tuple[float, float]:
+    """
+    NAVER Geocoding + Place 혼합판 (with Google fallback)
+    - 주소 형태(도로명, 번지 등)는 Geocode API 사용
+    - 지명(역, 타워, 공원 등)은 Place API 사용 (bias 좌표 반경 50km)
+    - Naver 실패 시 Google Geocoding으로 폴백
+    """
     q = re.sub(r"\s+", " ", (query or "").strip())
     if not q:
         raise HTTPException(400, "Empty query for geocoding")
 
-    geocode_params = {"query": q}
+    # 주소 형태인지 판별 (도로명/번지 등 키워드 포함 시)
+    if any(x in q for x in ["로", "길", "번지", "동", "읍", "면", "리", "아파트"]):
+        geocode_params = {"query": q}
+        if bias:
+            lat, lng = bias
+            geocode_params["coordinate"] = f"{lng},{lat}"
+
+        data = await _ncloud_get(
+            "https://naveropenapi.apigw.ntruss.com/map-geocode/v2/geocode",
+            geocode_params, cid, csec, strict=False
+        )
+        if isinstance(data, dict) and "_status" not in data:
+            addrs = data.get("addresses") or []
+            if addrs:
+                lng = float(addrs[0]["x"])
+                lat = float(addrs[0]["y"])
+                return (lat, lng)
+
+    # 지명 검색 (Place API + bias 적용)
+    place_params = {
+        "query": q,
+        "display": 1,
+    }
     if bias:
         lat, lng = bias
-        geocode_params["coordinate"] = f"{lng},{lat}"  # Naver expects lng,lat
-
-    data = await _ncloud_get(
-        "https://maps.apigw.ntruss.com/map-geocode/v2/geocode",
-        geocode_params, cid, csec
-    )
-    addrs = (data or {}).get("addresses") or []
-    if addrs:
-        lng = float(addrs[0]["x"])
-        lat = float(addrs[0]["y"])
-        return (lat, lng)
-
-    # place API fallback
-    place_params = {"query": q}
-    if bias:
-        lat, lng = bias
+        # Place API에서는 coordinate + radius 조합이 효과적
         place_params["coordinate"] = f"{lng},{lat}"
+        place_params["radius"] = 50000  # 50km
 
     pdata = await _ncloud_get(
-        "https://maps.apigw.ntruss.com/map-place/v1/search",
-        place_params, cid, csec
+        "https://naveropenapi.apigw.ntruss.com/map-place/v1/search",
+        place_params, cid, csec, strict=False
     )
-    places = (pdata or {}).get("places") or (pdata or {}).get("place") or []
-    if places:
-        lng = float(places[0].get("x"))
-        lat = float(places[0].get("y"))
-        return (lat, lng)
+    if isinstance(pdata, dict) and "_status" not in pdata:
+        places = pdata.get("places") or pdata.get("place") or []
+        if places:
+            lng = float(places[0].get("x"))
+            lat = float(places[0].get("y"))
+            return (lat, lng)
 
-    raise HTTPException(404, f"Geocoding failed for: {q} (geocode=0, place=0)")
+    # Naver 실패 시 Nominatim Geocoding 폴백
+    print(f"[Geocoding] Naver failed, trying Nominatim fallback for: {q}")
+    try:
+        return await _geocode_nominatim(q, bias=bias)
+    except Exception as e:
+        print(f"[Geocoding] Nominatim fallback also failed: {e}")
+
+    # 모든 방법 실패 시 예외
+    raise HTTPException(404, f"Geocoding failed for: {q} (naver=failed, nominatim=failed)")
 
 async def _to_latlng(
     s: str,
@@ -337,7 +418,115 @@ async def _mapbox_directions_walking(
     }
     return {"routes": [route_out], "provider": "mapbox"}
 
-# ===== Endpoint =====
+# ===== Endpoints =====
+@router.get("/directions")
+async def directions_info():
+    """GET endpoint for testing - shows API info"""
+    return {
+        "message": "NAVER + Mapbox Directions API", 
+        "methods": ["POST"],
+        "example": {
+            "origin": "37.5665,126.9780",
+            "destination": "37.5651,126.9895", 
+            "mode": "driving"
+        }
+    }
+
+@router.get("/places/autocomplete")
+async def places_autocomplete(
+    query: str = "",
+    settings: Settings = Depends(get_settings)
+):
+    """Places autocomplete using NAVER Search API"""
+    if not query or len(query.strip()) < 2:
+        return {"predictions": []}
+    
+    try:
+        cid, csec = _require_naver_keys(settings)
+        q = query.strip()
+        
+        # NAVER Place API 호출
+        place_params = {"query": q, "display": 5, "sort": "comment"}
+        pdata = await _ncloud_get(
+            "https://maps.apigw.ntruss.com/map-place/v1/search",
+            place_params, cid, csec, strict=False
+        )
+        
+        predictions = []
+        if isinstance(pdata, dict) and "_status" not in pdata:
+            places = pdata.get("places") or []
+            for place in places[:5]:  # 최대 5개 결과
+                predictions.append({
+                    "place_id": place.get("id", ""),
+                    "description": place.get("name", ""),
+                    "structured_formatting": {
+                        "main_text": place.get("name", ""),
+                        "secondary_text": place.get("roadAddress", "") or place.get("address", "")
+                    },
+                    "geometry": {
+                        "location": {
+                            "lat": float(place.get("y", 0)),
+                            "lng": float(place.get("x", 0))
+                        }
+                    }
+                })
+        
+        return {"predictions": predictions}
+    except Exception as e:
+        print(f"[Places autocomplete] Error: {e}")
+        return {"predictions": []}
+
+@router.get("/places/detail")
+async def places_detail(
+    place_id: str = "",
+    query: str = "",
+    settings: Settings = Depends(get_settings)
+):
+    """Get place details using NAVER Place API"""
+    if not place_id and not query:
+        return {"result": None, "status": "INVALID_REQUEST"}
+    
+    try:
+        cid, csec = _require_naver_keys(settings)
+        search_query = query if query else place_id
+        
+        # NAVER Place API 호출
+        place_params = {"query": search_query, "display": 1}
+        pdata = await _ncloud_get(
+            "https://maps.apigw.ntruss.com/map-place/v1/search",
+            place_params, cid, csec, strict=False
+        )
+        
+        if isinstance(pdata, dict) and "_status" not in pdata:
+            places = pdata.get("places") or []
+            if places:
+                place = places[0]
+                result = {
+                    "place_id": place.get("id", ""),
+                    "name": place.get("name", ""),
+                    "formatted_address": place.get("roadAddress", "") or place.get("address", ""),
+                    "geometry": {
+                        "location": {
+                            "lat": float(place.get("y", 0)),
+                            "lng": float(place.get("x", 0))
+                        }
+                    },
+                    "rating": place.get("rating", 0),
+                    "user_ratings_total": place.get("reviewCount", 0),
+                    "formatted_phone_number": place.get("phoneNumber", ""),
+                    "website": place.get("homePage", ""),
+                    "opening_hours": {
+                        "open_now": True,  # NAVER API에서 제공하지 않으므로 기본값
+                        "weekday_text": []
+                    }
+                }
+                return {"result": result, "status": "OK"}
+        
+        return {"result": None, "status": "NOT_FOUND"}
+    except Exception as e:
+        print(f"[Places detail] Error: {e}")
+        return {"result": None, "status": "UNKNOWN_ERROR"}
+
 @router.post("/directions")
 async def directions(req: DirectionsReq, settings: Settings = Depends(get_settings)):
     mode = (req.mode or "walking").lower()
@@ -409,11 +598,20 @@ async def directions(req: DirectionsReq, settings: Settings = Depends(get_settin
     print("[NAVER DIRECTIONS][try#1]", url, params1)
     data = await _ncloud_get(url, params1, cid, csec, strict=False)
 
-    # fallback: legacy
-    if isinstance(data, dict) and (
-        data.get("_status") in (404,) or
-        ("error" in data and ("Not Found" in str(data["error"]) or "URL not found" in str(data["error"])))
-    ):
+    # fallback: legacy (확장된 실패 조건)
+    should_fallback = False
+    if isinstance(data, dict):
+        status = data.get("_status")
+        error = data.get("error", "")
+        # 404, 503 (타임아웃), JSON 파싱 에러 시 legacy로 폴백
+        if (status in (404, 503) or 
+            "Not Found" in str(error) or 
+            "URL not found" in str(error) or
+            "Request error" in str(error) or
+            "Non-JSON response" in str(error)):
+            should_fallback = True
+    
+    if should_fallback:
         url_legacy = "https://maps.apigw.ntruss.com/map-direction/v1/driving"
         params_legacy = {**base_params, "option": "trafast"}
         print("[NAVER DIRECTIONS] fallback legacy:", url_legacy, params_legacy)

@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     google_tts_api_key: Optional[str] = None
     google_maps_api_key: Optional[str] = None  # ✅ 서버에서 호출할 Google Maps/Directions/Places용 키
     openai_api_key: Optional[str] = None
+    
+    # Mapbox API (도보 길찾기용)
+    mapbox_access_token: Optional[str] = None
+    
+    # Naver Cloud Platform API (지오코딩용)
+    naver_client_id: Optional[str] = None
+    naver_client_secret: Optional[str] = None
 
     # 데이터베이스 설정
     db_url: Optional[str] = None
