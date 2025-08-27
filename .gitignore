@@ -90,3 +90,7 @@ app.*.map.json
 # MCP gemini
 backend/.gemini/
 backend/tools.yaml
+.gemini/
+
+# 소영 레포 파일 참고하는거 무시
+temp_repo/
