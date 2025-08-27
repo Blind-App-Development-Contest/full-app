@@ -397,7 +397,7 @@ class _MapScreenState extends State<MapScreen> {
                         ElevatedButton.icon(
                           onPressed: _centerToMyLocation,
                           icon: const Icon(Icons.my_location),
-                          label: const Text('GPS 위치로 이동'),
+                          label: const Text('내 위치로 이동'),
                         ),
                       ],
                     ),

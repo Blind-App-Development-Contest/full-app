@@ -87,7 +87,7 @@ class DirectionsApi {
       'error': null,
     };
 
-    // 여러 엔드포인트를 순차로 시도하며 상세 정보 수집
+    // 여러 엔드포인트 순차로 시도하며 상세 정보 수집
     for (final path in const ['/maps/directions', '/health', '/ping', '/']) {
       final testResult = <String, dynamic>{
         'endpoint': path,
@@ -102,17 +102,17 @@ class DirectionsApi {
         final stopwatch = Stopwatch()..start();
         final r = await http.get(_u(path)).timeout(const Duration(seconds: 8));
         stopwatch.stop();
-        
+
         testResult['success'] = r.statusCode < 500;
         testResult['statusCode'] = r.statusCode;
         testResult['responseTime'] = '${stopwatch.elapsedMilliseconds}ms';
-        
+
         if (r.statusCode < 500) {
           results['isConnected'] = true;
         }
       } catch (e) {
         testResult['error'] = e.toString();
-        if (e.toString().contains('Connection refused') || 
+        if (e.toString().contains('Connection refused') ||
             e.toString().contains('Network is unreachable')) {
           testResult['diagnosis'] = 'Server is down or unreachable';
         } else if (e.toString().contains('TimeoutException')) {
@@ -121,7 +121,7 @@ class DirectionsApi {
           testResult['diagnosis'] = 'Network connectivity issue';
         }
       }
-      
+
       results['tests'].add(testResult);
     }
 
@@ -149,8 +149,10 @@ class DirectionsApi {
     Exception? lastError;
     for (int attempt = 1; attempt <= 3; attempt++) {
       try {
-        debugPrint('Route request attempt $attempt/3 to: ${_u('/maps/directions')}');
-        
+        debugPrint(
+          'Route request attempt $attempt/3 to: ${_u('/maps/directions')}',
+        );
+
         final r = await http
             .post(
               _u('/maps/directions'),
@@ -164,12 +166,12 @@ class DirectionsApi {
         if (r.statusCode >= 400) {
           final errorMsg = 'Directions error ${r.statusCode}: ${r.body}';
           debugPrint(errorMsg);
-          
+
           // 4xx 에러는 재시도하지 않음 (클라이언트 오류)
           if (r.statusCode < 500) {
             throw Exception(errorMsg);
           }
-          
+
           // 5xx 에러는 재시도 가능
           lastError = Exception(errorMsg);
           if (attempt < 3) {
@@ -181,22 +183,21 @@ class DirectionsApi {
 
         final data = jsonDecode(r.body) as Map<String, dynamic>;
         return DirectionsResponse.fromJson(data);
-        
       } catch (e) {
         debugPrint('Route request failed (attempt $attempt): $e');
         lastError = e is Exception ? e : Exception(e.toString());
-        
+
         // 연결 거부나 타임아웃이면 재시도
         final errorStr = e.toString();
-        if ((errorStr.contains('Connection refused') || 
-             errorStr.contains('TimeoutException') ||
-             errorStr.contains('SocketException')) && 
+        if ((errorStr.contains('Connection refused') ||
+                errorStr.contains('TimeoutException') ||
+                errorStr.contains('SocketException')) &&
             attempt < 3) {
           debugPrint('Retrying in ${attempt * 2} seconds...');
           await Future.delayed(Duration(seconds: attempt * 2));
           continue;
         }
-        
+
         // 마지막 시도였으면 에러 던지기
         if (attempt == 3) {
           String diagnosis = 'Network error';
@@ -207,12 +208,14 @@ class DirectionsApi {
           } else if (errorStr.contains('SocketException')) {
             diagnosis = 'Network connectivity issue';
           }
-          
-          throw Exception('$diagnosis\nOriginal error: ${lastError.toString()}');
+
+          throw Exception(
+            '$diagnosis\nOriginal error: ${lastError.toString()}',
+          );
         }
       }
     }
-    
+
     throw lastError!;
   }
 }

@@ -43,7 +43,7 @@ async def _ncloud_get(url: str, params: dict, cid: str, csec: str, *, strict: bo
     headers = {
         "X-NCP-APIGW-API-KEY-ID": cid,
         "X-NCP-APIGW-API-KEY": csec,
-        "Referer": "http://20.22.176.12" # 서버 주소 명시 
+        "Referer": "http://192.168.45.217" # 서버 주소 명시 
     }
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:

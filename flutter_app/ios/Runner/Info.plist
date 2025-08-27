@@ -93,6 +93,8 @@
       </dict>
     </dict>
   </dict>
+	<key>NSCameraUsageDescription</key>
+	<string>This app needs camera access for step measurement using depth detection</string>
 
  
   <!-- Launch -->
