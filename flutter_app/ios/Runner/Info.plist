@@ -51,7 +51,7 @@
 				<key>NSIncludesSubdomains</key>
 				<true/>
 			</dict>
-			<key>115.91.25.180</key>
+			<key>192.168.45.74</key>
 			<dict>
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>
 				<true/>
@@ -59,6 +59,13 @@
 				<true/>
 			</dict>
 			<key>20.22.176.12</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
+			<key>20.22.6.21</key>
 			<dict>
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>
 				<true/>
@@ -93,6 +100,8 @@
       </dict>
     </dict>
   </dict>
+	<key>NSCameraUsageDescription</key>
+	<string>This app needs camera access for step measurement using depth detection</string>
 
  
   <!-- Launch -->

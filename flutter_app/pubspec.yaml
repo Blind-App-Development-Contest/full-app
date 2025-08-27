@@ -30,7 +30,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  
+
+  # 카메라
+  camera: ^0.10.5+9
   # 음성 녹음
   record: ^4.4.4
   # 파일 경로 관리
@@ -41,6 +43,9 @@ dependencies:
   flutter_dotenv: ^5.1.0
   # 상태 관리
   provider: ^6.1.2
+  # 오디오 재생
+  just_audio: ^0.9.36
+  http_parser: ^4.0.2
 
   flutter_naver_map: ^1.4.1+1
   geolocator: ^13.0.1  # iOS 14 deprecated API 이슈 회피
@@ -77,6 +82,7 @@ flutter:
   # To add assets to your application, add an assets section, like this:
   assets:
     - .env
+    - assets/midas_model.tflite
 
 
   # An image asset can refer to one or more resolution-specific "variants", see
