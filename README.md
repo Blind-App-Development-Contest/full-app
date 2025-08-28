@@ -79,7 +79,7 @@ FULL-APP/
 5. FastAPI 서버 실행
     Windows |   backend\start.bat (cmd)
                 .\backend\start.ps1 (powershell)
-    macOS   |   ./backend/start.sh
+    macOS   |   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ## DB 설정
 
