@@ -219,7 +219,9 @@ async def camera_stream(websocket: WebSocket, user_id: UUID):
                     }
                     
                     # 최신 결과를 캐시에 저장합니다.
+                    # 최신 결과를 캐시에 저장합니다.
                     latest_detection_results[user_id_str] = response
+                    logger.info(f"Sending response to {user_id_str}: {response}")
                     await websocket.send_text(json.dumps(jsonable_encoder(response)))
 
             except Exception as e:
