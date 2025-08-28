@@ -1,65 +1,42 @@
 import 'package:flutter/material.dart';
-import '../widgets/next_button.dart';
 import '../widgets/aeye_card.dart';
-import 'step_screen.dart'; // ✅ 추가
+import '../widgets/next_button.dart';
+import 'step_screen.dart';
 
-// =======================
-// 앱 시작 진입점
-// =======================
-void main() {
-  runApp(const MyApp());
-}
+class NameScreen extends StatefulWidget {
+  const NameScreen({super.key, this.initialName});
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final String? initialName;
 
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'A:EYE',
-      theme: ThemeData(useMaterial3: true),
-      home: const UserScreen(), // ✅ 앱 시작화면
-    );
-  }
+  State<NameScreen> createState() => _NameScreenState();
 }
 
-// =======================
-// UserScreen 화면
-// =======================
-class UserScreen extends StatefulWidget {
-  const UserScreen({super.key});
-
-  @override
-  State<UserScreen> createState() => _UserScreenState();
-}
-
-class _UserScreenState extends State<UserScreen> {
-  final _nameController = TextEditingController();
-  bool _enabled = false;
+class _NameScreenState extends State<NameScreen> {
+  late final TextEditingController _nameCtrl;
+  bool _canNext = false;
 
   @override
   void initState() {
     super.initState();
-    _nameController.addListener(() {
-      final ok = _nameController.text.trim().isNotEmpty;
-      if (ok != _enabled) setState(() => _enabled = ok);
+    _nameCtrl = TextEditingController(text: widget.initialName ?? '');
+    _canNext = _nameCtrl.text.trim().isNotEmpty;
+    _nameCtrl.addListener(() {
+      final ok = _nameCtrl.text.trim().isNotEmpty;
+      if (ok != _canNext) setState(() => _canNext = ok);
     });
   }
 
   @override
   void dispose() {
-    _nameController.dispose();
+    _nameCtrl.dispose();
     super.dispose();
   }
 
-  void _onNext() {
-    // ✅ StepScreen으로 이동
+  void _goNext() {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (context) => const StepScreen(),
-      ),
+      MaterialPageRoute(builder: (_) => const StepScreen()),
     );
   }
 
@@ -77,23 +54,22 @@ class _UserScreenState extends State<UserScreen> {
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
         child: NextButton(
           label: '다음 단계',
-          enabled: _enabled,
-          onPressed: _enabled ? _onNext : null,
+          enabled: _canNext,
+          onPressed: _canNext ? _goNext : null,
         ),
       ),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 28, 24, 28),
+          padding: const EdgeInsets.all(24),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const AeyeCard(
                 title: 'A:EYE',
                 subtitle: '사용자 정보 입력',
               ),
               Container(
-                width: double.infinity,
-                padding: const EdgeInsets.fromLTRB(20, 22, 20, 22),
+                padding: const EdgeInsets.all(18),
                 decoration: BoxDecoration(
                   color: panel,
                   borderRadius: BorderRadius.circular(18),
@@ -102,31 +78,12 @@ class _UserScreenState extends State<UserScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: const [
-                        Icon(Icons.person_outline,
-                            color: Colors.white, size: 24),
-                        SizedBox(width: 8),
-                        Text(
-                          '사용자 이름',
-                          style: TextStyle(
+                    const Text('이름',
+                        style: TextStyle(
                             color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 22),
-                    const Text(
-                      '이름을 입력해주세요',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 10),
                     Container(
                       decoration: BoxDecoration(
                         color: field,
@@ -134,18 +91,15 @@ class _UserScreenState extends State<UserScreen> {
                         border: Border.all(color: divider.withOpacity(0.4)),
                       ),
                       child: TextField(
-                        controller: _nameController,
+                        controller: _nameCtrl,
                         style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600),
                         textInputAction: TextInputAction.done,
                         decoration: const InputDecoration(
                           contentPadding: EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 16,
-                          ),
+                              horizontal: 16, vertical: 16),
                           border: InputBorder.none,
                           hintText: '예: 홍길동',
                           hintStyle: TextStyle(
@@ -156,9 +110,9 @@ class _UserScreenState extends State<UserScreen> {
                         ),
                       ),
                     ),
-                    const SizedBox(height: 18),
+                    const SizedBox(height: 14),
                     Text(
-                      '입력하신 이름은 음성 안내 시 사용됩니다',
+                      '입력하신 이름은 음성 안내 시 사용됩니다.',
                       style: TextStyle(
                         color: Colors.white.withOpacity(0.75),
                         fontSize: 14,
