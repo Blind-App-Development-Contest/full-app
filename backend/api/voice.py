@@ -109,9 +109,22 @@ async def synthesize_and_save(req: TTSRequest, request: Request):
         logger.exception("DB error during voice upsert")
         raise HTTPException(status_code=500, detail=f"DB error: {e}")
 
-    # 2) Google TTS 합성
+    # 2) Google TTS 합성 (API 키 방식)
     try:
-        client = texttospeech.TextToSpeechClient()
+        import os
+        from google.oauth2 import service_account
+        from google.cloud import texttospeech
+        
+        # API 키 방식으로 인증
+        api_key = os.getenv("GOOGLE_TTS_API_KEY")
+        if not api_key:
+            raise ValueError("GOOGLE_TTS_API_KEY 환경변수가 설정되지 않았습니다.")
+        
+        # API 키를 사용한 클라이언트 생성
+        client = texttospeech.TextToSpeechClient(
+            client_options={"api_key": api_key}
+        )
+        
         synthesis_input = texttospeech.SynthesisInput(text=req.text)
 
         gender_enum = (

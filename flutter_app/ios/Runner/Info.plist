@@ -51,14 +51,21 @@
 				<key>NSIncludesSubdomains</key>
 				<true/>
 			</dict>
-			<key>115.91.25.180</key>
+			<key>192.168.45.74</key>
 			<dict>
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>
 				<true/>
 				<key>NSIncludesSubdomains</key>
 				<true/>
 			</dict>
-			<key>20.22.176.12</key>
+			<key>20.22.5.228</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
+			<key>20.22.6.21</key>
 			<dict>
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>
 				<true/>
@@ -95,6 +102,12 @@
   </dict>
 	<key>NSCameraUsageDescription</key>
 	<string>This app needs camera access for step measurement using depth detection</string>
+	<key>NSCameraUsageDescription</key>
+	<string>This app needs camera access for step measurement using depth detection</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>음성 녹음을 위해 마이크 접근이 필요합니다.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>음성 인식을 위해 접근이 필요합니다.</string>
 
  
   <!-- Launch -->

@@ -103,3 +103,8 @@ flutter_app/android/key.properties
 # Symbolication & Obfuscation
 app.*.symbols
 app.*.map.json
+
+
+# MCP gemini
+backend/.gemini/
+backend/tools.yaml

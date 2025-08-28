@@ -47,21 +47,21 @@ async def transcribe_audio(file: UploadFile = File(...)):
     try:
         # 통합된 음성 서비스로 전체 처리 (검증 + 전처리 + 음성인식)
         transcribed_text = await speech_service.transcribe_from_file(file)
-
+        
         # 파일 크기 정보 (로깅용)
         file.file.seek(0, 2)  # 파일 끝으로 이동
         file_size_bytes = file.file.tell()
         file.file.seek(0)  # 파일 처음으로 복원
-
+        
         print(f"[STT] 변환 결과: '{transcribed_text}'")
-
+        
         return STTResponse(
             text=transcribed_text,
             success=bool(transcribed_text),
             message="STT 성공" if transcribed_text else "STT 실패 - 빈 결과",
             file_size_bytes=file_size_bytes
         )
-
+        
     except HTTPException:
         # SpeechService에서 이미 처리된 HTTP 예외는 그대로 전달
         raise
@@ -81,14 +81,14 @@ async def analyze_speech_recognition(request: SpeechRecognitionRequest):
     """
     try:
         print(f"\n[명령 분석] 받은 명령: '{request.command_text}'")
-
+        
         # 통합 헬퍼 사용 - 컨텍스트 감지와 분석을 한번에 처리
         result = analyze_speech_command_with_context(request.command_text)
-
+        
         print(f"[분석 결과] 의도: {result.intent}, 신뢰도: {result.confidence}")
-
+        
         return result
-
+        
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -109,13 +109,13 @@ async def execute_unified_speech_commands(request: SpeechCommandRequest):
     try:
         if not request.command_text or not request.command_text.strip():
             raise HTTPException(status_code=400, detail="command_text는 필수입니다")
-
+        
         logger.info(f"통합 음성 명령 처리 시작: '{request.command_text}'")
-
+        
         # 1단계: 음성 명령 분석 - 통합 헬퍼 사용 (컨텍스트 자동 감지 포함)
         recognition_result = analyze_speech_command_with_context(request.command_text)
         logger.info(f"명령 분석 완료 - 의도: {recognition_result.intent}, 신뢰도: {recognition_result.confidence}")
-
+        
         # 2단계: CommandExecutor로 실행 위임 (Single Source of Truth) - 통합 실행 로직 사용
         execution_result = await execute_command_conditionally(
             recognition_result, 
@@ -123,17 +123,17 @@ async def execute_unified_speech_commands(request: SpeechCommandRequest):
         )
         if request.execute_immediately:
             logger.info(f"명령 실행 완료 - 상태: {execution_result.status.value}")
-
+        
         # 3단계: 현재 측정 상태 조회 (통합 상태)
         measurement_status = None
         try:
             measurement_status = command_executor.get_step_measurement_status()
         except Exception as status_error:
             logger.warning(f"측정 상태 조회 실패: {status_error}")
-
+        
         # 4단계: 통합 응답 생성
         execution_response = SchemaConverter.command_execution_result_to_response(execution_result)
-
+        
         response = UnifiedCommandResponse(
             intent=recognition_result.intent,
             entities=recognition_result.entities,
@@ -141,11 +141,11 @@ async def execute_unified_speech_commands(request: SpeechCommandRequest):
             execution=execution_response,
             measurement_status=measurement_status
         )
-
+        
         logger.debug(f"통합 응답 생성 완료 - 측정 활성: {measurement_status.measurement_active if measurement_status else 'N/A'}")
-
+        
         return response
-
+        
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
@@ -164,13 +164,13 @@ async def execute_speech_commands_legacy(request: FullCommandRequest):
     try:
         if not request.command_text or not request.command_text.strip():
             raise HTTPException(status_code=400, detail="command_text는 필수입니다")
-
+        
         print(f"\n[레거시 명령 실행] 시작: '{request.command_text}'")
-
+        
         # 1단계: 음성 명령 분석 - 통합 헬퍼 사용 (컨텍스트 자동 감지 포함)
         recognition_result = analyze_speech_command_with_context(request.command_text)
         print(f"[인식 완료] 의도: {recognition_result.intent}, 신뢰도: {recognition_result.confidence}")
-
+        
         # 2단계: 명령 실행 - 통합 실행 로직 사용
         execution_result = await execute_command_conditionally(
             recognition_result, 
@@ -178,7 +178,7 @@ async def execute_speech_commands_legacy(request: FullCommandRequest):
         )
         if request.execute_immediately:
             print(f"[실행 완료] 상태: {execution_result.status.value}")
-
+        
         # 응답 생성
         response = FullCommandResponse(
             intent=recognition_result.intent,
@@ -192,9 +192,9 @@ async def execute_speech_commands_legacy(request: FullCommandRequest):
                 timestamp=execution_result.timestamp
             )
         )
-
+        
         return response
-
+        
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
