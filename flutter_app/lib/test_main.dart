@@ -75,7 +75,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     // .env에서 백엔드 URL 가져오기 (기본값: 새 IP)
     final backendBaseUrl =
-        dotenv.env['BACKEND_BASE_URL'] ?? 'http://192.168.45.217:8000';
+        dotenv.env['BACKEND_BASE_URL'] ?? 'http://20.22.176.12:8000';
     debugPrint('BACKEND_BASE_URL = $backendBaseUrl');
 
     return MaterialApp(

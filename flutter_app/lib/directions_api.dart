@@ -11,6 +11,7 @@ class DirectionsResponse {
 
   final String durationText;
   final List<List<double>> pathLngLat; // [[lng,lat], ...]
+  final List<Map<String, dynamic>> steps; // 길안내 단계들
 
   DirectionsResponse({
     required this.hasRoute,
@@ -18,6 +19,7 @@ class DirectionsResponse {
     required this.distanceText,
     required this.durationText,
     required this.pathLngLat,
+    required this.steps,
   });
 
   static T? _pick<T>(Map m, String snake, String camel) {
@@ -27,7 +29,7 @@ class DirectionsResponse {
   }
 
   factory DirectionsResponse.fromJson(Map<String, dynamic> json) {
-    final provider = (json['provider'] ?? '') as String? ?? '';
+    final provider = (json['provider'] ?? '') as String;
     final routes = (json['routes'] as List?) ?? const [];
     if (routes.isEmpty) {
       return DirectionsResponse(
@@ -36,14 +38,16 @@ class DirectionsResponse {
         distanceText: '',
         durationText: '',
         pathLngLat: const [],
+        steps: const [],
       );
     }
     final r0 = routes.first as Map? ?? const {};
     final distanceText =
-        _pick<String>(r0 as Map, 'distance_text', 'distanceText') ?? '';
+        _pick<String>(r0, 'distance_text', 'distanceText') ?? '';
     final durationText =
         _pick<String>(r0, 'duration_text', 'durationText') ?? '';
     final rawPath = _pick<List>(r0, 'path_lnglat', 'pathLngLat') ?? const [];
+    final rawSteps = _pick<List>(r0, 'steps', 'steps') ?? const [];
 
     final path = <List<double>>[];
     for (final p in rawPath) {
@@ -56,12 +60,20 @@ class DirectionsResponse {
       }
     }
 
+    final steps = <Map<String, dynamic>>[];
+    for (final s in rawSteps) {
+      if (s is Map<String, dynamic>) {
+        steps.add(s);
+      }
+    }
+
     return DirectionsResponse(
       hasRoute: path.isNotEmpty,
       provider: provider,
       distanceText: distanceText,
       durationText: durationText,
       pathLngLat: path,
+      steps: steps,
     );
   }
 }
@@ -178,7 +190,7 @@ class DirectionsApi {
             await Future.delayed(Duration(seconds: attempt * 2));
             continue;
           }
-          throw lastError!;
+          throw lastError;
         }
 
         final data = jsonDecode(r.body) as Map<String, dynamic>;
@@ -217,5 +229,37 @@ class DirectionsApi {
     }
 
     throw lastError!;
+  }
+
+  Future<List<Map<String, dynamic>>> searchPlaces(String query, {double? lat, double? lng}) async {
+    try {
+      var queryParams = 'query=${Uri.encodeQueryComponent(query)}';
+      if (lat != null && lng != null) {
+        queryParams += '&lat=$lat&lng=$lng';
+        debugPrint('사용자 위치 포함 검색: $lat, $lng');
+      }
+      final url = _u('/maps/places/autocomplete?$queryParams');
+      debugPrint('장소 검색 URL: $url');
+      
+      final r = await http.get(url).timeout(const Duration(seconds: 10));
+
+      debugPrint('장소 검색 응답 상태: ${r.statusCode}');
+
+      if (r.statusCode >= 400) {
+        debugPrint('장소 검색 에러 ${r.statusCode}: ${r.body}');
+        return [];
+      }
+
+      final data = jsonDecode(r.body) as Map<String, dynamic>;
+      final predictions = data['predictions'] as List? ?? [];
+      
+      debugPrint('받은 장소 데이터: ${predictions.length}개');
+      
+      return predictions.map((p) => p as Map<String, dynamic>).toList();
+      
+    } catch (e) {
+      debugPrint('장소 검색 실패: $e');
+      return [];
+    }
   }
 }

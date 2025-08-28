@@ -43,7 +43,7 @@ async def _ncloud_get(url: str, params: dict, cid: str, csec: str, *, strict: bo
     headers = {
         "X-NCP-APIGW-API-KEY-ID": cid,
         "X-NCP-APIGW-API-KEY": csec,
-        "Referer": "http://192.168.45.217" # 서버 주소 명시 
+        "Referer": "http://20.22.176.12" # 서버 주소 명시 
     }
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
@@ -435,6 +435,8 @@ async def directions_info():
 @router.get("/places/autocomplete")
 async def places_autocomplete(
     query: str = "",
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
     settings: Settings = Depends(get_settings)
 ):
     """Places autocomplete using NAVER Search API"""
@@ -442,38 +444,94 @@ async def places_autocomplete(
         return {"predictions": []}
     
     try:
+        print(f"[Places autocomplete] 검색 시작: query='{query}'")
         cid, csec = _require_naver_keys(settings)
         q = query.strip()
         
-        # NAVER Place API 호출
-        place_params = {"query": q, "display": 5, "sort": "comment"}
+        # 사용자 위치 또는 기본 위치 (서울시청) 설정
+        if lat is not None and lng is not None:
+            coordinate = f"{lng},{lat}"  # NAVER API는 lng,lat 순서
+            print(f"[Places autocomplete] 사용자 실제 위치 사용: {lat},{lng}")
+        else:
+            coordinate = "126.9780,37.5665"  # 서울시청 기본값
+            print(f"[Places autocomplete] 기본 위치 사용: 서울시청")
+        
+        # NAVER Place API 호출 (시각장애인 도보 길안내용 - 5km 반경 제한)
+        place_params = {
+            "query": q,
+            "display": 5,
+            "coordinate": coordinate,
+            "radius": 5000  # 5km 반경 (도보 접근 가능한 합리적 범위)
+        }
+        
+        print(f"[Places autocomplete] NAVER Place API 호출: {place_params}")
+        
         pdata = await _ncloud_get(
             "https://maps.apigw.ntruss.com/map-place/v1/search",
             place_params, cid, csec, strict=False
         )
         
-        predictions = []
-        if isinstance(pdata, dict) and "_status" not in pdata:
-            places = pdata.get("places") or []
-            for place in places[:5]:  # 최대 5개 결과
-                predictions.append({
-                    "place_id": place.get("id", ""),
-                    "description": place.get("name", ""),
-                    "structured_formatting": {
-                        "main_text": place.get("name", ""),
-                        "secondary_text": place.get("roadAddress", "") or place.get("address", "")
-                    },
-                    "geometry": {
-                        "location": {
-                            "lat": float(place.get("y", 0)),
-                            "lng": float(place.get("x", 0))
-                        }
-                    }
-                })
+        print(f"[Places autocomplete] Place API 응답: {type(pdata)}, _status={pdata.get('_status') if isinstance(pdata, dict) else 'N/A'}")
         
+        predictions = []
+        if isinstance(pdata, dict):
+            if "_status" in pdata:
+                print(f"[Places autocomplete] API 에러 상태: {pdata.get('_status')}, {pdata.get('error', '')}")
+                # 에러가 있어도 fallback으로 geocoding 시도
+                try:
+                    print(f"[Places autocomplete] Geocoding fallback 시도: {q}")
+                    bias_coords = (lat, lng) if (lat is not None and lng is not None) else (37.5665, 126.9780)
+                    lat_result, lng_result = await _geocode_nominatim(q, bias=bias_coords)
+                    predictions = [{
+                        "place_id": q,
+                        "description": q,
+                        "structured_formatting": {
+                            "main_text": q,
+                            "secondary_text": f"위도: {lat_result:.4f}, 경도: {lng_result:.4f}"
+                        },
+                        "geometry": {
+                            "location": {"lat": lat_result, "lng": lng_result}
+                        }
+                    }]
+                    print(f"[Places autocomplete] Geocoding 성공: {lat_result}, {lng_result}")
+                except Exception as e:
+                    print(f"[Places autocomplete] Geocoding도 실패: {e}")
+                    predictions = []
+            else:
+                # 정상 응답 처리
+                places = pdata.get("places") or pdata.get("place") or []
+                print(f"[Places autocomplete] 받은 장소 수: {len(places)}")
+                
+                for place in places[:5]:  # 최대 5개 결과
+                    name = place.get("name", "")
+                    road_addr = place.get("roadAddress", "")
+                    addr = place.get("address", "")
+                    address = road_addr or addr
+                    
+                    predictions.append({
+                        "place_id": place.get("id", ""),
+                        "description": name,
+                        "structured_formatting": {
+                            "main_text": name,
+                            "secondary_text": address
+                        },
+                        "geometry": {
+                            "location": {
+                                "lat": float(place.get("y", 0)),
+                                "lng": float(place.get("x", 0))
+                            }
+                        }
+                    })
+        
+        if len(predictions) > 0:
+            print(f"[Places autocomplete] 첫 번째 장소: {predictions[0]['description']}")
+        else:
+            print(f"[Places autocomplete] 장소를 찾지 못함")
+        
+        print(f"[Places autocomplete] 최종 반환: {len(predictions)}개 장소")
         return {"predictions": predictions}
     except Exception as e:
-        print(f"[Places autocomplete] Error: {e}")
+        print(f"[Places autocomplete] 에러: {e}")
         return {"predictions": []}
 
 @router.get("/places/detail")
