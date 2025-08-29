@@ -24,7 +24,7 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
   List<dynamic> _detectedObjects = [];
   String? _error;
 
-  final String _userId = "550e8400-e29b-41d4-a716-446655440000"; // Modified to use specific UUID
+  final String _userId = "3fa85f64-5717-4562-b3fc-2c963f66afa6"; // Modified to use specific UUID
 
   @override
   void initState() {
@@ -194,7 +194,7 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
-                    _buildBottomButton(icon: Icons.text_fields, label: '텍스트읽기', onPressed: () {}),
+                    _buildBottomButton(icon: Icons.text_fields, label: '주변 안내', onPressed: () {}),
                     _buildBottomButton(icon: Icons.navigation, label: '길찾기', onPressed: () {}),
                     _buildBottomButton(icon: Icons.phone, label: '보호자호출', onPressed: () {}),
                     _buildBottomButton(icon: Icons.settings, label: '설정', onPressed: () {}),
