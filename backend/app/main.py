@@ -16,9 +16,11 @@ from middleware.error_handler import ErrorHandlerMiddleware
 
 # API 라우터 imports
 from api.speech import router as speech_router
+from api.speech_routes import router as speech_router
 from api.measurement import router as measurement_router
 from api.execution import router as execution_router
 from api.footstep import router as footstep_router
+from api.maps import router as maps_router 
 from api import users, update_name, caregiver
 from api import voice as voice_module
 from api import camera, objects
@@ -34,12 +36,13 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
-app = FastAPI(title="Full App")
+app = FastAPI(title="Full App", debug=settings.DEBUG)
 
 load_dotenv()
 logger = logging.getLogger("uvicorn.error")
 
 def _normalize_dsn(dsn: str) -> str:
+    """sqlalchemy 스타일 DSN을 asyncpg용으로 보정"""
     return dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 # 통합 에러 처리 미들웨어
@@ -48,7 +51,8 @@ app.add_middleware(ErrorHandlerMiddleware)
 # CORS 설정 (Flutter 앱 및 웹 테스트 페이지에서 호출 가능하도록)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
+    allow_origins= settings.ALLOWED_ORIGINS or
+    [
         "http://localhost",
         "http://localhost:8000",
         "http://127.0.0.1",
@@ -59,6 +63,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# === 앱 라이프사이클 ===
 @app.on_event("startup")
 async def on_startup():
   
@@ -66,7 +72,8 @@ async def on_startup():
     logger.info("🚀 음성 명령 인식 서버 시작")
     
     # 데이터베이스 연결 풀 생성
-    dsn = _normalize_dsn(os.getenv("DB_URL", "postgresql://appuser:1111@localhost:5432/appdb"))
+    # DB 연결
+    dsn = _normalize_dsn(os.getenv("DB_URL", settings.db_url or "postgresql://appuser:1111@localhost:5432/appdb"))
     app.state.db_pool = await asyncpg.create_pool(dsn=dsn)
     
     # 싱글톤 서비스 인스턴스 미리 생성
@@ -84,6 +91,15 @@ async def on_startup():
     except Exception as e:
         logger.critical(f"FATAL: Could not connect to database via asyncpg pool: {e}")
         
+    # 유용한 환경키 로딩 여부 로깅 (값은 노출하지 않음)
+    has_mapbox = bool(os.getenv("MAPBOX_ACCESS_TOKEN"))
+    has_naver_id = bool(os.getenv("NAVER_CLIENT_ID") or getattr(settings, "NAVER_CLIENT_ID", None))
+    has_naver_secret = bool(os.getenv("NAVER_CLIENT_SECRET") or getattr(settings, "NAVER_CLIENT_SECRET", None))
+    print(f"🔑 ENV CHECK | MAPBOX_TOKEN={'OK' if has_mapbox else 'MISSING'} "
+          f"| NAVER_ID={'OK' if has_naver_id else 'MISSING'} "
+          f"| NAVER_SECRET={'OK' if has_naver_secret else 'MISSING'}")
+
+
 @app.on_event("shutdown")
 async def on_shutdown():
     """서버 종료 시 정리"""
@@ -95,6 +111,8 @@ async def on_shutdown():
     
     logger.info(" 서버 종료 완료")
 
+
+# === 루트/헬스 ===
 @app.get("/")
 def root():
     """서버 상태 확인"""
@@ -109,11 +127,24 @@ def root():
             "footstep_management": "/api/users/footstep",
             "user_management": "/users",
             "voice_synthesis": "/api/users/voice",
-            "api_docs": "/docs"
+            "api_docs": "/docs",
+            "speech_recognition": "/api/users/speech/recognition",
+            "tts_play_page": "/play",
+            "maps_directions": "/maps/directions",
+            # 아래 둘은 구현된 경우만 사용하세요 (미구현이면 제거 권장)
+            "places_autocomplete": "/maps/places/autocomplete",
+            "place_detail": "/maps/places/detail"
         },
     }
 
 if __name__ == "__main__":
+    print("🚀 서버 시작: http://%s:%s" % (settings.HOST, settings.PORT))
+    uvicorn.run(
+        app,
+        host=settings.HOST,
+        port=settings.PORT,
+        reload=settings.DEBUG
+    )
     logger.info("🚀 시각장애인 음성 보조 시스템 서버 시작")
     logger.info(f"📍 서버 주소: http://{settings.HOST}:{settings.PORT}")
     logger.info(f"📖 API 문서: http://{settings.HOST}:{settings.PORT}/docs")
@@ -160,7 +191,7 @@ $("go").onclick = async () => {
       body: JSON.stringify(body)
     });
     if (!r.ok) throw new Error(await r.text());
-    const blob = await r.blob(); // audio/mpeg
+    const blob = await r.blob();
     $("player").src = URL.createObjectURL(blob);
     $("player").play();
     $("status").textContent = "재생 중";
@@ -181,14 +212,17 @@ async def test_camera_page():
     except FileNotFoundError:
         return HTMLResponse(content="<h1>Test page not found.</h1>", status_code=404)
 
-# 라우터 등록
+
+# === 라우터 등록 ===
 app.include_router(users.router)
 app.include_router(voice_module.router)  # /api/users/voice
+app.include_router(update_name.router)
 app.include_router(caregiver.router)
 app.include_router(footstep_router, prefix="/api/users/footstep", tags=["Footstep Management"])
 app.include_router(speech_router, prefix="/api/users/speech", tags=["Speech Processing"])
 app.include_router(measurement_router, prefix="/api/users/measurement", tags=["Measurement System"])
 app.include_router(execution_router, prefix="/api/users/action", tags=["Command Execution"])
+app.include_router(maps_router)   
 # 테스트용 라우터
 app.include_router(realtime_routes.router, prefix="/api/realtime", tags=["Real-time FastDepth Processing"])
 

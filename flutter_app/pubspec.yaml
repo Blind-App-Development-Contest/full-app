@@ -37,8 +37,10 @@ dependencies:
   record: ^4.4.4
   # 파일 경로 관리
   path_provider: ^2.1.2
+  # 로컬 저장소
+  shared_preferences: ^2.3.2
   # HTTP 통신
-  http: ^1.2.1
+  http: ^1.5.0
   # .env 파일 로드
   flutter_dotenv: ^5.1.0
   # 상태 관리
@@ -46,15 +48,25 @@ dependencies:
   # 오디오 재생
   just_audio: ^0.9.36
   http_parser: ^4.0.2
+
   # 웹소켓 통신
   web_socket_channel: ^2.4.0
   # 이미지 처리
   image: ^4.0.17
+
+
+  flutter_naver_map: ^1.4.1+1
+  geolocator: ^13.0.1  # iOS 14 deprecated API 이슈 회피
+  flutter_polyline_points: ^2.0.0
+  uuid: ^4.5.1
+  flutter_secure_storage: ^9.0.0 
+
   
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
-  uuid: ^4.4.0
+  webview_flutter: ^4.9.0  # iOS 호환성 개선을 위한 안정 버전
+
 
 dev_dependencies:
   flutter_test:
@@ -82,7 +94,6 @@ flutter:
   assets:
     - .env
     - assets/midas_model.tflite
-
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
