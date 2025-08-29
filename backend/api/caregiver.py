@@ -6,12 +6,44 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 import logging
+import os
 
 from .users import get_session  # users.py의 세션 생성기 재사용
+
+# ── Solapi SDK & utils (동기 SDK를 비동기에서 안전하게 호출)
+from solapi import SolapiMessageService
+from solapi.model import RequestMessage
+from starlette.concurrency import run_in_threadpool
+
+# (개발환경 편의를 위해 .env 로드; 프로덕션은 런타임 시크릿 주입 권장)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 
 logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/api/users", tags=["caregiver"])
+
+# ─────────────────────────────────────────────────────────────
+# Solapi 설정
+# ─────────────────────────────────────────────────────────────
+SOLAPI_API_KEY = os.getenv("SOLAPI_API_KEY")
+SOLAPI_API_SECRET = os.getenv("SOLAPI_API_SECRET")
+SOLAPI_SENDER = os.getenv("SOLAPI_SENDER")  # 등록된 발신번호(하이픈 없이)
+
+if not all([SOLAPI_API_KEY, SOLAPI_API_SECRET, SOLAPI_SENDER]):
+    logger.warning("SOLAPI 환경변수(SOLAPI_API_KEY, SOLAPI_API_SECRET, SOLAPI_SENDER)가 설정되지 않았습니다.")
+
+_solapi_service: Optional[SolapiMessageService] = None
+def get_solapi_service() -> SolapiMessageService:
+    global _solapi_service
+    if _solapi_service is None:
+        if not all([SOLAPI_API_KEY, SOLAPI_API_SECRET]):
+            raise RuntimeError("Solapi API Key/Secret이 설정되지 않았습니다.")
+        _solapi_service = SolapiMessageService(api_key=SOLAPI_API_KEY, api_secret=SOLAPI_API_SECRET)
+    return _solapi_service
 
 # ─────────────────────────────────────────────────────────────
 # Schemas
@@ -51,7 +83,7 @@ async def create_caregiver(req: CaregiverCreate, session: AsyncSession = Depends
         query = text("""
                      INSERT INTO caregivers (user_id, caregivers_name, phone_number)
                      VALUES (:user_id, :name, :phone)
-                         RETURNING caregiver_id, user_id, caregivers_name, phone_number
+                     RETURNING caregiver_id, user_id, caregivers_name, phone_number
                      """)
         result = await session.execute(
             query,
@@ -119,46 +151,69 @@ async def update_caregiver(user_id: UUID, req: CaregiverUpdate, session: AsyncSe
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred: {e}")
 
 # ─────────────────────────────────────────────────────────────
-# POST /api/users/caregiver/alert : 위험 감지시 보호자 호출
+# POST /api/users/caregiver/alert : 위험 감지시 보호자 호출 (Solapi 문자 발송)
 # ─────────────────────────────────────────────────────────────
 @router.post("/caregiver/alert", response_model=CaregiverAlertResponse)
 async def send_caregiver_alert(req: AlertRequest, session: AsyncSession = Depends(get_session)):
     user_id_str = str(req.user_id)
     try:
+        # 1) 보호자/사용자 조회
         query = text("""
-                     SELECT c.caregivers_name, c.phone_number, u.user_name
-                     FROM caregivers c
-                              JOIN users u ON c.user_id = u.user_id
-                     WHERE c.user_id = :user_id
-                     """)
+            SELECT c.caregivers_name, c.phone_number, u.user_name
+            FROM caregivers c
+            JOIN users u ON c.user_id = u.user_id
+            WHERE c.user_id = :user_id
+        """)
         result = await session.execute(query, {"user_id": user_id_str})
         caregiver = result.fetchone()
 
         if not caregiver:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Caregiver not found for this user")
 
-        # 서버에서 자동 메시지 생성
+        # 2) 자동 메시지 생성
         auto_message = f"[긴급] {caregiver.user_name}님에게 위급 상황이 발생했습니다. 확인이 필요합니다."
 
+        # 3) 문자 발송 (Solapi) - 동기 SDK를 스레드풀에서 실행
+        svc = get_solapi_service()
+        msg = RequestMessage(
+            from_=SOLAPI_SENDER,
+            to=caregiver.phone_number,
+            text=auto_message
+        )
+        solapi_resp = await run_in_threadpool(svc.send, msg)
+
+        # 발송 성공/실패 간단 검증 (등록 성공 카운트 확인)
+        reg_ok = getattr(getattr(solapi_resp, "group_info", None), "count", None)
+        registered_success = getattr(reg_ok, "registered_success", 0) if reg_ok else 0
+        if registered_success <= 0:
+            # Solapi 응답을 그대로 노출하긴 과하니 요약 메시지로 반환
+            raise HTTPException(status_code=502, detail="Failed to register SMS to Solapi")
+
+        # 4) 대시보드 로그 적재
         log_query = text("""
-                         INSERT INTO dashboard_logs (user_id, log_type, log_data)
-                         VALUES (:user_id, 'EMERGENCY_ALERT', :log_data)
-                         """)
+            INSERT INTO dashboard_logs (user_id, log_type, log_data)
+            VALUES (:user_id, 'EMERGENCY_ALERT', :log_data)
+        """)
         await session.execute(log_query, {
             "user_id": user_id_str,
             "log_data": f"Emergency alert sent to {caregiver.caregivers_name} ({caregiver.phone_number}): {auto_message}"
         })
         await session.commit()
 
+        # 5) 현재 위치(추후 실제 위치 연동) - 지금은 placeholder
         current_location = "위치 정보 확인 불가"
 
         return CaregiverAlertResponse(
             status="success",
-            message=f"Alert sent to {caregiver.caregivers_name}",
+            message=f"Alert SMS sent to {caregiver.caregivers_name}",
             caregiver_phone=caregiver.phone_number,
             current_location=current_location
         )
 
+    except HTTPException:
+        # 위에서 raise한 HTTPException은 그대로 전달
+        await session.rollback()
+        raise
     except Exception as e:
         await session.rollback()
         logger.exception("Error sending caregiver alert")

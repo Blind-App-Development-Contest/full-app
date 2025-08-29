@@ -16,7 +16,6 @@ from middleware.error_handler import ErrorHandlerMiddleware
 
 # API 라우터 imports
 from api.speech import router as speech_router
-from api.speech_routes import router as speech_router
 from api.measurement import router as measurement_router
 from api.execution import router as execution_router
 from api.footstep import router as footstep_router
