@@ -72,10 +72,26 @@
                 stopBtn.disabled = false;
                 describeBtn.disabled = false;
 
-                // 3. 1초에 5번 (200ms 마다) 프레임 전송
-                intervalId = setInterval(() => {
+                // 3. 적응형 프레임 전송 (배터리 효율성 + 정확도)
+                let frameInterval = 400; // 기본 400ms (배터리 절약)
+                let measurementMode = false;
+                let consecutiveDetections = 0;
+                
+                const adaptiveFrameSending = () => {
                     sendFrame();
-                }, 200);
+                    
+                    // 프레임 간격 동적 조정
+                    setTimeout(() => {
+                        if (measurementMode) {
+                            frameInterval = Math.max(100, frameInterval - 10); // 측정 중엔 점진적으로 빨라짐 (최대 100ms)
+                        } else {
+                            frameInterval = Math.min(500, frameInterval + 20); // 대기 중엔 점진적으로 느려짐 (최대 500ms)
+                        }
+                        adaptiveFrameSending();
+                    }, frameInterval);
+                };
+                
+                adaptiveFrameSending();
             };
 
             websocket.onmessage = (event) => {
@@ -101,14 +117,28 @@
                     if (data.objects) {
                         drawDetections(data.objects);
                     }
-
-                    if (data.vibration) {
-                        statusDiv.textContent = `상태: [${data.vibration.pattern_type.toUpperCase()}] ${data.vibration.reason}`;
-                        if ('vibrate' in navigator) {
-                            navigator.vibrate(data.vibration.duration_ms);
+                    
+                    // 측정 모드 감지 및 적응형 프레임률 조정
+                    if (data.mode === 'measurement') {
+                        measurementMode = true;
+                        if (data.measurement && data.measurement.success) {
+                            statusDiv.textContent = `보폭 측정: ${data.measurement.step_length_cm}cm (신뢰도: ${(data.measurement.confidence * 100).toFixed(1)}%)`;
+                            consecutiveDetections++;
+                        } else {
+                            statusDiv.textContent = '보폭 측정 중... 발 위치를 감지하고 있습니다.';
                         }
                     } else {
-                        statusDiv.textContent = '상태: 연결됨. 실시간 탐지 중...';
+                        measurementMode = false;
+                        consecutiveDetections = 0;
+                        
+                        if (data.vibration) {
+                            statusDiv.textContent = `상태: [${data.vibration.pattern_type.toUpperCase()}] ${data.vibration.reason}`;
+                            if ('vibrate' in navigator) {
+                                navigator.vibrate(data.vibration.duration_ms);
+                            }
+                        } else {
+                            statusDiv.textContent = '상태: 연결됨. 실시간 탐지 중...';
+                        }
                     }
 
                     const threatLevelDisplay = document.getElementById('threat_level_display');

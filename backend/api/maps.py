@@ -11,6 +11,12 @@ import httpx
 import os
 import re
 
+# 중앙화된 데이터베이스 연결 사용 (로그 저장용)
+from core.database import get_async_db
+from models.database_models import User, DashboardLog
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from fastapi import Depends
 from config.settings import get_settings, Settings
 
 router = APIRouter(prefix="/maps", tags=["maps"])
@@ -585,8 +591,40 @@ async def places_detail(
         print(f"[Places detail] Error: {e}")
         return {"result": None, "status": "UNKNOWN_ERROR"}
 
+async def _log_directions_request(user_id: str, req: DirectionsReq, result: dict, session: AsyncSession):
+    """길찾기 요청 로그를 데이터베이스에 저장"""
+    try:
+        log_data = {
+            "request": {
+                "origin": req.origin,
+                "destination": req.destination,
+                "mode": req.mode,
+                "waypoints_count": len(req.waypoints or [])
+            },
+            "response": {
+                "provider": result.get("provider", "unknown"),
+                "routes_count": len(result.get("routes", []))
+            }
+        }
+        
+        dashboard_log = DashboardLog(
+            user_id=user_id,
+            log_type="directions_request",
+            log_data=str(log_data)
+        )
+        
+        session.add(dashboard_log)
+        await session.commit()
+    except Exception as e:
+        print(f"[길찾기 로그 저장 실패] {e}")
+
 @router.post("/directions")
-async def directions(req: DirectionsReq, settings: Settings = Depends(get_settings)):
+async def directions(
+    req: DirectionsReq, 
+    settings: Settings = Depends(get_settings),
+    user_id: str = None,  # 선택적 사용자 ID 파라미터
+    session: AsyncSession = Depends(get_async_db)
+):
     mode = (req.mode or "walking").lower()
     if mode not in ("driving", "walking"):
         mode = "walking"
@@ -634,9 +672,13 @@ async def directions(req: DirectionsReq, settings: Settings = Depends(get_settin
 
     # -------- walking → MAPBOX --------
     if mode == "walking":
-        return await _mapbox_directions_walking(
+        result = await _mapbox_directions_walking(
             o_lat, o_lng, d_lat, d_lng, waypoints=wps_parsed, lang="ko", steps=True, settings=settings
         )
+        # 로그 저장 (사용자 ID가 있는 경우)
+        if user_id:
+            await _log_directions_request(user_id, req, result, session)
+        return result
 
     # -------- driving → NAVER --------
     if not cid:
@@ -745,4 +787,10 @@ async def directions(req: DirectionsReq, settings: Settings = Depends(get_settin
         "path_lnglat": path,         # [[lng,lat], ...] → front flips to (lat,lng)
         "steps": steps
     }
-    return {"routes": [route_out], "provider": "naver"}
+    result = {"routes": [route_out], "provider": "naver"}
+    
+    # 로그 저장 (사용자 ID가 있는 경우)
+    if user_id:
+        await _log_directions_request(user_id, req, result, session)
+    
+    return result

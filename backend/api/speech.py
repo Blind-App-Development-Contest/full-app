@@ -20,17 +20,30 @@ from models.common_models import (
 from models.fastdepth_models import SpeechCommandRequest
 from services.command_executor import CommandExecutionResult
 from config.settings import get_settings
-from api.speech_helpers import (
+from api.measurement import (
     get_current_context,
-    get_available_commands_for_context,
-    get_supported_intents_with_kalman,
-    analyze_speech_command_with_context,
     execute_command_conditionally
 )
+from services.speech_analyzer import SpeechAnalyzer
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 router = APIRouter()
+
+@router.get("")
+@router.get("/")
+async def speech_status():
+    """음성 처리 서비스 상태 확인"""
+    return {
+        "service": "Speech Processing",
+        "status": "active",
+        "endpoints": {
+            "transcribe": "POST /transcribe - 음성을 텍스트로 변환",
+            "recognition": "POST /recognition - 음성 명령 인식",
+            "commands": "POST /commands - 음성 명령 처리",
+            "intents": "GET /intents - 지원하는 의도 목록"
+        }
+    }
 
 # 싱글톤 서비스 인스턴스 사용
 from services.singleton import service_manager
@@ -74,6 +87,16 @@ async def transcribe_audio(file: UploadFile = File(...)):
             file_size_bytes=0
         )
 
+@router.get("/recognition")
+async def get_recognition_info():
+    """음성 인식 서비스 정보 조회"""
+    return {
+        "service": "Speech Recognition",
+        "status": "active",
+        "supported_languages": ["ko-KR"],
+        "usage": "POST /recognition with command_text to analyze speech intent"
+    }
+
 @router.post("/recognition", response_model=SpeechRecognitionResponse)
 async def analyze_speech_recognition(request: SpeechRecognitionRequest):
     """
@@ -82,8 +105,9 @@ async def analyze_speech_recognition(request: SpeechRecognitionRequest):
     try:
         print(f"\n[명령 분석] 받은 명령: '{request.command_text}'")
         
-        # 통합 헬퍼 사용 - 컨텍스트 감지와 분석을 한번에 처리
-        result = analyze_speech_command_with_context(request.command_text)
+        # speech_analyzer 서비스 사용 - 컨텍스트 감지와 분석을 한번에 처리
+        context = get_current_context()
+        result = speech_analyzer.analyze_command(request.command_text, context)
         
         print(f"[분석 결과] 의도: {result.intent}, 신뢰도: {result.confidence}")
         
@@ -112,8 +136,9 @@ async def execute_unified_speech_commands(request: SpeechCommandRequest):
         
         logger.info(f"통합 음성 명령 처리 시작: '{request.command_text}'")
         
-        # 1단계: 음성 명령 분석 - 통합 헬퍼 사용 (컨텍스트 자동 감지 포함)
-        recognition_result = analyze_speech_command_with_context(request.command_text)
+        # 1단계: 음성 명령 분석 - speech_analyzer 서비스 사용 (컨텍스트 자동 감지 포함)
+        context = get_current_context()
+        recognition_result = speech_analyzer.analyze_command(request.command_text, context)
         logger.info(f"명령 분석 완료 - 의도: {recognition_result.intent}, 신뢰도: {recognition_result.confidence}")
         
         # 2단계: CommandExecutor로 실행 위임 (Single Source of Truth) - 통합 실행 로직 사용
@@ -167,8 +192,9 @@ async def execute_speech_commands_legacy(request: FullCommandRequest):
         
         print(f"\n[레거시 명령 실행] 시작: '{request.command_text}'")
         
-        # 1단계: 음성 명령 분석 - 통합 헬퍼 사용 (컨텍스트 자동 감지 포함)
-        recognition_result = analyze_speech_command_with_context(request.command_text)
+        # 1단계: 음성 명령 분석 - speech_analyzer 서비스 사용 (컨텍스트 자동 감지 포함)
+        context = get_current_context()
+        recognition_result = speech_analyzer.analyze_command(request.command_text, context)
         print(f"[인식 완료] 의도: {recognition_result.intent}, 신뢰도: {recognition_result.confidence}")
         
         # 2단계: 명령 실행 - 통합 실행 로직 사용
@@ -208,4 +234,10 @@ def get_speech_intents():
     """
     지원하는 의도 목록 반환 (칼만 필터 의도 포함)
     """
-    return get_supported_intents_with_kalman()
+    base_intents = speech_analyzer.get_supported_intents()
+    return {
+        "supported_intents": base_intents,
+        "keyword_mapping": speech_analyzer.KEYWORD_MAPPING,
+        "measurement_active": command_executor.is_measurement_active(),
+        "total_intents": len(base_intents)
+    }

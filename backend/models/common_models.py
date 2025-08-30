@@ -1,7 +1,7 @@
 """통합 공통 모델들 - 애플리케이션 전체에서 사용되는 표준 데이터 구조"""
 
-from pydantic import BaseModel, Field, field_validator
-from typing import Dict, Any, Optional, List, Union
+from pydantic import BaseModel, Field
+from typing import Dict, Any, Optional, List
 from datetime import datetime
 from enum import Enum
 import time

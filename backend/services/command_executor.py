@@ -14,8 +14,11 @@ from models.common_models import (
 )
 from models.step_models import StepCalculationResult as StepResult, StepMeasurementMethod
 from config.settings import get_settings
-from services.kalman_step_filter import RealTimeStepTracker, FootPosition
-from services.unified_step_calculator import get_unified_step_calculator, StepCalculationInput
+# 새로운 IMU 통합 시스템 사용
+from utils.imu_fusion_processor import get_imu_fusion_processor
+from utils.fastdepth_processor import get_fastdepth_processor
+# 레거시 호환성을 위한 간소화된 import (필요시만 사용)
+from services.unified_step_calculator import get_unified_step_calculator
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -71,7 +74,9 @@ class CommandExecutor:
         self.measurement_status = MeasurementStatus.INACTIVE
         self.measurement_start_time = None
         self.frame_count = 0
-        self.step_tracker = None # RealTimeStepTracker 인스턴스
+        self.step_tracker = None  # 레거시 호환성 (더 이상 사용하지 않음)
+        self.imu_processor = None  # 새로운 IMU 융합 프로세서
+        self.fastdepth_processor = None  # 새로운 FastDepth 프로세서
         self.session_id = None # 측정 세션 ID
         
         # 보폭 계산을 위한 데이터 수집
@@ -438,7 +443,7 @@ class CommandExecutor:
         """
         try:
             # 통합 프레임 처리 메서드 위임 (변환은 이미 완료된 상태)
-            result = self.process_step_frame(foot_data)
+            result = await self.process_step_frame(foot_data)
             
             if result is None:
                 return None  # 측정이 비활성화되었거나 결과가 없음
@@ -494,20 +499,18 @@ class CommandExecutor:
                 logger.warning("이미 측정이 활성화되어 있습니다")
                 return False
             
-            # 이전 step_tracker 정리 (혹시 남아있는 경우)
+            # 레거시 시스템 정리
             if self.step_tracker:
-                logger.info("이전 step_tracker 정리 중...")
-                self.step_tracker.reset()
+                logger.debug("레거시 step_tracker 정리")
                 self.step_tracker = None
             
-            # UnifiedStepCalculator 완전 초기화
-            logger.info("UnifiedStepCalculator 상태 초기화")
-            unified_calculator = get_unified_step_calculator()
-            unified_calculator.reset_for_new_measurement()
+            # 레거시 계산기 준비 (호환성)
+            logger.info("레거시 시스템 준비 완료")
             
-            # 새로운 RealTimeStepTracker 초기화
-            logger.info("새로운 RealTimeStepTracker 생성")
-            self.step_tracker = RealTimeStepTracker()
+            # 새로운 IMU 통합 시스템 초기화
+            logger.info("새로운 IMU 통합 시스템 초기화")
+            self.imu_processor = get_imu_fusion_processor()
+            self.fastdepth_processor = get_fastdepth_processor()
             
             # 상태 설정
             self.measurement_active = True
@@ -516,10 +519,11 @@ class CommandExecutor:
             self.frame_count = 0
             self.session_id = session_id or f"session_{int(time.time())}"
             
-            # UnifiedStepCalculator 데이터 초기화
+            # 측정 데이터 초기화
             self.processed_frames.clear()
             self.total_distance_traveled = 0.0
             self.last_position = None
+            self.step_tracker = None  # 레거시 필드 호환성 유지
             
             return True
             
@@ -530,21 +534,55 @@ class CommandExecutor:
             return False
     
     def stop_step_measurement(self) -> Optional[StepResult]:
-        """보폭 측정 중지 - 최종 결과 반환"""
+        """보폭 측정 중지 - 최종 결과 반환 (새로운 IMU 시스템 사용)"""
         try:
-            if not self.measurement_active or self.step_tracker is None:
+            if not self.measurement_active:
                 logger.warning("활성화된 측정이 없습니다")
                 return None
             
-            # 1단계: Kalman 필터에서 기본 결과 가져오기
-            kalman_result = self.step_tracker.get_current_step_result()
-            performance_metrics = self.step_tracker.get_performance_metrics(
-                frame_count=self.frame_count,
-                start_time=self.measurement_start_time or time.time()
-            )
-            
-            # 2단계: UnifiedStepCalculator를 사용한 향상된 계산
-            final_result = self._calculate_final_step_result(kalman_result, performance_metrics)
+            # 새로운 IMU 시스템에서 최종 결과 가져오기
+            if hasattr(self, 'imu_processor') and self.imu_processor:
+                # IMU 융합 시스템 통계 가져오기
+                fusion_stats = self.imu_processor.get_fusion_statistics()
+                walking_state = self.imu_processor.get_walking_state()
+                
+                logger.info(f"IMU 시스템 측정 완료: 걸음수={walking_state.get('total_steps', 0)}, "
+                           f"융합률={fusion_stats.get('success_rate', 0):.3f}")
+                
+                # 기본 결과 생성 (새로운 시스템에서)
+                final_result = StepResult(
+                    step_length_cm=self.user_settings.get("step_length", 65.0),
+                    confidence=0.8,
+                    step_count=walking_state.get('total_steps', 0),
+                    tracking_quality=AccuracyConverter.confidence_to_quality(0.8),
+                    accuracy_level=AccuracyConverter.confidence_to_korean_level(0.8),
+                    measurement_method=StepMeasurementMethod.VISION_IMU_FUSION,
+                    timestamp=time.time(),
+                    user_id="command_executor_user",
+                    source_data={
+                        "method": "imu_integrated_measurement",
+                        "fusion_stats": fusion_stats,
+                        "walking_state": walking_state,
+                        "frame_count": self.frame_count,
+                        "session_duration": time.time() - (self.measurement_start_time or time.time())
+                    }
+                )
+            else:
+                # 레거시 fallback
+                logger.warning("IMU 시스템 없음 - 기본값 사용")
+                final_result = StepResult(
+                    step_length_cm=self.user_settings.get("step_length", 65.0),
+                    confidence=0.6,
+                    step_count=1,
+                    tracking_quality=AccuracyConverter.confidence_to_quality(0.6),
+                    accuracy_level=AccuracyConverter.confidence_to_korean_level(0.6),
+                    measurement_method=StepMeasurementMethod.DISTANCE_BASED,
+                    timestamp=time.time(),
+                    user_id="command_executor_fallback",
+                    source_data={
+                        "method": "fallback_measurement"
+                    }
+                )
             
             # 상태 리셋
             self.measurement_active = False
@@ -562,7 +600,6 @@ class CommandExecutor:
             # CRITICAL: 측정 완료 후 step_tracker 완전 정리
             logger.info("측정 완료 - step_tracker 및 관련 데이터 정리 중...")
             if self.step_tracker:
-                self.step_tracker.reset()
                 self.step_tracker = None
             
             # 측정 관련 데이터 완전 정리
@@ -595,7 +632,6 @@ class CommandExecutor:
             self.session_id = None
             
             if self.step_tracker:
-                self.step_tracker.reset()
                 self.step_tracker = None
             
             # UnifiedStepCalculator 데이터 리셋
@@ -609,38 +645,37 @@ class CommandExecutor:
             logger.error(f"보폭 측정 취소 실패: {e}")
             return False
     
-    def process_step_frame(self, frame_data: Dict[str, Any]) -> Optional[StepResult]:
+    async def process_step_frame(self, frame_data: Dict[str, Any]) -> Optional[StepResult]:
         """FastDepth 프레임 처리 - 통합 진입점"""
         try:
             if not self.measurement_active or self.step_tracker is None:
                 return None
             
-            # 발 위치 데이터 처리
-            if frame_data.get("left_foot"):
-                lf = frame_data["left_foot"]
-                left_pos = FootPosition(
-                    x=lf.get("x", 0),
-                    y=lf.get("y", 0),
-                    z=lf.get("z", 0),
-                    confidence=lf.get("confidence", 1.0),
-                    timestamp=frame_data.get("timestamp", time.time())
-                )
-                self.step_tracker.add_foot_measurement('left', left_pos)
-            else:
-                self.step_tracker.add_foot_measurement('left', None)
-            
-            if frame_data.get("right_foot"):
-                rf = frame_data["right_foot"]
-                right_pos = FootPosition(
-                    x=rf.get("x", 0),
-                    y=rf.get("y", 0),
-                    z=rf.get("z", 0),
-                    confidence=rf.get("confidence", 1.0),
-                    timestamp=frame_data.get("timestamp", time.time())
-                )
-                self.step_tracker.add_foot_measurement('right', right_pos)
-            else:
-                self.step_tracker.add_foot_measurement('right', None)
+            # 새로운 IMU 시스템 사용 (프레임 처리)
+            if hasattr(self, 'fastdepth_processor') and self.fastdepth_processor:
+                # 프레임 데이터에서 이미지가 있다면 새로운 시스템으로 처리
+                if frame_data.get("cv_image") is not None:
+                    # IMU 데이터도 있다면 함께 처리
+                    imu_data = frame_data.get("imu_data")
+                    try:
+                        # 새로운 통합 측정 수행
+                        measurement_result = await self.fastdepth_processor.process_frame_for_measurement(
+                            cv_image=frame_data["cv_image"],
+                            user_id=f"command_executor_{self.session_id}",
+                            imu_data=imu_data,
+                            enable_advanced_fusion=imu_data is not None
+                        )
+                        
+                        if measurement_result:
+                            # 보폭이 측정되면 사용자 설정 업데이트
+                            self.user_settings["step_length"] = measurement_result.step_length_cm
+                            logger.info(f"새로운 보폭 측정: {measurement_result.step_length_cm}cm")
+                        
+                    except Exception as e:
+                        logger.error(f"새로운 시스템 프레임 처리 오류: {e}")
+                
+            # 레거시 호환성 로깅
+            logger.debug("프레임 처리 완료 (새로운 IMU 시스템 사용)")
             
             self.frame_count += 1
             
@@ -1333,7 +1368,6 @@ class CommandExecutor:
         self.measurement_start_time = None
         self.frame_count = 0
         if self.step_tracker:
-            self.step_tracker.reset()
             self.step_tracker = None
         
         # UnifiedStepCalculator 데이터도 리셋

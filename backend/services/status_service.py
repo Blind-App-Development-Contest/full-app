@@ -18,7 +18,9 @@ from models.common_models import (
     SystemStatusResponse,
     MeasurementProgress,
     AppMode,
-    UserSettings
+    UserSettings,
+    RealTimeMeasurementStatus,
+    MeasurementStatus
 )
 from models.common_models import SystemStatusResponse as ExecutionStatusResponse
 from services.singleton import service_manager
@@ -67,10 +69,33 @@ class StatusService:
                 warning_msg = f"일부 필드가 누락됨: {missing_fields}"
                 logger.warning(f"[StatusService] {warning_msg}")
             
-            # ExecutionStatusResponse 생성
-            execution_status = ExecutionStatusResponse(
+            # SystemStatusResponse 생성 (모든 필수 필드 포함)
+            
+            execution_status = SystemStatusResponse(
+                current_mode=AppMode.NORMAL,  # 기본 모드
+                setup_complete=True,  # 기본값
                 is_listening=status_data.get("is_listening", True),
-                current_mode=status_data.get("current_mode", "normal"),
+                measurement_status=RealTimeMeasurementStatus(
+                    measurement_active=False,
+                    measurement_status=MeasurementStatus.INACTIVE,
+                    measurement_type=None,
+                    progress=MeasurementProgress(
+                        frame_count=0,
+                        elapsed_time=0.0,
+                        fps=0.0,
+                        step_count=0,
+                        current_step_length_cm=None
+                    ),
+                    current_result=None,
+                    session_id=None,
+                    start_time=None
+                ),
+                user_settings=UserSettings(
+                    user_name="기본 사용자",
+                    step_length_cm=75.0,
+                    voice_gender="female",
+                    voice_speed=1.0
+                ),
                 last_execution=status_data.get("last_execution"),
                 total_commands=status_data.get("total_commands", 0)
             )

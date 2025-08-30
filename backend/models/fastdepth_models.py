@@ -1,9 +1,9 @@
 """FastDepth 관련 Pydantic 모델들"""
 
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
+from typing import Optional
 from datetime import datetime
-from .common_models import StepResult, MeasurementStatusResponse, SystemStatusResponse
+from .common_models import StepResult
 
 class FastDepthFootData(BaseModel):
     """FastDepth 발 위치 데이터"""

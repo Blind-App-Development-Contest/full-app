@@ -35,6 +35,17 @@ router = APIRouter()
 def root():
     return {"status": "ok"}
 
+# 사용자 목록 조회
+@router.get("/users")
+async def get_users(session: AsyncSession = Depends(get_session)):
+    """사용자 목록 조회"""
+    try:
+        result = await session.execute(text("SELECT app_uuid, user_name FROM users ORDER BY created_at DESC LIMIT 100"))
+        users = [{"app_uuid": str(row[0]), "user_name": row[1]} for row in result.fetchall()]
+        return {"users": users, "count": len(users)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"사용자 조회 실패: {str(e)}")
+
 # 사용자 최초 등록(UUID 생성 및 이름 동시 갱신)
 @router.post("/users/register")
 async def register_user(

@@ -1,22 +1,37 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from uuid import UUID
 from typing import Dict, Any
 from datetime import datetime
+import time
+# 기존 데이터베이스 연결 설정 제거하고 중앙화된 것 사용
+from core.database import get_async_db
+from models.database_models import User, Footstep
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
+# 요청/응답 스키마
+class FootstepUpdateRequest(BaseModel):
+    user_id: UUID
+    step_length_cm: int
+
+class FootstepResponse(BaseModel):
+    user_id: UUID
+    step_length_cm: int
+    updated_at: datetime
 
 # 통합 스텝 모델 import
 from models.step_models import (
     StepMeasurementRequest,
     StepMeasurementResponse,
     StepUpdateRequest,
-    StepModelConverter,
     StepMeasurementMethod,
     validate_step_measurement_inputs
 )
 
-# 통합 보폭 계산기 import
-from services.unified_step_calculator import (
-    get_unified_step_calculator,
-    StepCalculationInput
-)
+# 새로운 IMU 통합 시스템 import (레거시 호환성 유지)
+from utils.fastdepth_processor import get_fastdepth_processor
 
 router = APIRouter()
 
@@ -29,71 +44,7 @@ FootstepUpdateRequest = StepUpdateRequest
 from services.singleton import service_manager
 command_executor = service_manager.get_command_executor()
 
-def calculate_step_length_from_distance(distance_meters: float, step_count: int) -> dict:
-    """
-    거리와 걸음 수로 보폭 계산 (레거시 호환성)
-    
-    이제 통합 계산기를 사용하며, 단순 계산은 응급 대안으로만 사용됩니다.
-    
-    Args:
-        distance_meters: 측정된 거리 (미터)
-        step_count: 걸음 수
-        
-    Returns:
-        계산 결과 딕셔너리 (레거시 호환성)
-    """
-    # 통합 계산기 사용
-    calculator = get_unified_step_calculator()
-    
-    # 입력 데이터 준비
-    input_data = StepCalculationInput(
-        distance_meters=distance_meters,
-        step_count=step_count,
-        preferred_method=StepMeasurementMethod.DISTANCE_BASED,
-        force_fallback=True  # 레거시 호출은 단순 계산 강제
-    )
-    
-    # 계산 실행
-    result = calculator.calculate_step_length(input_data)
-    
-    # 레거시 딕셔너리 형식으로 변환
-    return StepModelConverter.to_legacy_response_dict(result)
-
-def evaluate_measurement_accuracy(distance_meters: float, step_count: int, step_length_cm: float) -> str:
-    """
-    측정 정확도 평가
-    
-    Args:
-        distance_meters: 측정 거리
-        step_count: 걸음 수
-        step_length_cm: 계산된 보폭
-        
-    Returns:
-        정확도 수준 ("높음", "보통", "낮음")
-    """
-    # 1. 거리 기준 평가 (더 긴 거리일수록 정확함)
-    distance_score = min(distance_meters / 5.0, 1.0)  # 5미터 기준으로 정규화
-    
-    # 2. 걸음 수 기준 평가 (더 많은 걸음일수록 정확함)
-    step_score = min(step_count / 30.0, 1.0)  # 30걸음 기준으로 정규화
-    
-    # 3. 보폭 합리성 평가 (일반적인 보폭 범위: 50-90cm)
-    if 50 <= step_length_cm <= 90:
-        step_length_score = 1.0
-    elif 40 <= step_length_cm <= 100:
-        step_length_score = 0.7
-    else:
-        step_length_score = 0.3
-    
-    # 종합 점수 계산
-    total_score = (distance_score * 0.4 + step_score * 0.3 + step_length_score * 0.3)
-    
-    if total_score >= 0.8:
-        return "높음"
-    elif total_score >= 0.6:
-        return "보통"
-    else:
-        return "낮음"
+# 레거시 함수들은 UnifiedStepCalculator와 StepValidationResult로 대체됨
 
 @router.post("/measurements", response_model=StepMeasurementResponse)
 async def create_footstep_measurement(request: StepMeasurementRequest):
@@ -111,19 +62,50 @@ async def create_footstep_measurement(request: StepMeasurementRequest):
         print(f"  - 측정 거리: {request.distance_meters}m")
         print(f"  - 걸음 수: {request.step_count}걸음")
         
-        # 고급 통합 보폭 계산 사용
-        calculator = get_unified_step_calculator()
+# 새로운 IMU 통합 시스템을 사용한 보폭 계산
+        processor = get_fastdepth_processor()
         
-        # 입력 데이터 준비 (고급 방법 우선 시도)
-        input_data = StepCalculationInput(
-            distance_meters=request.distance_meters,
-            step_count=request.step_count,
-            preferred_method=request.measurement_method,
-            force_fallback=False  # 고급 방법 우선 시도
+        # 거리 기반 계산을 위해 간단한 더미 이미지 생성
+        import numpy as np
+        dummy_image = np.zeros((480, 640, 3), dtype=np.uint8)
+        
+        # 기본 IMU 데이터 (센서가 없을 때의 기본값)
+        default_imu_data = {
+            'accelerometer': [0, 0, 9.81],
+            'gyroscope': [0, 0, 0],
+            'timestamp': time.time(),
+            'device_orientation': 'portrait'
+        }
+        
+        # 새로운 통합 시스템으로 계산 (레거시 API 호환)
+        step_result = await processor.process_frame_for_measurement(
+            cv_image=dummy_image,
+            user_id=str(request.user_id) if request.user_id else 'api_user',
+            imu_data=default_imu_data,
+            enable_advanced_fusion=False  # API 호출에서는 기본 모드 사용
         )
         
-        # 통합 계산 실행
-        step_result = calculator.calculate_step_length(input_data)
+        # 레거시 API 호환을 위해 결과가 없으면 거리 기반 단순 계산
+        if not step_result:
+            from models.step_models import StepCalculationResult, AccuracyConverter
+            step_length_cm = (request.distance_meters / request.step_count) * 100
+            confidence = 0.7 if request.distance_meters >= 3.0 else 0.5
+            
+            step_result = StepCalculationResult(
+                step_length_cm=round(step_length_cm, 1),
+                confidence=confidence,
+                step_count=request.step_count,
+                tracking_quality=AccuracyConverter.confidence_to_quality(confidence),
+                accuracy_level=AccuracyConverter.confidence_to_korean_level(confidence),
+                measurement_method=request.measurement_method,
+                timestamp=time.time(),
+                user_id=str(request.user_id) if request.user_id else 'api_user',
+                source_data={
+                    "method": "distance_based_api_fallback",
+                    "distance_meters": request.distance_meters,
+                    "step_count": request.step_count
+                }
+            )
         
         # CommandExecutor에 보폭 등록
         previous_step_length = command_executor.user_settings.get("step_length")
@@ -167,6 +149,89 @@ async def create_footstep_measurement(request: StepMeasurementRequest):
         print(f"[오류] FastDepth 보폭 측정 중 오류: {e}")
         raise HTTPException(status_code=500, detail=f"측정 실패: {str(e)}")
 
+# =========================
+# DB 연동 엔드포인트
+# =========================
+
+@router.post("/update", response_model=FootstepResponse)
+async def update_footstep(
+    request: FootstepUpdateRequest,
+    session: AsyncSession = Depends(get_async_db)
+):
+    """사용자 보폭 길이 업데이트 (ORM 방식으로 UPSERT)"""
+    try:
+        # 사용자 존재 확인
+        user_result = await session.execute(
+            select(User).where(User.user_id == request.user_id)
+        )
+        user = user_result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다")
+        
+        # 기존 보폭 정보 확인
+        footstep_result = await session.execute(
+            select(Footstep).where(Footstep.user_id == request.user_id)
+        )
+        existing_footstep = footstep_result.scalar_one_or_none()
+        
+        if existing_footstep:
+            # 기존 데이터 업데이트
+            existing_footstep.step_length = request.step_length_cm
+            await session.commit()
+            await session.refresh(existing_footstep)
+            footstep = existing_footstep
+        else:
+            # 새로운 데이터 생성
+            footstep = Footstep(
+                user_id=request.user_id,
+                step_length=request.step_length_cm
+            )
+            session.add(footstep)
+            await session.commit()
+            await session.refresh(footstep)
+        
+        return FootstepResponse(
+            user_id=footstep.user_id,
+            step_length_cm=footstep.step_length,
+            updated_at=footstep.step_updated_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(status_code=500, detail=f"보폭 업데이트 오류: {str(e)}")
+
+@router.get("/user/{user_id}", response_model=FootstepResponse)
+async def get_user_footstep(
+    user_id: UUID,
+    session: AsyncSession = Depends(get_async_db)
+):
+    """사용자별 보폭 길이 조회 (ORM 방식)"""
+    try:
+        # ORM으로 보폭 정보 조회 (사용자 정보도 함께 로딩)
+        result = await session.execute(
+            select(Footstep)
+            .options(selectinload(Footstep.user))
+            .where(Footstep.user_id == user_id)
+        )
+        footstep = result.scalar_one_or_none()
+        
+        if not footstep:
+            raise HTTPException(status_code=404, detail="사용자 보폭 정보를 찾을 수 없습니다")
+        
+        return FootstepResponse(
+            user_id=footstep.user_id,
+            step_length_cm=footstep.step_length,
+            updated_at=footstep.step_updated_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"보폭 조회 오류: {str(e)}")
+
+@router.get("", tags=["Footstep Settings"])
 @router.get("/", tags=["Footstep Settings"])
 async def get_footstep_settings():
     """
@@ -265,16 +330,8 @@ async def validate_measurement_request(distance_meters: float, step_count: int):
             warnings.append("걸음 수가 적습니다")
             recommendations.append("더 많은 걸음으로 측정하면 정확도가 향상됩니다")
         
-        # 예상 보폭 계산 및 검증 - UnifiedStepCalculator 사용
-        calculator = get_unified_step_calculator()
-        input_data = StepCalculationInput(
-            distance_meters=distance_meters,
-            step_count=step_count,
-            preferred_method=StepMeasurementMethod.DISTANCE_BASED,
-            force_fallback=True  # 검증용 계산이므로 단순 계산 사용
-        )
-        result = calculator.calculate_step_length(input_data)
-        expected_step_length = result.step_length_cm
+        # 간단한 보폭 계산 (검증용)
+        expected_step_length = (distance_meters / step_count) * 100
         
         if expected_step_length < 30:
             warnings.append("계산될 보폭이 너무 짧습니다")
