@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../models/step_measurement_result.dart';
 import 'step_screen.dart';
 import 'voice_screen.dart';
 import 'guardian_screen.dart';
@@ -11,8 +12,8 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  // TODO: 실제 저장 값 연동 (예: Provider/Bloc/DB)
-  int stepLengthCm = 80;          // 보폭 (예시)
+  // 통일된 변수명 사용 (StepMeasurementResult와 일치)
+  double stepLength = StepMeasurementResult.defaultStepLengthCm;  // 보폭 (cm)
   String voiceGender = '여성';     // '여성' | '남성'
   double voiceSpeed = 1.0;        // 0.5 ~ 2.0
   int guardians = 0;              // 등록된 보호자 수
@@ -68,18 +69,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
               captionColor: caption,
               leadingIcon: Icons.near_me_outlined,
               title: '보폭 설정',
-              subtitle: '현재: ${stepLengthCm}cm',
+              subtitle: '현재: ${stepLength.toStringAsFixed(0)}cm',
               onTap: () async {
-                await Navigator.push(
+                final result = await Navigator.push<int>(
                   context,
                   MaterialPageRoute(
-                      builder: (_) => const StepScreen(
+                      builder: (_) => StepScreen(
                         fromSettings: true,
+                        initialStepLengthCm: stepLength.toInt(),
                       )
                   ),
                 );
-                // TODO: 되돌아오면 보폭 값 갱신
-                setState(() {});
+                
+                if (result != null) {
+                  if (mounted) {
+                    setState(() {
+                      stepLength = result.toDouble();
+                    });
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('보폭이 ${result}cm로 변경되었습니다.')),
+                    );
+                  }
+                }
               },
             ),
             const SizedBox(height: 16),
@@ -114,7 +125,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               captionColor: caption,
               leadingIcon: Icons.person_outline,
               title: '보호자 설정',
-              subtitle: '└ (${guardians})',
+              subtitle: '└ ($guardians)',
               onTap: () async {
                 await Navigator.push(
                   context,

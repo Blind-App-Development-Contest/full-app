@@ -1,21 +1,21 @@
 import 'package:flutter/material.dart';
 import '../widgets/aeye_card.dart';
-import 'setting_screen.dart'; // ✅ 파일명 맞춤 (settings_screen)
+import 'setting_screen.dart';
+import 'map_screen.dart';
 
 class ModeScreen extends StatelessWidget {
   const ModeScreen({super.key});
 
   void _openCameraMode(BuildContext context) {
-    // TODO: 카메라 모드 화면으로 이동
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('카메라 모드로 이동합니다.')),
-    );
+    Navigator.pushNamed(context, '/measurement-camera');
   }
 
   void _openNavigationMode(BuildContext context) {
-    // TODO: 길찾기 모드 화면으로 이동
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('길찾기 모드로 이동합니다.')),
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const MapScreen(backendBaseUrl: 'http://20.22.6.21:8000'),
+      ),
     );
   }
 

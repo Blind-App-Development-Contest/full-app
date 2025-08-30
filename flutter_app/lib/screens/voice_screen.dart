@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../widgets/aeye_card.dart';
 import '../widgets/next_button.dart';
 import '../widgets/set_button.dart'; // ✅ 추가
+import '../services/api_service.dart';
 import 'guardian_screen.dart';
 
 class VoiceScreen extends StatefulWidget {
@@ -39,24 +40,56 @@ class _VoiceScreenState extends State<VoiceScreen> {
   }
 
   // 온보딩 플로우: 다음 단계(GuardianScreen) 이동
-  void _goNext() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const GuardianScreen()),
-    );
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('설정 저장: ${_gender == 'F' ? '여성' : '남성'}, ${_speed.toStringAsFixed(1)}x'),
-      ),
-    );
+  void _goNext() async {
+    // 음성 설정 저장 (온보딩 플로우)
+    try {
+      debugPrint('🎙️ 온보딩 음성 설정 저장 시도: ${_gender == 'F' ? 'female' : 'male'}, ${_speed}x');
+      await ApiService().saveVoiceSettings(
+        gender: _gender == 'F' ? 'female' : 'male',
+        speed: _speed,
+      );
+      debugPrint('✅ 온보딩 음성 설정 저장 성공');
+    } catch (e) {
+      debugPrint('❌ 온보딩 음성 설정 저장 실패: $e');
+      // 저장 실패해도 계속 진행 (오프라인 모드 고려)
+    }
+    
+    if (mounted) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const GuardianScreen()),
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('설정 저장: ${_gender == 'F' ? '여성' : '남성'}, ${_speed.toStringAsFixed(1)}x'),
+        ),
+      );
+    }
   }
 
   // 설정에서 진입: 값 저장 후 되돌아가기
-  void _saveAndPop() {
-    Navigator.pop<Map<String, dynamic>>(context, {
-      'gender': _gender,
-      'speed': _speed,
-    });
+  void _saveAndPop() async {
+    if (_hasChanged) {
+      // 음성 설정 저장 (설정 화면에서 진입)
+      try {
+        debugPrint('🎙️ 설정 음성 변경 저장 시도: ${_gender == 'F' ? 'female' : 'male'}, ${_speed}x');
+        await ApiService().saveVoiceSettings(
+          gender: _gender == 'F' ? 'female' : 'male',
+          speed: _speed,
+        );
+        debugPrint('✅ 설정 음성 변경 저장 성공');
+      } catch (e) {
+        debugPrint('❌ 설정 음성 변경 저장 실패: $e');
+        // 저장 실패해도 계속 진행 (오프라인 모드 고려)
+      }
+    }
+    
+    if (mounted) {
+      Navigator.pop<Map<String, dynamic>>(context, {
+        'gender': _gender,
+        'speed': _speed,
+      });
+    }
   }
 
   // 뒤로가기(설정 경로): 저장 없이 나감

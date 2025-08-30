@@ -3,8 +3,10 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_naver_map/flutter_naver_map.dart';
-import 'package:geolocator/geolocator.dart'; // geolocator import 추가
-import 'directions_api.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:provider/provider.dart';
+import '../directions_api.dart';
+import '../services/voice_service.dart';
 
 class MapScreen extends StatefulWidget {
   final String backendBaseUrl;
@@ -33,11 +35,15 @@ class _MapScreenState extends State<MapScreen> {
   int _selectedSuggestionIndex = -1; // 선택된 추천 항목 인덱스
   bool _waitingForReadConfirmation = false; // 음성 안내 확인 대기 상태
   bool _isListening = false; // 음성인식 상태
+  
+  // VoiceService 연동
+  VoiceService? _voiceService;
 
   @override
   void initState() {
     super.initState();
     _api = DirectionsApi(widget.backendBaseUrl);
+    _initializeVoiceService();
   }
 
   @override
@@ -45,12 +51,27 @@ class _MapScreenState extends State<MapScreen> {
     _destinationController.dispose();
     super.dispose();
   }
+  
+  void _initializeVoiceService() {
+    try {
+      _voiceService = context.read<VoiceService>();
+      debugPrint("✅ MapScreen VoiceService 초기화 성공");
+    } catch (e) {
+      debugPrint("❌ MapScreen VoiceService 초기화 실패: $e");
+    }
+  }
 
-  // 음성 안내 메서드
-  void _speakText(String text) {
-    // TTS 기능을 추가해야 하지만, 일단 디버그 메시지로 대체
-    debugPrint('🔊 음성 안내: $text');
-    // 나중에 flutter_tts 패키지 사용하여 실제 음성 출력 구현
+  // 음성 안내 메서드 (VoiceService 사용)
+  Future<void> _speakText(String text) async {
+    try {
+      if (_voiceService != null) {
+        await _voiceService!.speak(text);
+      } else {
+        debugPrint('🔊 음성 안내 (VoiceService 없음): $text');
+      }
+    } catch (e) {
+      debugPrint('❌ 음성 출력 실패: $e');
+    }
   }
 
   // 현재 선택된 추천 항목 음성 안내
@@ -228,10 +249,8 @@ class _MapScreenState extends State<MapScreen> {
 
     if (_isListening) {
       _speakText('음성인식을 시작합니다.');
-      // TODO: 실제 음성인식 기능 구현
     } else {
       _speakText('음성인식을 중지합니다.');
-      // TODO: 음성인식 중지 기능 구현
     }
   }
 
