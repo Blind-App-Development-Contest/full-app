@@ -62,15 +62,19 @@ class MediaPipePoseProcessor:
         self.mp_pose = mp.solutions.pose
         self.mp_drawing = mp.solutions.drawing_utils
         
-        # Pose 모델 설정 - 정확도와 성능의 균형
+        # 최적화된 신뢰도 설정 (발 키포인트 감지를 위해 낮춤)
+        self.default_detection_confidence = 0.3
+        self.default_tracking_confidence = 0.3
+        
+        # 최적화된 Pose 모델 설정 - 발 키포인트 감지에 최적화
         self.pose = self.mp_pose.Pose(
-            static_image_mode=False,
-            model_complexity=1,  # 0: Lite, 1: Full, 2: Heavy
-            smooth_landmarks=True,
+            static_image_mode=True,   # 정적 이미지 모드로 변경 (각 프레임 독립 처리)
+            model_complexity=2,       # Heavy 모델 사용 (최고 정확도)
+            smooth_landmarks=False,   # 정적 모드에서는 불필요
             enable_segmentation=False,
             smooth_segmentation=False,
-            min_detection_confidence=0.6,  # 감지 최소 신뢰도
-            min_tracking_confidence=0.5    # 추적 최소 신뢰도
+            min_detection_confidence=self.default_detection_confidence,  # 낮춘 감지 신뢰도
+            min_tracking_confidence=self.default_tracking_confidence     # 낮춘 추적 신뢰도
         )
         
         # 발 관련 랜드마크 인덱스 (MediaPipe Pose 33개 포인트 중)
@@ -127,12 +131,28 @@ class MediaPipePoseProcessor:
         
         logger.info("[MediaPipe] Pose 프로세서 초기화 완료")
     
-    def extract_foot_keypoints(self, cv_image: np.ndarray) -> Optional[FootKeypoints]:
+    def create_pose_with_confidence(self, detection_confidence: float, tracking_confidence: float = None):
+        """특정 신뢰도로 새로운 Pose 인스턴스 생성 (최적화된 설정)"""
+        if tracking_confidence is None:
+            tracking_confidence = detection_confidence
+            
+        return self.mp_pose.Pose(
+            static_image_mode=True,   # 정적 이미지 모드
+            model_complexity=2,       # Heavy 모델 (최고 정확도)
+            smooth_landmarks=False,   # 정적 모드에서는 불필요
+            enable_segmentation=False,
+            smooth_segmentation=False,
+            min_detection_confidence=detection_confidence,
+            min_tracking_confidence=tracking_confidence
+        )
+    
+    def extract_foot_keypoints(self, cv_image: np.ndarray, confidence_threshold: float = None) -> Optional[FootKeypoints]:
         """
         MediaPipe Pose로 발 키포인트 추출
         
         Args:
             cv_image: OpenCV 이미지 (BGR)
+            confidence_threshold: 커스텀 신뢰도 임계값 (없으면 기본값 사용)
             
         Returns:
             FootKeypoints: 발 키포인트 데이터 또는 None
@@ -144,8 +164,20 @@ class MediaPipePoseProcessor:
             rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
             height, width = cv_image.shape[:2]
             
+            # 이미지 전처리 - 밝기와 대비 향상
+            rgb_image = cv2.convertScaleAbs(rgb_image, alpha=1.2, beta=10)
+            
+            # MediaPipe에 이미지 크기 정보 명시적 제공 (경고 해결)
+            rgb_image.flags.writeable = False  # 성능 최적화
+            
+            # 커스텀 신뢰도가 지정된 경우 임시 Pose 인스턴스 생성
+            pose_instance = self.pose
+            if confidence_threshold is not None:
+                logger.info(f"[MediaPipe] 커스텀 신뢰도 사용: {confidence_threshold}")
+                pose_instance = self.create_pose_with_confidence(confidence_threshold)
+            
             # Pose 감지 수행
-            results = self.pose.process(rgb_image)
+            results = pose_instance.process(rgb_image)
             
             if not results.pose_landmarks:
                 logger.debug("[MediaPipe] Pose 감지 실패")
@@ -163,7 +195,7 @@ class MediaPipePoseProcessor:
             left_heel_idx = self.FOOT_LANDMARKS['LEFT_HEEL']
             if left_heel_idx < len(landmarks):
                 lh = landmarks[left_heel_idx]
-                if lh.visibility > 0.5 and lh.presence > 0.5:
+                if lh.visibility > 0.2 and lh.presence > 0.2:  # 임계값 대폭 완화
                     foot_keypoints.left_heel = MediaPipeLandmark(
                         x=lh.x, y=lh.y, z=lh.z,
                         visibility=lh.visibility, presence=lh.presence
@@ -174,7 +206,7 @@ class MediaPipePoseProcessor:
             right_heel_idx = self.FOOT_LANDMARKS['RIGHT_HEEL']
             if right_heel_idx < len(landmarks):
                 rh = landmarks[right_heel_idx]
-                if rh.visibility > 0.5 and rh.presence > 0.5:
+                if rh.visibility > 0.2 and rh.presence > 0.2:  # 임계값 대폭 완화
                     foot_keypoints.right_heel = MediaPipeLandmark(
                         x=rh.x, y=rh.y, z=rh.z,
                         visibility=rh.visibility, presence=rh.presence
@@ -185,7 +217,7 @@ class MediaPipePoseProcessor:
             left_toe_idx = self.FOOT_LANDMARKS['LEFT_FOOT_INDEX']
             if left_toe_idx < len(landmarks):
                 lt = landmarks[left_toe_idx]
-                if lt.visibility > 0.5 and lt.presence > 0.5:
+                if lt.visibility > 0.2 and lt.presence > 0.2:  # 임계값 대폭 완화
                     foot_keypoints.left_foot_index = MediaPipeLandmark(
                         x=lt.x, y=lt.y, z=lt.z,
                         visibility=lt.visibility, presence=lt.presence
@@ -196,7 +228,7 @@ class MediaPipePoseProcessor:
             right_toe_idx = self.FOOT_LANDMARKS['RIGHT_FOOT_INDEX']
             if right_toe_idx < len(landmarks):
                 rt = landmarks[right_toe_idx]
-                if rt.visibility > 0.5 and rt.presence > 0.5:
+                if rt.visibility > 0.2 and rt.presence > 0.2:  # 임계값 대폭 완화
                     foot_keypoints.right_foot_index = MediaPipeLandmark(
                         x=rt.x, y=rt.y, z=rt.z,
                         visibility=rt.visibility, presence=rt.presence
@@ -354,7 +386,8 @@ class MediaPipePoseProcessor:
     async def process_frame_for_step_measurement(self, 
                                                cv_image: np.ndarray, 
                                                user_id: str = 'current_user',
-                                               enable_depth_fusion: bool = True) -> Optional[StepCalculationResult]:
+                                               enable_depth_fusion: bool = True,
+                                               confidence_threshold: float = None) -> Optional[StepCalculationResult]:
         """
         MediaPipe Pose 기반 보폭 측정
         
@@ -369,8 +402,8 @@ class MediaPipePoseProcessor:
         start_time = time.time()
         
         try:
-            # 1. MediaPipe로 발 키포인트 추출
-            keypoints = self.extract_foot_keypoints(cv_image)
+            # 1. MediaPipe로 발 키포인트 추출 (커스텀 신뢰도 적용)
+            keypoints = self.extract_foot_keypoints(cv_image, confidence_threshold)
             if not keypoints:
                 logger.warning("[MediaPipe] 발 키포인트 추출 실패")
                 return None
@@ -631,6 +664,135 @@ class MediaPipePoseProcessor:
         }
         logger.info("[MediaPipe] 처리 통계 초기화 완료")
     
+    def extract_foot_keypoints_enhanced(self, cv_image: np.ndarray, 
+                                        detection_confidence: float = None) -> Optional[FootKeypoints]:
+        """
+        발 특화 감지 알고리즘 - 여러 신뢰도와 전처리 기법을 사용한 강화된 발 키포인트 감지
+        
+        Args:
+            cv_image: 입력 이미지
+            detection_confidence: 감지 신뢰도 임계값
+            
+        Returns:
+            FootKeypoints: 발 키포인트 또는 None
+        """
+        if detection_confidence is None:
+            detection_confidence = self.default_detection_confidence
+            
+        logger.debug(f"[MediaPipe] 발 특화 감지 시작 - 신뢰도: {detection_confidence}")
+        
+        # 1단계: 기본 감지 시도
+        result = self.extract_foot_keypoints(cv_image, detection_confidence)
+        if result and result.confidence_score > 0.3:
+            logger.debug(f"[MediaPipe] 기본 감지 성공 - 신뢰도: {result.confidence_score:.3f}")
+            return result
+        
+        # 2단계: 낮은 신뢰도로 재시도
+        logger.debug("[MediaPipe] 낮은 신뢰도로 재시도")
+        result = self.extract_foot_keypoints(cv_image, 0.1)
+        if result and result.confidence_score > 0.15:
+            logger.debug(f"[MediaPipe] 낮은 신뢰도 감지 성공 - 신뢰도: {result.confidence_score:.3f}")
+            return result
+        
+        # 3단계: 이미지 전처리 후 재시도
+        logger.debug("[MediaPipe] 이미지 전처리 후 재시도")
+        enhanced_images = self._enhance_image_for_foot_detection(cv_image)
+        
+        for i, enhanced_image in enumerate(enhanced_images):
+            result = self.extract_foot_keypoints(enhanced_image, 0.2)
+            if result and result.confidence_score > 0.2:
+                logger.debug(f"[MediaPipe] 전처리 감지 성공 (방법 {i+1}) - 신뢰도: {result.confidence_score:.3f}")
+                return result
+        
+        # 4단계: 하체 중심 감지 (발이 화면 하단에 있을 가능성)
+        logger.debug("[MediaPipe] 하체 중심 감지 시도")
+        lower_half_image = self._extract_lower_half(cv_image)
+        if lower_half_image is not None:
+            result = self.extract_foot_keypoints(lower_half_image, 0.15)
+            if result:
+                # 좌표를 전체 이미지로 변환
+                result = self._adjust_coordinates_for_lower_half(result, cv_image.shape)
+                if result.confidence_score > 0.15:
+                    logger.debug(f"[MediaPipe] 하체 중심 감지 성공 - 신뢰도: {result.confidence_score:.3f}")
+                    return result
+        
+        logger.debug("[MediaPipe] 모든 발 특화 감지 방법 실패")
+        return None
+    
+    def _enhance_image_for_foot_detection(self, cv_image: np.ndarray) -> List[np.ndarray]:
+        """발 감지를 위한 이미지 전처리 방법들"""
+        enhanced_images = []
+        
+        try:
+            # 방법 1: 대비 및 밝기 조정
+            alpha = 1.3  # 대비
+            beta = 20    # 밝기
+            enhanced1 = cv2.convertScaleAbs(cv_image, alpha=alpha, beta=beta)
+            enhanced_images.append(enhanced1)
+            
+            # 방법 2: 히스토그램 균등화
+            if len(cv_image.shape) == 3:
+                # 컬러 이미지의 경우
+                yuv = cv2.cvtColor(cv_image, cv2.COLOR_BGR2YUV)
+                yuv[:,:,0] = cv2.equalizeHist(yuv[:,:,0])
+                enhanced2 = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR)
+            else:
+                enhanced2 = cv2.equalizeHist(cv_image)
+            enhanced_images.append(enhanced2)
+            
+            # 방법 3: 가우시안 블러를 사용한 노이즈 제거
+            enhanced3 = cv2.GaussianBlur(cv_image, (3, 3), 0)
+            enhanced_images.append(enhanced3)
+            
+            # 방법 4: 샤프닝 필터
+            kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+            enhanced4 = cv2.filter2D(cv_image, -1, kernel)
+            # 값 범위 정규화
+            enhanced4 = np.clip(enhanced4, 0, 255).astype(np.uint8)
+            enhanced_images.append(enhanced4)
+            
+        except Exception as e:
+            logger.warning(f"[MediaPipe] 이미지 전처리 오류: {e}")
+        
+        return enhanced_images
+    
+    def _extract_lower_half(self, cv_image: np.ndarray) -> Optional[np.ndarray]:
+        """이미지의 하반부를 추출 (발이 보통 화면 하단에 위치)"""
+        try:
+            height, width = cv_image.shape[:2]
+            # 하단 60%를 추출
+            start_y = int(height * 0.4)
+            return cv_image[start_y:, :]
+        except Exception as e:
+            logger.warning(f"[MediaPipe] 하반부 추출 오류: {e}")
+            return None
+    
+    def _adjust_coordinates_for_lower_half(self, keypoints: FootKeypoints, 
+                                          original_shape: tuple) -> FootKeypoints:
+        """하반부 이미지에서 감지된 좌표를 전체 이미지 좌표로 변환"""
+        try:
+            height = original_shape[0]
+            offset_y = 0.4  # 상단에서 40% 지점부터 시작했으므로
+            
+            # 각 키포인트의 y 좌표를 조정
+            if keypoints.left_heel:
+                keypoints.left_heel.y = keypoints.left_heel.y * 0.6 + offset_y
+            if keypoints.right_heel:
+                keypoints.right_heel.y = keypoints.right_heel.y * 0.6 + offset_y  
+            if keypoints.left_foot_index:
+                keypoints.left_foot_index.y = keypoints.left_foot_index.y * 0.6 + offset_y
+            if keypoints.right_foot_index:
+                keypoints.right_foot_index.y = keypoints.right_foot_index.y * 0.6 + offset_y
+            if keypoints.left_foot:
+                keypoints.left_foot.y = keypoints.left_foot.y * 0.6 + offset_y
+            if keypoints.right_foot:
+                keypoints.right_foot.y = keypoints.right_foot.y * 0.6 + offset_y
+                
+        except Exception as e:
+            logger.warning(f"[MediaPipe] 좌표 변환 오류: {e}")
+        
+        return keypoints
+
     def __del__(self):
         """리소스 정리"""
         if hasattr(self, 'pose'):

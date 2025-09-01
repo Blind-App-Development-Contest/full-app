@@ -1116,7 +1116,7 @@ class IMUFusionProcessor:
             from utils.mediapipe_pose_processor import get_mediapipe_pose_processor
             mediapipe_processor = get_mediapipe_pose_processor(enable_imu_fusion=True)
             
-            keypoints = mediapipe_processor.extract_foot_keypoints(cv_image)
+            keypoints = mediapipe_processor.extract_foot_keypoints_enhanced(cv_image)
             foot_positions_3d = None
             
             if keypoints:

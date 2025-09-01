@@ -23,6 +23,9 @@ class StepMeasurementMethod(str, Enum):
     KALMAN_FILTER = "kalman_filter"        # 칼만 필터 실시간 추적
     MANUAL_INPUT = "manual_input"          # 수동 입력
     HYBRID = "hybrid"                      # 복합 방식
+    COMPUTER_VISION = "computer_vision"    # 컴퓨터 비전 기반
+    POSE_ESTIMATION = "pose_estimation"    # 포즈 추정 기반
+    IMU_SENSOR = "imu_sensor"             # IMU 센서 기반
 
 class AccuracyLevel(str, Enum):
     """정확도 수준 - 기존 한국어 문자열 표준화"""
@@ -78,7 +81,23 @@ class AccuracyConverter:
         }
         return mapping.get(level, 0.5)
 
-# ===== 요청 모델 =====
+# ===== 입력 및 요청 모델 =====
+
+class StepCalculationInput(BaseModel):
+    """간단한 보폭 계산 입력 데이터"""
+    distance_meters: float = Field(..., description="측정된 거리 (미터)", gt=0)
+    step_count: int = Field(..., description="걸음 수", gt=0)
+    confidence: Optional[float] = Field(0.8, description="측정 신뢰도", ge=0.0, le=1.0)
+    timestamp: Optional[float] = Field(None, description="측정 시간")
+    
+    @field_validator('timestamp')
+    @classmethod
+    def set_timestamp(cls, v):
+        """타임스탬프가 없으면 현재 시간 설정"""
+        if v is None:
+            import time
+            return time.time()
+        return v
 
 class StepMeasurementRequest(BaseModel):
     """통합 보폭 측정 요청 모델 - FootstepDepthMeasurementRequest 대체"""
@@ -478,21 +497,11 @@ def validate_step_measurement_inputs(
             "minimum_check": "passed" if step_count >= 5 else "failed"
         }
     
-    # 예상 보폭 계산 및 검증 - UnifiedStepCalculator 사용
+    # 예상 보폭 계산 및 검증 - 간단한 거리/걸음수 계산
     expected_step_length = None
     if distance_meters and step_count:
-        from services.unified_step_calculator import get_unified_step_calculator, StepCalculationInput
-        
-        calculator = get_unified_step_calculator()
-        input_data = StepCalculationInput(
-            distance_meters=distance_meters,
-            step_count=step_count,
-            preferred_method=StepMeasurementMethod.DISTANCE_BASED,
-            force_fallback=True  # 검증용 계산이므로 단순 계산 사용
-        )
-        
-        result = calculator.calculate_step_length(input_data)
-        expected_step_length = result.step_length_cm
+        # 간단한 거리 기반 보폭 계산 (cm 단위)
+        expected_step_length = (distance_meters * 100) / step_count
         
         step_length_valid = True
         if expected_step_length < 30:

@@ -12,13 +12,12 @@ from models.common_models import (
     AppMode, ExecutionStatus, MeasurementStatus,
     RealTimeMeasurementStatus, TrackingQuality, SchemaConverter
 )
-from models.step_models import StepCalculationResult as StepResult, StepMeasurementMethod
+from models.step_models import StepCalculationResult as StepResult, StepMeasurementMethod, AccuracyConverter, StepCalculationInput
 from config.settings import get_settings
 # 새로운 IMU 통합 시스템 사용
 from utils.imu_fusion_processor import get_imu_fusion_processor
 from utils.fastdepth_processor import get_fastdepth_processor
-# 레거시 호환성을 위한 간소화된 import (필요시만 사용)
-from services.unified_step_calculator import get_unified_step_calculator
+# 레거시 호환성 제거 - 새로운 IMU 통합 시스템만 사용
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -84,8 +83,7 @@ class CommandExecutor:
         self.total_distance_traveled = 0.0  # Accumulated distance in meters
         self.last_position = None  # Last known foot position
         
-        # UnifiedStepCalculator 인스턴스
-        self.unified_calculator = get_unified_step_calculator()
+        # 새로운 IMU 통합 시스템 사용 (unified calculator 제거됨)
 
         
     async def execute_command(
@@ -772,12 +770,8 @@ class CommandExecutor:
                         force_fallback=False
                     )
                     
-                    unified_result = self.unified_calculator.calculate_step_length(calculation_input)
-                    
-                    # 결과 검증
-                    if self._is_result_valid(unified_result) and unified_result.confidence > kalman_result.confidence:
-                        logger.info(f"프레임 기반 계산 사용: {unified_result.step_length_cm}cm (신뢰도: {unified_result.confidence:.2f})")
-                        return unified_result
+                    # 새로운 IMU 통합 시스템 사용 (레거시 시스템 제거됨)
+                    logger.info("프레임 기반 계산은 새로운 IMU 융합 시스템으로 통합됨")
                         
                 except Exception as e:
                     logger.warning(f"프레임 기반 계산 실패: {e}")
@@ -792,17 +786,9 @@ class CommandExecutor:
                         force_fallback=True
                     )
                     
-                    distance_result = self.unified_calculator.calculate_step_length(calculation_input)
-                    
-                    # 결과 검증 및 선택
-                    if self._is_result_valid(distance_result):
-                        # 두 결과를 비교하여 더 합리적인 것 선택
-                        if self._compare_and_select_result(kalman_result, distance_result):
-                            logger.info(f"거리 기반 계산 사용: {distance_result.step_length_cm}cm (거리: {self.total_distance_traveled:.2f}m)")
-                            return distance_result
-                        else:
-                            logger.info(f"Kalman 결과 유지: {kalman_result.step_length_cm}cm")
-                            return kalman_result
+                    # 새로운 IMU 통합 시스템으로 거리 기반 계산 통합됨
+                    logger.info(f"거리 기반 계산은 새로운 IMU 융합 시스템으로 통합됨 (거리: {self.total_distance_traveled:.2f}m)")
+                    # 거리 기반 계산도 새로운 시스템으로 통합됨
                             
                 except Exception as e:
                     logger.warning(f"거리 기반 계산 실패: {e}")

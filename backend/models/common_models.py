@@ -82,7 +82,6 @@ class CommandExecutionResponse(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.now, description="실행 시각")
 
 # ===== 측정 관련 모델 =====
-from models.step_models import StepCalculationResult as StepResult
 
 class MeasurementProgress(BaseModel):
     """측정 진행 상황"""
@@ -98,7 +97,7 @@ class RealTimeMeasurementStatus(BaseModel):
     measurement_status: MeasurementStatus = Field(description="측정 상태")
     measurement_type: Optional[MeasurementType] = Field(None, description="측정 방식")
     progress: MeasurementProgress = Field(description="측정 진행 상황")
-    current_result: Optional[StepResult] = Field(None, description="현재 측정 결과")
+    current_result: Optional[Dict[str, Any]] = Field(None, description="현재 측정 결과")
     
     # 세션 정보
     session_id: Optional[str] = Field(None, description="측정 세션 ID")
