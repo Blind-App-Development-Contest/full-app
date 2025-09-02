@@ -19,10 +19,11 @@ from models.fastdepth_models import (
 from models.execution_schemas import (
     FullCommandResponse
 )
-from models.common_models import ExecutionStatus
+from models.common_models import ExecutionStatus, CommandExecutionResponse
 from models.recognition_schemas import SpeechRecognitionResponse
-from models.execution_schemas import CommandExecutionResponse
+# CommandExecutionResponse는 common_models에서 가져옴
 from services.command_executor import CommandExecutionResult
+from services.singleton import service_manager
 # 측정 처리를 위한 FastDepth 프로세서 사용
 from utils.fastdepth_processor import get_fastdepth_processor
 # MediaPipe 통합을 위한 임포트
@@ -207,9 +208,10 @@ async def process_speech_command_with_context(request: EnhancedCommandRequest, c
 async def execute_command_conditionally(
     recognition_result: SpeechRecognitionResponse, 
     execute_immediately: bool,
-    context: str = None
+    context: Optional[str] = None
 ) -> CommandExecutionResult:
     """조건부 명령 실행 로직"""
+    command_executor = service_manager.get_command_executor()
     if execute_immediately:
         return await command_executor.execute_command(recognition_result)
     else:
@@ -267,11 +269,10 @@ def build_enhanced_response(command_result, frame_result, context: str):
 # 측정 처리 기능 완료
 # ===============================#
 
-# 측정 세션 제어를 위한 모델
+# API 전용 모델들 (측정 라우터 로컬)
 class MeasurementSessionRequest(BaseModel):
     user_id: str
 
-# 측정 결과 저장을 위한 모델
 class MeasurementResultSave(BaseModel):
     user_id: UUID
     step_length_cm: int
@@ -417,6 +418,7 @@ async def process_measurement_frame(
         logger.info(f'[센서 데이터] 자이로스코프: [{gyroscope_x:.2f}, {gyroscope_y:.2f}, {gyroscope_z:.2f}]')
         
         # 1. 측정 세션 활성 상태 확인
+        command_executor = service_manager.get_command_executor()
         if not hasattr(command_executor, 'is_measurement_active') or not command_executor.is_measurement_active():
             return {
                 'success': False,
@@ -435,6 +437,15 @@ async def process_measurement_frame(
         
         if cv_image is None:
             raise ValueError('유효하지 않은 이미지 데이터')
+        
+        # 성능 최적화: 이미지 크기 축소 (보폭 측정에는 640x480이면 충분)
+        original_shape = cv_image.shape
+        if cv_image.shape[1] > 640:  # width > 640
+            scale = 640 / cv_image.shape[1]
+            new_width = 640
+            new_height = int(cv_image.shape[0] * scale)
+            cv_image = cv2.resize(cv_image, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+            logger.info(f'[이미지 최적화] {original_shape} → {cv_image.shape}')
         
         logger.info(f'[이미지 처리] 크기: {cv_image.shape}, 프레임: {frame_count}')
         
@@ -631,41 +642,42 @@ async def stop_measurement_session(request: MeasurementSessionRequest):
         # 측정 세션 중지
         await command_executor._execute_footstep_measurement_cancel({})
         
-        # 카메라 모드를 실시간 모드로 복원 (안전한 오류 처리 포함)
+        # 측정 결과 가져오기
+        last_measurement = command_executor.user_settings.get("step_length")
+        measurement_result = {
+            "step_length_cm": last_measurement or 65.0,
+            "accuracy": "낮음",
+            "method": "자동 측정"
+        }
+        
+        # 카메라 모드는 측정 완료 화면을 위해 유지
         camera_mode_switched = False
         camera_error = None
-        try:
-            if hasattr(camera_manager, 'set_user_mode'):
-                camera_manager.set_user_mode(user_id, 'realtime')
-                camera_mode_switched = True
-                logger.info(f'카메라 모드를 실시간 모드로 복원: {user_id}')
-            elif user_id in camera_manager.active_connections:
-                # Fallback to direct mode setting
-                previous_mode = camera_manager.user_modes.get(user_id, "measurement")
-                camera_manager.user_modes[user_id] = "realtime"
-                camera_mode_switched = True
-                logger.info(f"카메라 모드 자동 복원: {previous_mode} → realtime (user: {user_id})")
-        except Exception as e:
-            camera_error = str(e)
-            logger.warning(f'카메라 모드 복원 실패: {e}')
+        logger.info(f'측정 완료 - 결과 화면으로 진행: {user_id} ({last_measurement}cm)')
         
         
         # 완료 정보 생성
         completion_info = {
             "success": True,
-            "status": "completed",
-            "message": "측정 세션이 완료되었습니다.",
+            "status": "measurement_completed",
+            "message": f"보폭 측정이 완료되었습니다! 측정된 보폭은 {measurement_result['step_length_cm']}cm입니다.",
             "session_active": False,
             "user_id": user_id,
-            "camera_mode": camera_manager.user_modes.get(user_id, "realtime"),
+            "measurement_result": measurement_result,
+            "next_step": {
+                "action": "show_result_screen",
+                "screen": "measurement_result", 
+                "next_process": "voice_settings",
+                "button_text": "다음 단계로"
+            },
+            "camera_mode": camera_manager.user_modes.get(user_id, "measurement"),  # 결과 화면을 위해 측정 모드 유지
             "camera_connected": user_id in camera_manager.active_connections,
             "camera_mode_switched": camera_mode_switched
         }
         
         # 카메라 오류가 있는 경우 경고 포함
         if camera_error:
-            completion_info["camera_warning"] = f"카메라 모드 복원 실패: {camera_error}"
-            completion_info["message"] = "측정 세션이 완료되었습니다 (카메라 모드 복원 경고 있음)."
+            completion_info["camera_warning"] = f"카메라 모드 설정 실패: {camera_error}"
         
         return completion_info
         
@@ -710,13 +722,13 @@ async def save_measurement_result(
         existing_footstep = footstep_result.scalar_one_or_none()
         
         if existing_footstep:
-            # 기존 보폭 업데이트
-            existing_footstep.step_length = request.step_length_cm
+            # 기존 보폭 업데이트 (cm를 정수로 변환)
+            setattr(existing_footstep, 'step_length', int(round(request.step_length_cm)))
         else:
-            # 새로운 보폭 생성
+            # 새로운 보폭 생성 (cm를 정수로 변환)
             new_footstep = Footstep(
                 user_id=request.user_id,
-                step_length=request.step_length_cm
+                step_length=int(round(request.step_length_cm))
             )
             session.add(new_footstep)
         
@@ -735,11 +747,16 @@ async def save_measurement_result(
         # 새로 생성된 로그 정보 새로고침
         await session.refresh(dashboard_log)
         
+        # SQLAlchemy 속성을 적절히 변환
+        log_id_value = getattr(dashboard_log, 'dashboard_log_id')
+        user_id_value = getattr(dashboard_log, 'user_id')
+        timestamp_value = getattr(dashboard_log, 'timestamp')
+        
         return MeasurementLogResponse(
-            log_id=dashboard_log.dashboard_log_id,
-            user_id=dashboard_log.user_id,
-            step_length_cm=request.step_length_cm,
-            created_at=dashboard_log.timestamp
+            log_id=int(log_id_value),
+            user_id=UUID(str(user_id_value)),
+            step_length_cm=int(round(request.step_length_cm)),
+            created_at=timestamp_value
         )
         
     except HTTPException:
@@ -783,7 +800,7 @@ async def get_user_measurement_history(
                 "log_id": log.dashboard_log_id,
                 "user_id": str(log.user_id),
                 "log_data": log.log_data,
-                "timestamp": log.timestamp.isoformat() if log.timestamp else None
+                "timestamp": log.timestamp.isoformat() if hasattr(log.timestamp, 'isoformat') and log.timestamp is not None else str(log.timestamp) if log.timestamp is not None else None
             })
         
         return {
@@ -802,45 +819,9 @@ async def get_user_measurement_history(
 # 측정 처리 헬퍼 함수들
 # =========================
 
-# 공유 명령 실행 로직
-def create_pending_execution_result(context: str = None) -> CommandExecutionResult:
-    """
-    PENDING 상태의 CommandExecutionResult 생성 (중복 제거용)
-    
-    Args:
-        context: 실행 컨텍스트
-        
-    Returns:
-        표준화된 PENDING CommandExecutionResult
-    """
-    return CommandExecutionResult(
-        status=ExecutionStatus.PENDING,
-        message="명령이 분석되었습니다.",
-        data={"execute_immediately": False, "context": context or get_current_context()},
-        actions=["analyze_command"]
-    )
+# create_pending_execution_result 함수는 중복 제거됨 - execute_command_conditionally에서 인라인 처리
 
 
-async def execute_command_conditionally(
-    recognition_result: SpeechRecognitionResponse, 
-    execute_immediately: bool,
-    context: str = None
-) -> CommandExecutionResult:
-    """
-    조건부 명령 실행 로직 (중복 제거용)
-    
-    Args:
-        recognition_result: 음성 인식 결과
-        execute_immediately: 즉시 실행 여부
-        context: 실행 컨텍스트
-        
-    Returns:
-        명령 실행 결과
-    """
-    if execute_immediately:
-        return await command_executor.execute_command(recognition_result)
-    else:
-        return create_pending_execution_result(context)
 
 
 # =========================
@@ -866,8 +847,10 @@ def _detect_step_event_from_imu(imu_data: dict) -> bool:
         
         # 걸음 이벤트 임계값 (경험적 값)
         # 일반적으로 걸을 때 9.81 ± 3.0 m/s² 범위를 벗어남
-        step_threshold_low = 8.0   # 발을 들 때 (중력 감소)
-        step_threshold_high = 12.0 # 발을 내디딜 때 (충격 가속도)
+        gravity = 9.81
+        variation = 3.0
+        step_threshold_low = gravity - variation   # 발을 들 때 (중력 감소)
+        step_threshold_high = gravity + variation  # 발을 내디딜 때 (충격 가속도)
         
         step_detected = total_accel < step_threshold_low or total_accel > step_threshold_high
         
@@ -907,8 +890,24 @@ async def _execute_integrated_measurement_workflow(
         if not foot_keypoints:
             logger.warning("[통합 워크플로우] MediaPipe 발 키포인트 감지 실패")
             
-            # MediaPipe 실패 시 FastDepth만으로 처리
-            return await _fallback_to_fastdepth_only(cv_image, user_id, imu_data, kalman_enabled)
+            # FastDepth 백업 시도
+            try:
+                logger.info("[백업 처리] FastDepth 전용 모드")
+                fastdepth_processor = get_fastdepth_processor()
+                return await fastdepth_processor.process_frame_for_measurement(
+                    cv_image, 
+                    user_id, 
+                    imu_data=imu_data,
+                    enable_advanced_fusion=kalman_enabled
+                )
+            except Exception as backup_error:
+                logger.error(f"[백업 처리] FastDepth 백업 실패: {backup_error}")
+                # 베이스 클래스의 대체 측정 사용
+                return mediapipe_processor.create_fallback_step_result(
+                    reason="mediapipe_and_fastdepth_failed",
+                    estimated_distance_cm=imu_data.get('estimated_distance', 0) * 100 if imu_data.get('estimated_distance') else None,
+                    estimated_step_count=imu_data.get('estimated_step_count')
+                )
         
         logger.info(f"[통합 워크플로우] MediaPipe 키포인트 감지 성공 - 신뢰도: {foot_keypoints.confidence_score:.3f}")
         
@@ -968,22 +967,7 @@ async def _execute_integrated_measurement_workflow(
         return None
 
 
-async def _fallback_to_fastdepth_only(cv_image, user_id: str, imu_data: dict, kalman_enabled: bool):
-    """MediaPipe 실패 시 FastDepth만으로 처리"""
-    try:
-        logger.info("[백업 처리] FastDepth 전용 모드")
-        
-        fastdepth_processor = get_fastdepth_processor()
-        return await fastdepth_processor.process_frame_for_measurement(
-            cv_image, 
-            user_id, 
-            imu_data=imu_data,
-            enable_advanced_fusion=kalman_enabled
-        )
-        
-    except Exception as e:
-        logger.error(f"[백업 처리 오류] {e}")
-        return None
+# _fallback_to_fastdepth_only 함수는 중복 제거됨 - 위의 인라인 코드로 대체
 
 
 async def _apply_kalman_filter_fusion(
@@ -1045,22 +1029,23 @@ async def _apply_kalman_filter_fusion(
             fused_confidence = min(0.95, fused_confidence + 0.1)
             logger.info("[Kalman 융합] IMU 걸음 이벤트 보너스 적용")
         
-        # 결과 범위 보정 (30-150cm)
-        fused_step_length = max(30.0, min(150.0, fused_step_length))
+        # 결과 범위 보정 (베이스 클래스 설정값 사용)
+        mediapipe_processor = get_mediapipe_pose_processor()
+        fused_step_length = max(mediapipe_processor.config.min_step_length_cm, 
+                               min(mediapipe_processor.config.max_step_length_cm, fused_step_length))
         
         # StepCalculationResult 생성
-        from models.step_models import StepCalculationResult, StepMeasurementMethod, TrackingQuality, AccuracyLevel
-        import time
+        from models.step_models import StepCalculationResult, StepTrackingQuality, StepMeasurementMethod, AccuracyLevel
         
         result = StepCalculationResult(
             step_length_cm=round(fused_step_length, 1),
             confidence=round(fused_confidence, 3),
             step_count=1,
-            tracking_quality=TrackingQuality.HIGH if fused_confidence >= 0.8 else TrackingQuality.MEDIUM,
-            accuracy_level=AccuracyLevel.PROFESSIONAL if fused_confidence >= 0.85 else AccuracyLevel.HIGH,
-            measurement_method=StepMeasurementMethod.SENSOR_FUSION,
-            timestamp=time.time(),
-            user_id=user_id,
+            tracking_quality=StepTrackingQuality.EXCELLENT if fused_confidence >= 0.8 else StepTrackingQuality.GOOD,
+            accuracy_level=AccuracyLevel.HIGH if fused_confidence >= 0.85 else AccuracyLevel.MEDIUM,
+            measurement_method=StepMeasurementMethod.KALMAN_FILTER,
+            consistency_score=fused_confidence,
+            processing_time_ms=None,  # 처리 시간 측정은 필요시 추가
             source_data={
                 "method": "kalman_filter_fusion",
                 "mediapipe_step_length_cm": round(mediapipe_step_length, 1),

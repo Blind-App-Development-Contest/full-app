@@ -1,15 +1,16 @@
 # utils/mediapipe_pose_processor.py
 import cv2
 import numpy as np
-import mediapipe as mp
+import mediapipe as mp  # type: ignore
 import logging
 import time
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 from datetime import datetime
+from models.step_models import StepCalculationResult, StepMeasurementMethod, TrackingQuality, AccuracyLevel, AccuracyConverter
 
-from models.step_models import StepCalculationResult, StepMeasurementMethod, TrackingQuality, AccuracyLevel
 from utils.imu_fusion_processor import IMUFusionProcessor
+from utils.step_measurement_base import StepMeasurementBase, StepMeasurementUtils, get_visual_impairment_config
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -46,7 +47,7 @@ class Enhanced3DFootPosition:
     pose_confidence: float = 0.0
     depth_confidence: float = 0.0
 
-class MediaPipePoseProcessor:
+class MediaPipePoseProcessor(StepMeasurementBase):
     """
     MediaPipe Pose를 사용한 발 키포인트 감지 및 3D 위치 추정
     
@@ -58,24 +59,37 @@ class MediaPipePoseProcessor:
     """
     
     def __init__(self, enable_imu_fusion: bool = True):
-        # MediaPipe Pose 초기화
-        self.mp_pose = mp.solutions.pose
-        self.mp_drawing = mp.solutions.drawing_utils
+        # 시각장애인 특화 설정으로 베이스 클래스 초기화
+        super().__init__(get_visual_impairment_config())
         
-        # 최적화된 신뢰도 설정 (발 키포인트 감지를 위해 낮춤)
-        self.default_detection_confidence = 0.3
-        self.default_tracking_confidence = 0.3
+        # MediaPipe Pose 초기화 - 타입 안전성을 위해 Any 사용
+        try:
+            import mediapipe as mp
+            self.mp_pose = mp.solutions.pose  # type: ignore
+            self.mp_drawing = mp.solutions.drawing_utils  # type: ignore
+        except (ImportError, AttributeError) as e:
+            logger.error(f"MediaPipe import 오류: {e}")
+            # Fallback - 타입 힌트를 위한 None 설정
+            self.mp_pose: Optional[Any] = None
+            self.mp_drawing: Optional[Any] = None
+        
+        # 최적화된 신뢰도 설정 (시각장애인을 위해 낮춤)
+        self.default_detection_confidence = self.config.base_confidence_threshold  # 0.3 → 설정값 사용
+        self.default_tracking_confidence = self.config.base_confidence_threshold
         
         # 최적화된 Pose 모델 설정 - 발 키포인트 감지에 최적화
-        self.pose = self.mp_pose.Pose(
-            static_image_mode=True,   # 정적 이미지 모드로 변경 (각 프레임 독립 처리)
-            model_complexity=2,       # Heavy 모델 사용 (최고 정확도)
-            smooth_landmarks=False,   # 정적 모드에서는 불필요
-            enable_segmentation=False,
-            smooth_segmentation=False,
-            min_detection_confidence=self.default_detection_confidence,  # 낮춘 감지 신뢰도
-            min_tracking_confidence=self.default_tracking_confidence     # 낮춘 추적 신뢰도
-        )
+        if self.mp_pose is not None:
+            self.pose = self.mp_pose.Pose(
+                static_image_mode=True,   # 정적 이미지 모드로 변경 (각 프레임 독립 처리)
+                model_complexity=2,       # Heavy 모델 사용 (최고 정확도)
+                smooth_landmarks=False,   # 정적 모드에서는 불필요
+                enable_segmentation=False,
+                smooth_segmentation=False,
+                min_detection_confidence=self.default_detection_confidence,  # 낮춘 감지 신뢰도
+                min_tracking_confidence=self.default_tracking_confidence     # 낮춘 추적 신뢰도
+            )
+        else:
+            self.pose: Optional[Any] = None
         
         # 발 관련 랜드마크 인덱스 (MediaPipe Pose 33개 포인트 중)
         self.FOOT_LANDMARKS = {
@@ -129,12 +143,18 @@ class MediaPipePoseProcessor:
         self.keypoint_history: List[FootKeypoints] = []
         self.max_history_size = 30
         
+        # 베이스 클래스에서 recent_steps를 관리하므로 제거
+        
         logger.info("[MediaPipe] Pose 프로세서 초기화 완료")
     
-    def create_pose_with_confidence(self, detection_confidence: float, tracking_confidence: float = None):
+    def create_pose_with_confidence(self, detection_confidence: float, tracking_confidence: Optional[float] = None):
         """특정 신뢰도로 새로운 Pose 인스턴스 생성 (최적화된 설정)"""
         if tracking_confidence is None:
             tracking_confidence = detection_confidence
+            
+        if self.mp_pose is None:
+            logger.error("MediaPipe가 초기화되지 않았습니다")
+            return None
             
         return self.mp_pose.Pose(
             static_image_mode=True,   # 정적 이미지 모드
@@ -146,7 +166,7 @@ class MediaPipePoseProcessor:
             min_tracking_confidence=tracking_confidence
         )
     
-    def extract_foot_keypoints(self, cv_image: np.ndarray, confidence_threshold: float = None) -> Optional[FootKeypoints]:
+    def extract_foot_keypoints(self, cv_image: np.ndarray, confidence_threshold: Optional[float] = None) -> Optional[FootKeypoints]:
         """
         MediaPipe Pose로 발 키포인트 추출
         
@@ -163,6 +183,7 @@ class MediaPipePoseProcessor:
             # BGR을 RGB로 변환 (MediaPipe 요구사항)
             rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
             height, width = cv_image.shape[:2]
+            _ = height, width  # 사용되지 않는 변수
             
             # 이미지 전처리 - 밝기와 대비 향상
             rgb_image = cv2.convertScaleAbs(rgb_image, alpha=1.2, beta=10)
@@ -177,6 +198,9 @@ class MediaPipePoseProcessor:
                 pose_instance = self.create_pose_with_confidence(confidence_threshold)
             
             # Pose 감지 수행
+            if pose_instance is None:
+                logger.error("Pose 인스턴스가 None입니다")
+                return None
             results = pose_instance.process(rgb_image)
             
             if not results.pose_landmarks:
@@ -292,8 +316,8 @@ class MediaPipePoseProcessor:
             
             try:
                 # 픽셀 좌표로 변환
-                pixel_x = int(landmark.x * width)
-                pixel_y = int(landmark.y * height)
+                pixel_x = int(float(landmark.x) * width)
+                pixel_y = int(float(landmark.y) * height)
                 
                 # 깊이 정보 획득
                 depth_value = None
@@ -313,7 +337,7 @@ class MediaPipePoseProcessor:
                         valid_depths = depth_patch[depth_patch > 0]
                         
                         if len(valid_depths) > 0:
-                            depth_value = np.median(valid_depths)
+                            depth_value = float(np.median(valid_depths))
                             depth_confidence = min(1.0, len(valid_depths) / (kernel_size * kernel_size))
                             self.processing_stats['depth_fusion_success'] += 1
                 
@@ -321,15 +345,16 @@ class MediaPipePoseProcessor:
                 if depth_value is None:
                     # MediaPipe z는 상대적 깊이이므로 실제 거리로 변환
                     # 평균적인 사람의 키(1.7m)를 기준으로 스케일링
-                    estimated_depth = 1.5 + landmark.z * 0.5  # 1.0~2.0m 범위
+                    estimated_depth = 1.5 + float(landmark.z) * 0.5  # 1.0~2.0m 범위
                     depth_value = estimated_depth
-                    depth_confidence = landmark.visibility * 0.6  # MediaPipe 신뢰도 기반
+                    depth_confidence = float(landmark.visibility) * 0.6  # MediaPipe 신뢰도 기반
                 
                 # 3D 좌표 계산 (카메라 좌표계)
                 # 정규화된 좌표를 실제 3D 좌표로 변환
-                world_x = (landmark.x - 0.5) * 2.0  # -1 ~ 1 범위
-                world_y = (landmark.y - 0.5) * 2.0  # -1 ~ 1 범위
-                world_z = depth_value
+                world_x = (float(landmark.x) - 0.5) * 2.0  # -1 ~ 1 범위
+                world_y = (float(landmark.y) - 0.5) * 2.0  # -1 ~ 1 범위
+                world_z = float(depth_value)
+                _ = world_z  # 사용되지 않는 변수
                 
                 # 카메라 매개변수를 사용한 실제 좌표 계산
                 if depth_value > 0:
@@ -345,31 +370,31 @@ class MediaPipePoseProcessor:
                     try:
                         # IMU 데이터로 위치 보정
                         corrected_pos = self.imu_processor.fuse_with_vision(
-                            vision_x=actual_x, vision_y=actual_y, vision_z=actual_z,
+                            vision_x=float(actual_x), vision_y=float(actual_y), vision_z=float(actual_z),
                             foot_side=foot_side, timestamp=keypoints.timestamp
                         )
                         if corrected_pos:
-                            actual_x, actual_y, actual_z = corrected_pos
+                            actual_x, actual_y, actual_z = map(float, corrected_pos)
                             imu_enhanced = True
                             logger.debug(f"[MediaPipe] IMU 융합 적용: {foot_side} {keypoint_type}")
                     except Exception as e:
                         logger.debug(f"[MediaPipe] IMU 융합 실패: {e}")
                 
                 # 전체 신뢰도 계산
-                pose_confidence = landmark.visibility * landmark.presence
-                total_confidence = (pose_confidence + depth_confidence) / 2
+                pose_confidence = float(landmark.visibility) * float(landmark.presence)
+                total_confidence = (pose_confidence + float(depth_confidence)) / 2
                 
                 foot_position = Enhanced3DFootPosition(
-                    x=actual_x,
-                    y=actual_y,
-                    z=actual_z,
-                    confidence=total_confidence,
+                    x=float(actual_x),
+                    y=float(actual_y),
+                    z=float(actual_z),
+                    confidence=float(total_confidence),
                     keypoint_type=keypoint_type,
                     foot_side=foot_side,
-                    timestamp=keypoints.timestamp,
+                    timestamp=float(keypoints.timestamp),
                     imu_enhanced=imu_enhanced,
-                    pose_confidence=pose_confidence,
-                    depth_confidence=depth_confidence
+                    pose_confidence=float(pose_confidence),
+                    depth_confidence=float(depth_confidence)
                 )
                 
                 foot_positions.append(foot_position)
@@ -387,7 +412,7 @@ class MediaPipePoseProcessor:
                                                cv_image: np.ndarray, 
                                                user_id: str = 'current_user',
                                                enable_depth_fusion: bool = True,
-                                               confidence_threshold: float = None) -> Optional[StepCalculationResult]:
+                                               confidence_threshold: Optional[float] = None) -> Optional[StepCalculationResult]:
         """
         MediaPipe Pose 기반 보폭 측정
         
@@ -410,12 +435,16 @@ class MediaPipePoseProcessor:
             
             # 2. FastDepth 깊이 맵 생성 (선택적)
             depth_map = None
-            if enable_depth_fusion and self.depth_integration_enabled:
+            if enable_depth_fusion and self.depth_integration_enabled and self.depth_processor is not None:
                 try:
-                    # FastDepth로 깊이 맵 생성
-                    depth_result = self.depth_processor.process_image_for_depth(cv_image)
-                    if depth_result:
-                        depth_map = depth_result.get('depth_map')
+                    # FastDepth로 깊이 맵 생성 (새로운 통합 시스템 사용)
+                    depth_result = await self.depth_processor.process_frame_for_measurement(
+                        cv_image, 
+                        user_id, 
+                        enable_advanced_fusion=False
+                    )
+                    if depth_result and hasattr(depth_result, 'source_data'):
+                        depth_map = depth_result.source_data.get('depth_map')
                         logger.debug("[MediaPipe] FastDepth 깊이 맵 생성 성공")
                 except Exception as e:
                     logger.debug(f"[MediaPipe] 깊이 맵 생성 실패: {e}")
@@ -446,176 +475,214 @@ class MediaPipePoseProcessor:
             logger.error(f"[MediaPipe] 프레임 처리 오류 (user: {user_id}): {e}")
             return None
     
-    def _calculate_step_length_from_positions(self, 
-                                            foot_positions: List[Enhanced3DFootPosition], 
-                                            user_id: str) -> Optional[StepCalculationResult]:
+    # 베이스 클래스의 메서드를 사용하므로 중복 제거됨
+
+    def _calculate_step_length_from_positions(self, foot_positions: List[Enhanced3DFootPosition], user_id: str) -> Optional[StepCalculationResult]:
         """3D 발 위치에서 보폭 계산"""
+        _ = user_id  # 사용되지 않는 변수
         try:
             # 1순위: 엄지발가락으로 보폭 계산 (가장 정확함)
             left_big_toe = None
             right_big_toe = None
-            
             for pos in foot_positions:
                 if pos.keypoint_type == 'big_toe' and pos.foot_side == 'left':
                     left_big_toe = pos
                 elif pos.keypoint_type == 'big_toe' and pos.foot_side == 'right':
                     right_big_toe = pos
-            
-            # 엄지발가락이 있으면 우선 사용
             if left_big_toe and right_big_toe:
-                # 두 엄지발가락 간의 3D 거리 계산
                 dx = left_big_toe.x - right_big_toe.x
                 dy = left_big_toe.y - right_big_toe.y
                 dz = left_big_toe.z - right_big_toe.z
-                
                 step_length_m = (dx**2 + dy**2 + dz**2)**0.5
                 step_length_cm = step_length_m * 100
+                step_length_cm = max(self.config.min_step_length_cm, min(self.config.max_step_length_cm, step_length_cm))
                 
-                # 보정 (사람의 보폭은 일반적으로 50-100cm)
-                step_length_cm = max(30.0, min(150.0, step_length_cm))
+                # 신뢰도 계산 - 베이스 클래스 메서드 사용
+                base_conf = (left_big_toe.confidence + right_big_toe.confidence) / 2
                 
-                # 신뢰도 계산
-                confidence = (left_big_toe.confidence + right_big_toe.confidence) / 2
+                # 일관성 점수 계산
+                consistency_score = self.calculate_consistency_score(step_length_cm)
                 
-                # IMU 융합 보너스
+                # IMU 센서 일치도 계산
+                sensor_agreement = 1.0
                 if left_big_toe.imu_enhanced or right_big_toe.imu_enhanced:
-                    confidence = min(0.98, confidence + 0.1)
+                    sensor_agreement = min(1.0, sensor_agreement * 1.2)  # IMU 융합 보너스 (1.0 제한)
                 
-                result = StepCalculationResult(
+                # 시각장애인 특화 신뢰도 조정
+                confidence = self.calculate_adjusted_confidence(
+                    base_confidence=base_conf,
+                    step_stability=1.0,
+                    sensor_agreement=sensor_agreement,
+                    is_walking_detected=True,  # 두 발이 모두 감지되면 걷기 상태
+                    consistency_with_average=consistency_score
+                )
+                
+                # 신뢰도 범위 제한
+                confidence = self.clamp_confidence(confidence)
+                
+                # 측정 히스토리 업데이트
+                self.update_step_history(step_length_cm, confidence)
+                return StepCalculationResult(
                     step_length_cm=round(step_length_cm, 1),
                     confidence=round(confidence, 3),
                     step_count=1,
-                    tracking_quality=self._determine_tracking_quality(confidence),
-                    accuracy_level=self._determine_accuracy_level(confidence),
+                    tracking_quality=AccuracyConverter.confidence_to_quality(confidence),
+                    accuracy_level=AccuracyConverter.confidence_to_korean_level(confidence),
                     measurement_method=StepMeasurementMethod.POSE_ESTIMATION,
-                    timestamp=time.time(),
-                    user_id=user_id,
                     source_data={
                         "method": "mediapipe_pose_3d_big_toe_distance",
+                        "consistency_score": consistency_score,
+                        "average_step_length_cm": self.get_average_step_length(),
                         "left_big_toe_confidence": round(left_big_toe.confidence, 3),
                         "right_big_toe_confidence": round(right_big_toe.confidence, 3),
                         "left_imu_enhanced": left_big_toe.imu_enhanced,
                         "right_imu_enhanced": right_big_toe.imu_enhanced,
                         "pose_detection_method": "MediaPipe Pose v1.0 - Big Toe Priority",
-                        "depth_fusion_used": any(pos.depth_confidence > 0.5 for pos in foot_positions)
-                    }
+                        "depth_fusion_used": any(pos.depth_confidence > self.config.acceptable_confidence for pos in foot_positions)
+                    },
+                    consistency_score=consistency_score,
+                    processing_time_ms=None,
+                    timestamp=datetime.now()
                 )
-                
-                return result
-            
             # 2순위: 발뒤꿈치로 보폭 계산 (엄지발가락이 없을 때)
             left_heel = None
             right_heel = None
-            
             for pos in foot_positions:
                 if pos.keypoint_type == 'heel' and pos.foot_side == 'left':
                     left_heel = pos
                 elif pos.keypoint_type == 'heel' and pos.foot_side == 'right':
                     right_heel = pos
-            
             if left_heel and right_heel:
-                # 두 발 뒤꿈치 간의 3D 거리 계산
                 dx = left_heel.x - right_heel.x
                 dy = left_heel.y - right_heel.y
                 dz = left_heel.z - right_heel.z
-                
                 step_length_m = (dx**2 + dy**2 + dz**2)**0.5
-                step_length_cm = step_length_m * 100
-                
-                # 보정 (사람의 보폭은 일반적으로 50-100cm)
-                step_length_cm = max(30.0, min(150.0, step_length_cm))
+                # 보폭 범위 제한
+                step_length_cm = StepMeasurementUtils.clamp_step_length(step_length_m * 100)
                 
                 # 신뢰도 계산
-                confidence = (left_heel.confidence + right_heel.confidence) / 2
+                base_conf = (left_heel.confidence + right_heel.confidence) / 2
                 
-                # IMU 융합 보너스
+                # 일관성 점수 계산
+                consistency_score = self.calculate_consistency_score(step_length_cm)
+                
+                # IMU 센서 일치도 계산
+                sensor_agreement = 1.0
                 if left_heel.imu_enhanced or right_heel.imu_enhanced:
-                    confidence = min(0.98, confidence + 0.1)
+                    sensor_agreement = min(1.0, sensor_agreement * 1.2)
                 
-                result = StepCalculationResult(
+                # 시각장애인 특화 신뢰도 조정
+                confidence = self.calculate_adjusted_confidence(
+                    base_confidence=base_conf,
+                    step_stability=0.9,  # 발뒤꿈치는 엄지발가락보다 약간 낮은 안정성
+                    sensor_agreement=sensor_agreement,
+                    is_walking_detected=True,
+                    consistency_with_average=consistency_score
+                )
+                
+                # 신뢰도 범위 제한
+                confidence = self.clamp_confidence(confidence)
+                
+                # 측정 히스토리 업데이트
+                self.update_step_history(step_length_cm, confidence)
+                return StepCalculationResult(
                     step_length_cm=round(step_length_cm, 1),
                     confidence=round(confidence, 3),
                     step_count=1,
-                    tracking_quality=self._determine_tracking_quality(confidence),
-                    accuracy_level=self._determine_accuracy_level(confidence),
+                    tracking_quality=AccuracyConverter.confidence_to_quality(confidence),
+                    accuracy_level=AccuracyConverter.confidence_to_korean_level(confidence),
                     measurement_method=StepMeasurementMethod.POSE_ESTIMATION,
-                    timestamp=time.time(),
-                    user_id=user_id,
                     source_data={
                         "method": "mediapipe_pose_3d_heel_distance",
+                        "consistency_score": consistency_score,
+                        "average_step_length_cm": self.get_average_step_length(),
                         "left_heel_confidence": round(left_heel.confidence, 3),
                         "right_heel_confidence": round(right_heel.confidence, 3),
                         "left_imu_enhanced": left_heel.imu_enhanced,
                         "right_imu_enhanced": right_heel.imu_enhanced,
                         "pose_detection_method": "MediaPipe Pose v1.0",
-                        "depth_fusion_used": any(pos.depth_confidence > 0.5 for pos in foot_positions)
-                    }
+                        "depth_fusion_used": any(pos.depth_confidence > self.config.acceptable_confidence for pos in foot_positions)
+                    },
+                    consistency_score=consistency_score,
+                    processing_time_ms=None,
+                    timestamp=datetime.now()
                 )
-                
-                return result
-            
-            # 3순위: 엄지발가락과 발뒤꿈치가 모두 없으면 발끝으로 시도
+            # 3순위: 엄지발가락과 발뒤꿈치가 모두 없으면 신뢰도 높은 두 발 위치로 계산
             elif len(foot_positions) >= 2:
-                # 가장 신뢰도 높은 두 발 위치 선택
                 sorted_positions = sorted(foot_positions, key=lambda x: x.confidence, reverse=True)
                 pos1, pos2 = sorted_positions[0], sorted_positions[1]
-                
                 dx = pos1.x - pos2.x
                 dy = pos1.y - pos2.y
                 dz = pos1.z - pos2.z
+                # 보폭 범위 제한
+                step_length_cm = StepMeasurementUtils.clamp_step_length(((dx**2 + dy**2 + dz**2)**0.5) * 100)
                 
-                step_length_m = (dx**2 + dy**2 + dz**2)**0.5
-                step_length_cm = max(30.0, min(150.0, step_length_m * 100))
+                # 혼합 키포인트이므로 패널티 적용
+                base_conf = (pos1.confidence + pos2.confidence) / 2 * 0.85
                 
-                confidence = (pos1.confidence + pos2.confidence) / 2 * 0.85  # 혼합 키포인트는 약간 낮은 신뢰도
+                # 일관성 점수 계산
+                consistency_score = self.calculate_consistency_score(step_length_cm)
                 
-                result = StepCalculationResult(
+                # 시각장애인 특화 신뢰도 조정
+                confidence = self.calculate_adjusted_confidence(
+                    base_confidence=base_conf,
+                    step_stability=0.6,  # 혼합 키포인트이므로 낮은 안정성
+                    sensor_agreement=0.8,  # 센서 일치도도 낮음
+                    is_walking_detected=False,  # 불확실한 상태
+                    consistency_with_average=consistency_score
+                )
+                
+                # 신뢰도 범위 제한
+                confidence = self.clamp_confidence(confidence)
+                
+                # 측정 히스토리 업데이트
+                self.update_step_history(step_length_cm, confidence)
+                return StepCalculationResult(
                     step_length_cm=round(step_length_cm, 1),
                     confidence=round(confidence, 3),
                     step_count=1,
-                    tracking_quality=self._determine_tracking_quality(confidence),
-                    accuracy_level=self._determine_accuracy_level(confidence),
+                    tracking_quality=AccuracyConverter.confidence_to_quality(confidence),
+                    accuracy_level=AccuracyConverter.confidence_to_korean_level(confidence),
                     measurement_method=StepMeasurementMethod.POSE_ESTIMATION,
-                    timestamp=time.time(),
-                    user_id=user_id,
                     source_data={
                         "method": "mediapipe_pose_mixed_keypoints_fallback",
+                        "consistency_score": consistency_score,
+                        "average_step_length_cm": self.get_average_step_length(),
                         "keypoint1": f"{pos1.foot_side}_{pos1.keypoint_type}",
                         "keypoint2": f"{pos2.foot_side}_{pos2.keypoint_type}",
                         "fallback_calculation": True,
                         "note": "엄지발가락과 발뒤꿈치 없음 - 혼합 키포인트 사용"
-                    }
+                    },
+                    consistency_score=consistency_score,
+                    processing_time_ms=None,
+                    timestamp=datetime.now()
                 )
-                
-                return result
-            
             else:
                 logger.warning("[MediaPipe] 보폭 계산을 위한 충분한 키포인트 없음")
                 return None
-                
         except Exception as e:
             logger.error(f"[MediaPipe] 보폭 계산 오류: {e}")
             return None
     
-    def _determine_tracking_quality(self, confidence: float) -> TrackingQuality:
+    def _determine_tracking_quality(self, confidence: float):
         """신뢰도 기반 추적 품질 결정"""
-        if confidence >= 0.8:
-            return TrackingQuality.HIGH
-        elif confidence >= 0.6:
-            return TrackingQuality.MEDIUM
+        # TrackingQuality enum 값 실제 정의에 맞게 변환 - 베이스 클래스 설정 사용
+        if confidence >= self.config.good_confidence:
+            return TrackingQuality.GOOD
+        elif confidence >= self.config.acceptable_confidence:
+            return TrackingQuality.FAIR
         else:
-            return TrackingQuality.LOW
+            return TrackingQuality.POOR
     
-    def _determine_accuracy_level(self, confidence: float) -> AccuracyLevel:
+    def _determine_accuracy_level(self, confidence: float):
         """신뢰도 기반 정확도 수준 결정"""
-        if confidence >= 0.85:
-            return AccuracyLevel.PROFESSIONAL
-        elif confidence >= 0.7:
+        # AccuracyLevel enum 값 실제 정의에 맞게 변환 - 베이스 클래스 설정 사용
+        if confidence >= self.config.excellent_confidence:
             return AccuracyLevel.HIGH
-        elif confidence >= 0.5:
+        elif confidence >= self.config.good_confidence:
             return AccuracyLevel.MEDIUM
         else:
-            return AccuracyLevel.BASIC
+            return AccuracyLevel.LOW
     
     def _update_processing_stats(self, processing_time: float, confidence: float):
         """처리 통계 업데이트"""
@@ -665,7 +732,7 @@ class MediaPipePoseProcessor:
         logger.info("[MediaPipe] 처리 통계 초기화 완료")
     
     def extract_foot_keypoints_enhanced(self, cv_image: np.ndarray, 
-                                        detection_confidence: float = None) -> Optional[FootKeypoints]:
+                                        detection_confidence: Optional[float] = None) -> Optional[FootKeypoints]:
         """
         발 특화 감지 알고리즘 - 여러 신뢰도와 전처리 기법을 사용한 강화된 발 키포인트 감지
         
@@ -683,14 +750,14 @@ class MediaPipePoseProcessor:
         
         # 1단계: 기본 감지 시도
         result = self.extract_foot_keypoints(cv_image, detection_confidence)
-        if result and result.confidence_score > 0.3:
+        if result and result.confidence_score > self.config.base_confidence_threshold:
             logger.debug(f"[MediaPipe] 기본 감지 성공 - 신뢰도: {result.confidence_score:.3f}")
             return result
         
         # 2단계: 낮은 신뢰도로 재시도
         logger.debug("[MediaPipe] 낮은 신뢰도로 재시도")
         result = self.extract_foot_keypoints(cv_image, 0.1)
-        if result and result.confidence_score > 0.15:
+        if result and result.confidence_score > (self.config.base_confidence_threshold * 0.5):
             logger.debug(f"[MediaPipe] 낮은 신뢰도 감지 성공 - 신뢰도: {result.confidence_score:.3f}")
             return result
         
@@ -700,7 +767,7 @@ class MediaPipePoseProcessor:
         
         for i, enhanced_image in enumerate(enhanced_images):
             result = self.extract_foot_keypoints(enhanced_image, 0.2)
-            if result and result.confidence_score > 0.2:
+            if result and result.confidence_score > (self.config.base_confidence_threshold * 0.67):
                 logger.debug(f"[MediaPipe] 전처리 감지 성공 (방법 {i+1}) - 신뢰도: {result.confidence_score:.3f}")
                 return result
         
@@ -712,7 +779,7 @@ class MediaPipePoseProcessor:
             if result:
                 # 좌표를 전체 이미지로 변환
                 result = self._adjust_coordinates_for_lower_half(result, cv_image.shape)
-                if result.confidence_score > 0.15:
+                if result.confidence_score > (self.config.base_confidence_threshold * 0.5):
                     logger.debug(f"[MediaPipe] 하체 중심 감지 성공 - 신뢰도: {result.confidence_score:.3f}")
                     return result
         
@@ -760,6 +827,7 @@ class MediaPipePoseProcessor:
         """이미지의 하반부를 추출 (발이 보통 화면 하단에 위치)"""
         try:
             height, width = cv_image.shape[:2]
+            _ = width  # 사용되지 않는 변수
             # 하단 60%를 추출
             start_y = int(height * 0.4)
             return cv_image[start_y:, :]
@@ -772,6 +840,7 @@ class MediaPipePoseProcessor:
         """하반부 이미지에서 감지된 좌표를 전체 이미지 좌표로 변환"""
         try:
             height = original_shape[0]
+            _ = height  # 사용되지 않는 변수
             offset_y = 0.4  # 상단에서 40% 지점부터 시작했으므로
             
             # 각 키포인트의 y 좌표를 조정
@@ -783,11 +852,7 @@ class MediaPipePoseProcessor:
                 keypoints.left_foot_index.y = keypoints.left_foot_index.y * 0.6 + offset_y
             if keypoints.right_foot_index:
                 keypoints.right_foot_index.y = keypoints.right_foot_index.y * 0.6 + offset_y
-            if keypoints.left_foot:
-                keypoints.left_foot.y = keypoints.left_foot.y * 0.6 + offset_y
-            if keypoints.right_foot:
-                keypoints.right_foot.y = keypoints.right_foot.y * 0.6 + offset_y
-                
+            # left_foot, right_foot 속성 접근 부분 삭제
         except Exception as e:
             logger.warning(f"[MediaPipe] 좌표 변환 오류: {e}")
         
@@ -795,8 +860,11 @@ class MediaPipePoseProcessor:
 
     def __del__(self):
         """리소스 정리"""
-        if hasattr(self, 'pose'):
-            self.pose.close()
+        if hasattr(self, 'pose') and self.pose is not None:
+            try:
+                self.pose.close()
+            except Exception as e:
+                logger.warning(f"[MediaPipe] Pose 리소스 정리 중 오류: {e}")
         logger.info("[MediaPipe] Pose 프로세서 리소스 정리 완료")
 
 # 싱글톤 인스턴스

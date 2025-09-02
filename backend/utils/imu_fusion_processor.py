@@ -8,6 +8,8 @@ from collections import deque
 from datetime import datetime
 import math
 import cv2
+from models.step_models import StepCalculationResult, StepMeasurementMethod, AccuracyConverter
+from utils.step_measurement_base import StepMeasurementBase, StepMeasurementUtils, get_visual_impairment_config
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -258,9 +260,8 @@ class ExtendedKalmanFilter:
     def _is_measurement_outlier(self, residual: np.ndarray, threshold: float = 3.0) -> bool:
         """측정값 이상치 검출 (마할라노비스 거리 기반)"""
         try:
-            # 잔차 크기가 임계값을 초과하는지 확인
             residual_norm = np.linalg.norm(residual)
-            return residual_norm > threshold
+            return bool(residual_norm > threshold)
         except Exception:
             return False
         
@@ -322,7 +323,7 @@ class ExtendedKalmanFilter:
         confidence = max(0.0, 1.0 - position_uncertainty / max_uncertainty)
         return confidence
 
-class IMUFusionProcessor:
+class IMUFusionProcessor(StepMeasurementBase):
     """
     IMU 센서와 비전 데이터 융합 프로세서
     
@@ -334,6 +335,9 @@ class IMUFusionProcessor:
     """
     
     def __init__(self):
+        # 시각장애인 특화 설정으로 베이스 클래스 초기화
+        super().__init__(get_visual_impairment_config())
+        
         # 칼만 필터 초기화
         self.kalman_filter = ExtendedKalmanFilter()
         
@@ -395,6 +399,8 @@ class IMUFusionProcessor:
             'vision_updates': 0,
             'detected_steps': 0
         }
+        
+        # 베이스 클래스에서 recent_steps를 관리하므로 제거
         
         logger.info("[IMU Fusion] IMU 융합 프로세서 초기화 완료")
     
@@ -498,8 +504,6 @@ class IMUFusionProcessor:
             
             # 깊이 보정 정보가 있다면 함께 전달
             depth_correction_info = None
-            if hasattr(self, 'last_depth_correction'):
-                depth_correction_info = self.last_depth_correction
             
             self.kalman_filter.update_with_vision(vision_position, fusion_confidence, depth_correction_info)
             
@@ -910,23 +914,16 @@ class IMUFusionProcessor:
             CorrectedDepthResult: 보정된 깊이 결과 또는 None
         """
         try:
-            # 카메라 자세 보정이 비활성화된 경우
             if not self.camera_correction['correction_enabled']:
                 return None
-            
-            # 현재 카메라 자세 가져오기
             camera_pose = self.get_current_camera_pose()
             if camera_pose is None:
                 return None
-            
-            # 카메라 내부 파라미터 확인
             if self.camera_correction['intrinsic_matrix'] is None:
-                # 기본 내부 파라미터 사용 (추정값)
-                fx = image_width * 0.7  # 대략적인 focal length
+                fx = image_width * 0.7
                 fy = image_height * 0.7
                 cx = image_width / 2
                 cy = image_height / 2
-                
                 intrinsic_matrix = np.array([
                     [fx, 0, cx],
                     [0, fy, cy],
@@ -934,51 +931,30 @@ class IMUFusionProcessor:
                 ])
             else:
                 intrinsic_matrix = self.camera_correction['intrinsic_matrix']
-            
-            # 픽셀 좌표를 정규화된 카메라 좌표로 변환
             fx, fy = intrinsic_matrix[0, 0], intrinsic_matrix[1, 1]
             cx, cy = intrinsic_matrix[0, 2], intrinsic_matrix[1, 2]
-            
-            # 정규화된 카메라 좌표
             x_cam = (pixel_x - cx) / fx
             y_cam = (pixel_y - cy) / fy
-            
-            # 3D 카메라 좌표 (원본 깊이 사용)
             camera_point = np.array([x_cam * original_depth, y_cam * original_depth, original_depth])
-            
-            # 카메라 자세를 고려한 실제 3D 점으로 변환
             world_point = camera_pose.rotation_matrix @ camera_point
-            
-            # 보정된 깊이 계산 (실제 거리)
-            corrected_depth = np.linalg.norm(world_point)
-            
-            # 기울기 각도에 따른 추가 보정
+            corrected_depth = float(np.linalg.norm(world_point))
             tilt_angle = math.sqrt(camera_pose.pitch**2 + camera_pose.roll**2)
             if tilt_angle > self.camera_correction['max_tilt_angle']:
-                # 기울기가 너무 클 때 보정 계수 적용
                 tilt_correction = self.camera_correction['depth_correction_factor']
                 corrected_depth *= tilt_correction
-            
-            # 보정 계수 계산
-            correction_factor = corrected_depth / original_depth if original_depth > 0 else 1.0
-            
-            # 신뢰도 계산 (기울기가 클수록 신뢰도 감소)
+            correction_factor = float(corrected_depth / original_depth) if original_depth > 0 else 1.0
             max_angle = self.camera_correction['max_tilt_angle']
             confidence = max(0.3, 1.0 - (tilt_angle / max_angle))
-            
             result = CorrectedDepthResult(
-                corrected_depth=corrected_depth,
-                original_depth=original_depth,
-                correction_factor=correction_factor,
+                corrected_depth=float(corrected_depth),
+                original_depth=float(original_depth),
+                correction_factor=float(correction_factor),
                 camera_pose=camera_pose,
-                confidence=confidence
+                confidence=float(confidence)
             )
-            
             logger.debug(f"[IMU Fusion] 깊이 보정: {original_depth:.3f}m → {corrected_depth:.3f}m "
                         f"(기울기: {math.degrees(tilt_angle):.1f}°)")
-            
             return result
-            
         except Exception as e:
             logger.error(f"[IMU Fusion] 깊이 보정 오류: {e}")
             return None
@@ -1046,9 +1022,9 @@ class IMUFusionProcessor:
             recent_poses = list(self.pose_history)[-10:]
             
             # 각 축별 변화량 계산
-            roll_variance = np.var([pose.roll for pose in recent_poses])
-            pitch_variance = np.var([pose.pitch for pose in recent_poses])
-            yaw_variance = np.var([pose.yaw for pose in recent_poses])
+            roll_variance = float(np.var([pose.roll for pose in recent_poses]))
+            pitch_variance = float(np.var([pose.pitch for pose in recent_poses]))
+            yaw_variance = float(np.var([pose.yaw for pose in recent_poses]))
             
             # 전체 변화량 계산
             total_variance = roll_variance + pitch_variance + yaw_variance
@@ -1058,7 +1034,7 @@ class IMUFusionProcessor:
             logger.debug(f"[IMU Fusion] 카메라 안정성: {'안정' if is_stable else '불안정'} "
                         f"(변화량: {total_variance:.4f})")
             
-            return is_stable
+            return bool(is_stable)
             
         except Exception as e:
             logger.error(f"[IMU Fusion] 카메라 안정성 확인 오류: {e}")
@@ -1092,159 +1068,199 @@ class IMUFusionProcessor:
             logger.error(f"[IMU Fusion] 자세 보정 정보 조회 오류: {e}")
             return {"error": str(e)}
     
-    def process_complete_measurement_cycle(self, cv_image: np.ndarray, imu_data: IMUData) -> Dict[str, Any]:
-        """
-        완전한 측정 사이클 처리 (MediaPipe + FastDepth + IMU 통합)
-        
-        Args:
-            cv_image: OpenCV 이미지
-            imu_data: IMU 센서 데이터
+    # 베이스 클래스의 메서드를 사용하므로 중복 제거됨
+
+    def get_step_measurement_result(self, fusion_results: dict, step_analysis: dict, processing_time_ms: float) -> Optional[StepCalculationResult]:
+        """보폭 측정 결과를 StepCalculationResult 구조로 생성"""
+        left = fusion_results.get('left_foot')
+        right = fusion_results.get('right_foot')
+        if left is not None and right is not None:
+            dx = left[0] - right[0]
+            dy = left[1] - right[1]
+            dz = left[2] - right[2]
+            distance_m = float(np.sqrt(dx**2 + dy**2 + dz**2))
+            # 보폭 범위 제한
+            step_length_cm = StepMeasurementUtils.clamp_step_length(distance_m * 100)
             
-        Returns:
-            Dict: 통합 측정 결과
-        """
+            # 신뢰도 계산
+            base_conf = 0.8
+            walking_state = step_analysis.get('walking_state', {}) if step_analysis else {}
+            is_walking = walking_state.get('is_walking', False)
+            step_stability = 1.0 if is_walking else 0.7
+            
+            # 일관성 점수 계산
+            consistency_score = self.calculate_consistency_score(step_length_cm)
+            
+            # 시각장애인 특화 신뢰도 조정
+            confidence = self.calculate_adjusted_confidence(
+                base_confidence=base_conf,
+                step_stability=step_stability,
+                sensor_agreement=1.0,  # IMU 센서 사용시 높은 일치도
+                is_walking_detected=is_walking,
+                consistency_with_average=consistency_score
+            )
+            
+            # 신뢰도 범위 제한
+            confidence = max(0.0, min(1.0, confidence))
+            
+            # 측정 히스토리 업데이트
+            self.update_step_history(step_length_cm, confidence)
+            return StepCalculationResult(
+                step_length_cm=round(step_length_cm, 1),
+                confidence=confidence,
+                step_count=1,
+                tracking_quality=AccuracyConverter.confidence_to_quality(confidence),
+                accuracy_level=AccuracyConverter.confidence_to_korean_level(confidence),
+                measurement_method=StepMeasurementMethod.IMU_SENSOR,
+                source_data={
+                    "method": "imu_fusion_3d_distance",
+                    "consistency_score": consistency_score,
+                    "average_step_length_cm": self.get_average_step_length()
+                },
+                consistency_score=consistency_score,
+                processing_time_ms=processing_time_ms,
+                timestamp=datetime.now()
+            )
+        elif left is not None or right is not None:
+            # 단일 발 감지시 기본 추정값 사용
+            estimated_step_cm = self.config.typical_step_length_cm  # 65.0cm 대신 설정값 사용
+            
+            # 단일 발이므로 낮은 신뢰도
+            base_conf = 0.4
+            
+            # 시각장애인 특화 신뢰도 조정
+            confidence = self.calculate_adjusted_confidence(
+                base_confidence=base_conf,
+                step_stability=0.5,  # 단일 발이므로 낮은 안정성
+                sensor_agreement=0.7,  # IMU는 있지만 비전 정보 부족
+                is_walking_detected=False,
+                consistency_with_average=0.8  # 추정값이므로 보통 수준
+            )
+            
+            # 신뢰도 범위 제한
+            confidence = max(0.0, min(1.0, confidence))
+            
+            # 측정 히스토리 업데이트
+            self.update_step_history(estimated_step_cm, confidence)
+            return StepCalculationResult(
+                step_length_cm=estimated_step_cm,
+                confidence=confidence,
+                step_count=1,
+                tracking_quality=AccuracyConverter.confidence_to_quality(confidence),
+                accuracy_level=AccuracyConverter.confidence_to_korean_level(confidence),
+                measurement_method=StepMeasurementMethod.IMU_SENSOR,
+                source_data={"method": "imu_fusion_single_foot"},
+                consistency_score=0.5,
+                processing_time_ms=processing_time_ms,
+                timestamp=datetime.now()
+            )
+        return None
+
+    def process_complete_measurement_cycle(self, cv_image: np.ndarray, imu_data: IMUData) -> Dict[str, Any]:
         try:
             measurement_start_time = time.time()
-            
-            # 1. IMU 데이터 추가 및 처리
             imu_success = self.add_imu_data(imu_data)
-            
-            # 2. 현재 카메라 자세 계산
             camera_pose = self.get_current_camera_pose()
-            
-            # 3. MediaPipe로 발 키포인트 감지
             from utils.mediapipe_pose_processor import get_mediapipe_pose_processor
             mediapipe_processor = get_mediapipe_pose_processor(enable_imu_fusion=True)
-            
             keypoints = mediapipe_processor.extract_foot_keypoints_enhanced(cv_image)
             foot_positions_3d = None
-            
             if keypoints:
                 foot_positions_3d = mediapipe_processor.convert_to_3d_coordinates(keypoints, cv_image)
-            
-            # 4. IMU 기반 깊이 보정 적용
             corrected_results = {}
             if foot_positions_3d:
                 height, width = cv_image.shape[:2]
-                
-                # 왼발 보정
-                if foot_positions_3d.left_foot:
+                left_foot = next((p for p in foot_positions_3d if getattr(p, 'foot_side', None) == 'left'), None)
+                right_foot = next((p for p in foot_positions_3d if getattr(p, 'foot_side', None) == 'right'), None)
+                if left_foot:
                     left_correction = self.correct_depth_with_pose(
-                        original_depth=foot_positions_3d.left_foot.depth_m,
-                        pixel_x=int(foot_positions_3d.left_foot.pixel_x),
-                        pixel_y=int(foot_positions_3d.left_foot.pixel_y),
+                        original_depth=getattr(left_foot, 'depth_m', 0.0),
+                        pixel_x=int(getattr(left_foot, 'pixel_x', 0)),
+                        pixel_y=int(getattr(left_foot, 'pixel_y', 0)),
                         image_width=width,
                         image_height=height
                     )
                     corrected_results['left_foot'] = left_correction
-                
-                # 오른발 보정
-                if foot_positions_3d.right_foot:
+                if right_foot:
                     right_correction = self.correct_depth_with_pose(
-                        original_depth=foot_positions_3d.right_foot.depth_m,
-                        pixel_x=int(foot_positions_3d.right_foot.pixel_x),
-                        pixel_y=int(foot_positions_3d.right_foot.pixel_y),
+                        original_depth=getattr(right_foot, 'depth_m', 0.0),
+                        pixel_x=int(getattr(right_foot, 'pixel_x', 0)),
+                        pixel_y=int(getattr(right_foot, 'pixel_y', 0)),
                         image_width=width,
                         image_height=height
                     )
                     corrected_results['right_foot'] = right_correction
-            
-            # 5. 비전-IMU 데이터 융합
             fusion_results = {}
             if foot_positions_3d:
                 current_time = time.time()
-                
-                # 왼발 융합
-                if foot_positions_3d.left_foot:
-                    left_pos = foot_positions_3d.left_foot
-                    corrected_depth = (corrected_results['left_foot'].corrected_depth 
-                                     if 'left_foot' in corrected_results else left_pos.depth_m)
-                    
+                left_foot = next((p for p in foot_positions_3d if getattr(p, 'foot_side', None) == 'left'), None)
+                right_foot = next((p for p in foot_positions_3d if getattr(p, 'foot_side', None) == 'right'), None)
+                if left_foot:
+                    left_corr = corrected_results.get('left_foot')
+                    corrected_depth = getattr(left_corr, 'corrected_depth', getattr(left_foot, 'depth_m', 0.0)) if left_corr else getattr(left_foot, 'depth_m', 0.0)
                     fused_left = self.fuse_with_vision(
-                        vision_x=left_pos.x_m,
-                        vision_y=left_pos.y_m,
+                        vision_x=getattr(left_foot, 'x_m', 0.0),
+                        vision_y=getattr(left_foot, 'y_m', 0.0),
                         vision_z=corrected_depth,
                         foot_side='left',
                         timestamp=current_time
                     )
                     fusion_results['left_foot'] = fused_left
-                
-                # 오른발 융합
-                if foot_positions_3d.right_foot:
-                    right_pos = foot_positions_3d.right_foot
-                    corrected_depth = (corrected_results['right_foot'].corrected_depth 
-                                     if 'right_foot' in corrected_results else right_pos.depth_m)
-                    
+                if right_foot:
+                    right_corr = corrected_results.get('right_foot')
+                    corrected_depth = getattr(right_corr, 'corrected_depth', getattr(right_foot, 'depth_m', 0.0)) if right_corr else getattr(right_foot, 'depth_m', 0.0)
                     fused_right = self.fuse_with_vision(
-                        vision_x=right_pos.x_m,
-                        vision_y=right_pos.y_m,
+                        vision_x=getattr(right_foot, 'x_m', 0.0),
+                        vision_y=getattr(right_foot, 'y_m', 0.0),
                         vision_z=corrected_depth,
                         foot_side='right',
                         timestamp=current_time
                     )
                     fusion_results['right_foot'] = fused_right
-            
-            # 6. 걸음 예측 정보
             step_prediction = self.get_step_prediction()
             walking_state = self.get_walking_state()
-            
-            # 7. 현재 시스템 상태
             current_imu_state = self.get_current_imu_state()
-            
             processing_time = time.time() - measurement_start_time
-            
-            # 8. 통합 결과 구성
+            step_analysis = {
+                'walking_state': walking_state,
+                'step_prediction': step_prediction,
+                'total_detected_steps': self.get_step_count()
+            }
             integrated_result = {
                 'timestamp': measurement_start_time,
                 'processing_time_ms': int(processing_time * 1000),
-                'success': imu_success and keypoints is not None,
-                
-                # IMU 관련
+                'success': bool(imu_success and keypoints is not None),
                 'imu_data': {
-                    'success': imu_success,
+                    'success': bool(imu_success),
                     'current_state': current_imu_state.__dict__ if current_imu_state else None,
                     'camera_pose': camera_pose.__dict__ if camera_pose else None,
-                    'camera_stable': self.is_camera_stable()
+                    'camera_stable': bool(self.is_camera_stable())
                 },
-                
-                # 비전 관련
                 'vision_data': {
-                    'keypoints_detected': keypoints is not None,
-                    'foot_positions_3d': foot_positions_3d.__dict__ if foot_positions_3d else None,
+                    'keypoints_detected': bool(keypoints is not None),
+                    'foot_positions_3d': [p.__dict__ for p in foot_positions_3d] if foot_positions_3d else None,
                     'corrected_depths': corrected_results,
                 },
-                
-                # 융합 결과
                 'fusion_results': fusion_results,
-                
-                # 걸음 관련
-                'step_analysis': {
-                    'walking_state': walking_state,
-                    'step_prediction': step_prediction,
-                    'total_detected_steps': self.get_step_count()
-                },
-                
-                # 시스템 통계
+                'step_analysis': step_analysis,
+                'step_measurement_result': self.get_step_measurement_result(fusion_results, step_analysis, int(processing_time * 1000)),
                 'system_stats': {
                     'fusion_stats': self.get_fusion_statistics(),
                     'pose_correction_info': self.get_pose_correction_info()
                 }
             }
-            
             logger.info(f"[IMU Fusion] 통합 측정 사이클 완료 ({processing_time*1000:.1f}ms): "
                        f"IMU={'✓' if imu_success else '✗'}, "
                        f"비전={'✓' if keypoints else '✗'}, "
                        f"융합={'✓' if fusion_results else '✗'}")
-            
             return integrated_result
-            
         except Exception as e:
             logger.error(f"[IMU Fusion] 통합 측정 사이클 오류: {e}")
             return {
                 'timestamp': time.time(),
                 'success': False,
                 'error': str(e),
-                'processing_time_ms': int((time.time() - measurement_start_time) * 1000)
+                'processing_time_ms': int((time.time() - measurement_start_time) * 1000) if 'measurement_start_time' in locals() else 0
             }
 
 # 싱글톤 인스턴스

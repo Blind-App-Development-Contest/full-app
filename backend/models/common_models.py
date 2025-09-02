@@ -83,6 +83,17 @@ class CommandExecutionResponse(BaseModel):
 
 # ===== 측정 관련 모델 =====
 
+class StepResult(BaseModel):
+    """보폭 측정 결과"""
+    step_length_cm: float = Field(description="측정된 보폭 길이 (cm)")
+    confidence: float = Field(ge=0.0, le=1.0, description="측정 신뢰도")
+    step_count: int = Field(ge=0, description="총 걸음 수")
+    tracking_quality: TrackingQuality = Field(description="추적 품질")
+    measurement_type: MeasurementType = Field(description="측정 방식")
+    fps: float = Field(ge=0.0, description="처리 속도 (FPS)")
+    frame_count: int = Field(ge=0, description="처리된 프레임 수")
+    measurement_duration: float = Field(ge=0.0, description="측정 소요 시간 (초)")
+
 class MeasurementProgress(BaseModel):
     """측정 진행 상황"""
     frame_count: int = Field(ge=0, description="처리된 프레임 수")
@@ -220,20 +231,20 @@ class SchemaConverter:
             current_step_length_cm=progress.get("tracker_status", {}).get("current_step", {}).get("step_length_cm")
         )
         
-        # 현재 결과 구성
+        # 현재 결과 구성 - 딕셔너리 형태로 변환
         current_result = None
         if progress.get("tracker_status", {}).get("current_step"):
             step_data = progress["tracker_status"]["current_step"]
-            current_result = StepResult(
-                step_length_cm=step_data.get("step_length_cm", 0.0),
-                confidence=step_data.get("confidence", 0.0),
-                step_count=step_data.get("step_count", 0),
-                tracking_quality=TrackingQuality(step_data.get("tracking_quality", "poor")),
-                measurement_type=MeasurementType.KALMAN_FILTER,
-                fps=progress.get("tracker_status", {}).get("performance", {}).get("fps", 0.0),
-                frame_count=progress.get("frame_count", 0),
-                measurement_duration=progress.get("duration", 0.0)
-            )
+            current_result = {
+                "step_length_cm": step_data.get("step_length_cm", 0.0),
+                "confidence": step_data.get("confidence", 0.0),
+                "step_count": step_data.get("step_count", 0),
+                "tracking_quality": step_data.get("tracking_quality", "poor"),
+                "measurement_type": MeasurementType.KALMAN_FILTER.value,
+                "fps": progress.get("tracker_status", {}).get("performance", {}).get("fps", 0.0),
+                "frame_count": progress.get("frame_count", 0),
+                "measurement_duration": progress.get("duration", 0.0)
+            }
         
         return RealTimeMeasurementStatus(
             measurement_active=progress.get("active", False),
@@ -241,5 +252,6 @@ class SchemaConverter:
             measurement_type=MeasurementType.KALMAN_FILTER if progress.get("active") else None,
             progress=measurement_progress,
             current_result=current_result,
+            session_id=None,  # 세션 ID 추가
             start_time=datetime.fromtimestamp(progress.get("start_time", 0)) if progress.get("start_time") else None
         )

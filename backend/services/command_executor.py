@@ -12,7 +12,13 @@ from models.common_models import (
     AppMode, ExecutionStatus, MeasurementStatus,
     RealTimeMeasurementStatus, TrackingQuality, SchemaConverter
 )
-from models.step_models import StepCalculationResult as StepResult, StepMeasurementMethod, AccuracyConverter, StepCalculationInput
+from models.step_models import (
+    StepCalculationResult as StepResult, 
+    StepMeasurementMethod, 
+    AccuracyConverter, 
+    StepCalculationInput,
+    StepTrackingQuality
+)
 from config.settings import get_settings
 # 새로운 IMU 통합 시스템 사용
 from utils.imu_fusion_processor import get_imu_fusion_processor
@@ -335,10 +341,10 @@ class CommandExecutor:
             
             # 품질에 따른 메시지 생성
             quality_messages = {
-                TrackingQuality.EXCELLENT: "매우 정확하게 측정되었습니다!",
-                TrackingQuality.GOOD: "정확하게 측정되었습니다!",
-                TrackingQuality.FAIR: "측정이 완료되었습니다. 더 긴 거리에서 재측정하면 정확도가 향상됩니다.",
-                TrackingQuality.POOR: "측정이 완료되었지만 정확도가 낮습니다. 재측정을 권장합니다."
+                StepTrackingQuality.EXCELLENT: "매우 정확하게 측정되었습니다!",
+                StepTrackingQuality.GOOD: "정확하게 측정되었습니다!",
+                StepTrackingQuality.FAIR: "측정이 완료되었습니다. 더 긴 거리에서 재측정하면 정확도가 향상됩니다.",
+                StepTrackingQuality.POOR: "측정이 완료되었지만 정확도가 낮습니다. 재측정을 권장합니다."
             }
             
             quality_msg = quality_messages.get(result.tracking_quality, "")
@@ -348,20 +354,20 @@ class CommandExecutor:
             print(f"  - 걸음 수: {result.step_count}")
             print(f"  - 추적 품질: {result.tracking_quality}")
             print(f"  - 신뢰도: {result.confidence:.2f}")
-            print(f"  - 처리 FPS: {result.fps:.1f}")
-            print(f"  - 측정 시간: {result.measurement_duration:.1f}초")
+            print(f"  - 처리 시간: {result.processing_time_ms or 0:.1f}ms")
+            print(f"  - 측정 방식: {result.measurement_method}")
             
             # API 호출로 보폭 저장 (기존 API 호환성)
             try:
                 response = requests.post(
                     "http://localhost:8000/api/users/footstep/measurements",
                     json={
-                        "measurement_type": result.measurement_type.value,
+                        "measurement_type": result.measurement_method.value,
                         "step_length_cm": result.step_length_cm,
                         "step_count": result.step_count,
                         "confidence": result.confidence,
                         "tracking_quality": result.tracking_quality.value,
-                        "measurement_duration": result.measurement_duration,
+                        "measurement_duration": result.processing_time_ms or 0,
                         "user_id": self.user_settings.get("user_name")
                     },
                     timeout=5
@@ -370,23 +376,33 @@ class CommandExecutor:
             except Exception as api_error:
                 print(f"[CommandExecutor] API 저장 실패 (무시): {api_error}")
             
+            # 다음 단계(음성 설정)로 자동 진행
+            self.current_setup_step = SetupStep.VOICE_GENDER
+            
             return CommandExecutionResult(
                 status=ExecutionStatus.SUCCESS,
-                message=f"보폭 측정이 완료되었습니다! 측정된 보폭은 {result.step_length_cm}cm입니다. {quality_msg}",
+                message=f"보폭 측정이 완료되었습니다! 측정된 보폭은 {result.step_length_cm}cm입니다. {quality_msg} 이제 다음 단계로 진행하겠습니다.",
                 data={
-                    "mode": "footstep_complete",
-                    "measurement_type": result.measurement_type.value,
+                    "mode": "footstep_complete_next_step",
+                    "measurement_type": result.measurement_method.value,
                     "step_length": result.step_length_cm,
                     "step_count": result.step_count,
                     "confidence": result.confidence,
                     "tracking_quality": result.tracking_quality.value,
-                    "measurement_duration": round(result.measurement_duration or 0, 1),
-                    "frame_count": result.frame_count,
-                    "fps": result.fps,
+                    "measurement_duration": round((result.processing_time_ms or 0) / 1000, 1),
+                    "frame_count": result.step_count,
+                    "fps": 0.0,
                     "measurement_status": "완료",
-                    "session_id": result.source_data.get("session_id")
+                    "session_id": result.source_data.get("session_id"),
+                    "next_step": {
+                        "action": "show_result_and_proceed",
+                        "screen": "measurement_result_with_button", 
+                        "next_process": "voice_settings",
+                        "button_text": "다음 단계로",
+                        "setup_step": "voice_gender"
+                    }
                 },
-                actions=["footstep_measurement_complete", "tts_announce", "timer_stop", "fastdepth_deactivate"]
+                actions=["footstep_measurement_complete", "show_result_screen", "tts_announce", "timer_stop", "fastdepth_deactivate"]
             )
             
         except Exception as e:
@@ -459,8 +475,8 @@ class CommandExecutor:
                         "step_count": result.step_count,
                         "confidence": result.confidence,
                         "tracking_quality": result.tracking_quality.value,
-                        "frame_count": result.frame_count,
-                        "fps": result.fps,
+                        "frame_count": result.step_count,  # 걸음 수를 프레임 수 대신 사용
+                        "fps": 0.0,  # FPS 정보는 없음
                         "measurement_result": result.model_dump()
                     },
                     actions=["footstep_frame_update"]
@@ -554,9 +570,9 @@ class CommandExecutor:
                     step_count=walking_state.get('total_steps', 0),
                     tracking_quality=AccuracyConverter.confidence_to_quality(0.8),
                     accuracy_level=AccuracyConverter.confidence_to_korean_level(0.8),
-                    measurement_method=StepMeasurementMethod.VISION_IMU_FUSION,
-                    timestamp=time.time(),
-                    user_id="command_executor_user",
+                    measurement_method=StepMeasurementMethod.IMU_SENSOR,
+                    consistency_score=0.8,
+                    processing_time_ms=1000.0,
                     source_data={
                         "method": "imu_integrated_measurement",
                         "fusion_stats": fusion_stats,
@@ -575,8 +591,8 @@ class CommandExecutor:
                     tracking_quality=AccuracyConverter.confidence_to_quality(0.6),
                     accuracy_level=AccuracyConverter.confidence_to_korean_level(0.6),
                     measurement_method=StepMeasurementMethod.DISTANCE_BASED,
-                    timestamp=time.time(),
-                    user_id="command_executor_fallback",
+                    consistency_score=0.6,
+                    processing_time_ms=500.0,
                     source_data={
                         "method": "fallback_measurement"
                     }
@@ -765,9 +781,10 @@ class CommandExecutor:
             if len(self.processed_frames) >= 10:
                 try:
                     calculation_input = StepCalculationInput(
-                        frame_sequence=self.processed_frames.copy(),
-                        preferred_method=StepMeasurementMethod.KALMAN_FILTER,
-                        force_fallback=False
+                        distance_meters=self.total_distance_traveled,
+                        step_count=len(self.processed_frames),
+                        confidence=kalman_result.confidence,
+                        timestamp=time.time()
                     )
                     
                     # 새로운 IMU 통합 시스템 사용 (레거시 시스템 제거됨)
@@ -782,8 +799,8 @@ class CommandExecutor:
                     calculation_input = StepCalculationInput(
                         distance_meters=self.total_distance_traveled,
                         step_count=kalman_result.step_count,
-                        preferred_method=StepMeasurementMethod.DISTANCE_BASED,
-                        force_fallback=True
+                        confidence=kalman_result.confidence,
+                        timestamp=time.time()
                     )
                     
                     # 새로운 IMU 통합 시스템으로 거리 기반 계산 통합됨

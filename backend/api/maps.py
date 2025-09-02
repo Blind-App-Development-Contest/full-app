@@ -13,9 +13,8 @@ import re
 
 # 중앙화된 데이터베이스 연결 사용 (로그 저장용)
 from core.database import get_async_db
-from models.database_models import User, DashboardLog
+from models.database_models import DashboardLog
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from fastapi import Depends
 from config.settings import get_settings, Settings
 
@@ -77,7 +76,7 @@ async def _ncloud_get(url: str, params: dict, cid: str, csec: str, *, strict: bo
         body = r.json()
     except Exception:
         body = {"raw": r.text}
-    body["_status"] = r.status_code
+    body["_status"] = str(r.status_code)
     return body
 
 def _parse_latlng(s: str) -> Optional[Tuple[float, float]]:
@@ -622,7 +621,7 @@ async def _log_directions_request(user_id: str, req: DirectionsReq, result: dict
 async def directions(
     req: DirectionsReq, 
     settings: Settings = Depends(get_settings),
-    user_id: str = None,  # 선택적 사용자 ID 파라미터
+    user_id: Optional[str] = None,  # 선택적 사용자 ID 파라미터
     session: AsyncSession = Depends(get_async_db)
 ):
     mode = (req.mode or "walking").lower()
@@ -645,17 +644,22 @@ async def directions(
             wps_unresolved.append(w)
 
     need_naver = (o_ll is None) or (d_ll is None) or (len(wps_unresolved) > 0)
-    cid = csec = None
+    cid: Optional[str] = None
+    csec: Optional[str] = None
     if need_naver:
         cid, csec = _require_naver_keys(settings)
 
     # resolve origin/destination
     if o_ll is None:
+        if cid is None or csec is None:
+            raise HTTPException(500, "NAVER keys required for geocoding origin")
         o_lat, o_lng = await _to_latlng(req.origin, cid, csec)
     else:
         o_lat, o_lng = o_ll
 
     if d_ll is None:
+        if cid is None or csec is None:
+            raise HTTPException(500, "NAVER keys required for geocoding destination")
         d_lat, d_lng = await _to_latlng(req.destination, cid, csec, bias=(o_lat, o_lng))
     else:
         d_lat, d_lng = d_ll
@@ -667,6 +671,8 @@ async def directions(
             raise HTTPException(400, "Waypoints include addresses; NAVER keys required for geocoding")
         remain = 23 - len(wps_parsed)
         for w in wps_unresolved[:remain]:
+            if cid is None or csec is None:
+                raise HTTPException(500, "NAVER keys required for waypoint geocoding")
             lat, lng = await _to_latlng(w, cid, csec, bias=(o_lat, o_lng))
             wps_parsed.append((lat, lng))
 
@@ -681,8 +687,11 @@ async def directions(
         return result
 
     # -------- driving → NAVER --------
-    if not cid:
+    if not cid or not csec:
         cid, csec = _require_naver_keys(settings)
+    
+    # Type narrowing assertion
+    assert cid is not None and csec is not None
 
     base_params = {
         "start": f"{o_lng},{o_lat}",

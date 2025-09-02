@@ -1,0 +1,1036 @@
+// lib/map_screen.dart
+import 'dart:async';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/material.dart';
+import 'package:flutter_naver_map/flutter_naver_map.dart';
+import 'package:geolocator/geolocator.dart'; // geolocator import 추가
+import 'package:provider/provider.dart';
+import 'directions_api.dart';
+import './services/voice_service.dart';
+import 'widgets/accessible_text.dart';
+
+class MapScreen extends StatefulWidget {
+  final String backendBaseUrl;
+  const MapScreen({super.key, required this.backendBaseUrl});
+
+  @override
+  State<MapScreen> createState() => _MapScreenState();
+}
+
+class _MapScreenState extends State<MapScreen> {
+  late final DirectionsApi _api;
+  final Completer<NaverMapController> _controller = Completer();
+  VoiceService? _voiceService;
+
+  NaverMapController? _map;
+  NPolylineOverlay? _routePolyline;
+  NMarker? _startMarker;
+  NMarker? _endMarker;
+  NMarker? _hereMarker; // 현재 위치 표시용
+
+  String _status = '대기';
+  final _destinationController = TextEditingController();
+  List<Map<String, dynamic>> _instructions = []; // 길안내 단계들
+  bool _showInstructions = false; // 패널 표시 여부
+  List<Map<String, dynamic>> _placeSuggestions = []; // 장소 추천 목록
+  bool _showSuggestions = false; // 추천 목록 표시 여부
+  int _selectedSuggestionIndex = -1; // 선택된 추천 항목 인덱스
+  bool _waitingForReadConfirmation = false; // 음성 안내 확인 대기 상태
+  bool _isListening = false; // 음성인식 상태
+
+  @override
+  void initState() {
+    super.initState();
+    _api = DirectionsApi(widget.backendBaseUrl);
+    // VoiceService를 Provider에서 가져오도록 지연 초기화
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      try {
+        _voiceService = context.read<VoiceService>();
+        _voiceService?.addListener(_onVoiceServiceUpdate);
+        debugPrint('🗺️ MapScreen: VoiceService Provider에서 가져오기 성공');
+      } catch (e) {
+        debugPrint('❌ MapScreen: VoiceService 초기화 실패: $e');
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _voiceService?.removeListener(_onVoiceServiceUpdate);
+    // Provider에서 가져온 VoiceService는 dispose하지 않음
+    _destinationController.dispose();
+    super.dispose();
+  }
+
+  // 음성 인식 결과 및 상태 업데이트 핸들러
+  void _onVoiceServiceUpdate() {
+    if (_voiceService == null || !mounted) return;
+    
+    setState(() {
+      // 음성 인식 결과가 있으면 목적지 입력창에 자동 입력
+      if (_voiceService!.lastRecognizedText.isNotEmpty) {
+        _destinationController.text = _voiceService!.lastRecognizedText;
+      }
+      // 음성 인식 상태에 따라 버튼 색상 등 UI 갱신
+      _isListening = _voiceService!.currentState == VoiceState.listening;
+      _status = _voiceService!.statusMessage;
+    });
+  }
+
+  // 음성 안내 메서드
+  void _speakText(String text) {
+    // TTS 기능을 추가해야 하지만, 일단 디버그 메시지로 대체
+    debugPrint('🔊 음성 안내: $text');
+    // 나중에 flutter_tts 패키지 사용하여 실제 음성 출력 구현
+  }
+
+  // 현재 선택된 추천 항목 음성 안내
+  void _speakCurrentSuggestion() {
+    if (_selectedSuggestionIndex >= 0 &&
+        _selectedSuggestionIndex < _placeSuggestions.length) {
+      final suggestion = _placeSuggestions[_selectedSuggestionIndex];
+      final name = suggestion['description'] ?? '';
+      final address =
+          suggestion['structured_formatting']?['secondary_text'] ?? '';
+
+      String message = '추천 ${_selectedSuggestionIndex + 1}. $name';
+      if (address.isNotEmpty) {
+        message += ', $address';
+      }
+      _speakText(message);
+    }
+  }
+
+  void _hideInstructionsPanel() {
+    setState(() {
+      _showInstructions = false;
+    });
+  }
+
+  Future<void> _searchPlaces(String query) async {
+    debugPrint('장소 검색 시작: "$query"');
+
+    // 최소 2글자 이상 입력시에만 검색
+    if (query.trim().length < 2) {
+      debugPrint('검색어가 너무 짧음 (${query.length}글자), 추천 목록 숨김');
+      setState(() {
+        _placeSuggestions = [];
+        _showSuggestions = false;
+      });
+      return;
+    }
+
+    try {
+      // 현재 위치 가져오기 (검색 정확도 향상을 위해)
+      double? lat, lng;
+      try {
+        final currentLocation = await _getCurrentLatLng();
+        if (currentLocation != null) {
+          lat = currentLocation.latitude;
+          lng = currentLocation.longitude;
+          debugPrint('현재 위치 기반 검색: $lat, $lng');
+        }
+      } catch (e) {
+        debugPrint('위치 정보를 가져올 수 없어 기본 검색 실행: $e');
+      }
+
+      // 백엔드의 places autocomplete API 호출 (위치 정보 포함)
+      debugPrint('API 호출 중: "${query.trim()}"');
+      final response = await _api.searchPlaces(
+        query.trim(),
+        lat: lat,
+        lng: lng,
+      );
+      debugPrint('API 응답: ${response.length}개 장소 찾음');
+
+      setState(() {
+        _placeSuggestions = response;
+        _showSuggestions = response.isNotEmpty;
+        _selectedSuggestionIndex = response.isNotEmpty ? 0 : -1; // 첫 번째 항목 선택
+        _waitingForReadConfirmation = response.isNotEmpty; // 음성 안내 확인 대기
+      });
+
+      if (response.isNotEmpty) {
+        debugPrint('${response.length}개 추천 장소 표시');
+        for (int i = 0; i < response.length; i++) {
+          final place = response[i];
+          debugPrint(
+            '  ${i + 1}. ${place['description']} - ${place['structured_formatting']?['secondary_text'] ?? ''}',
+          );
+        }
+
+        // 음성 안내: 추천 목록이 있음을 알리고 사용자 선택 대기
+        _speakText('${response.length}개의 추천 장소가 있습니다. 목록을 읽어드릴까요?');
+      } else {
+        debugPrint('추천할 장소 없음');
+        _speakText('추천할 장소가 없습니다.');
+        setState(() {
+          _waitingForReadConfirmation = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('장소 검색 실패: $e');
+      setState(() {
+        _placeSuggestions = [];
+        _showSuggestions = false;
+      });
+    }
+  }
+
+  void _selectPlace(Map<String, dynamic> place) {
+    final name = place['description'] ?? place['name'] ?? '';
+    _destinationController.text = name;
+    // 자동완성 패널을 숨기지 않고 유지
+    // setState(() {
+    //   _showSuggestions = false;
+    // });
+
+    // 선택한 장소 음성 안내
+    final address = place['structured_formatting']?['secondary_text'] ?? '';
+    String message = '$name이 선택되었습니다';
+    if (address.isNotEmpty) {
+      message += '. 주소: $address';
+    }
+    _speakText(message);
+  }
+
+  // 음성 안내 읽기 시작
+  void _startReadingSuggestions() {
+    setState(() {
+      _waitingForReadConfirmation = false;
+    });
+    _speakText('${_placeSuggestions.length}개의 추천 장소입니다.');
+
+    // 첫 번째 항목 읽어주기
+    Future.delayed(const Duration(milliseconds: 1000), () {
+      _speakCurrentSuggestion();
+    });
+  }
+
+  // 음성 안내 건너뛰기
+  void _skipReadingSuggestions() {
+    setState(() {
+      _waitingForReadConfirmation = false;
+    });
+    _speakText('원하는 장소를 선택하세요.');
+  }
+
+  // 다음 추천 항목으로 이동
+  void _nextSuggestion() {
+    if (_placeSuggestions.isNotEmpty) {
+      setState(() {
+        if (_selectedSuggestionIndex < _placeSuggestions.length - 1) {
+          _selectedSuggestionIndex++;
+        } else {
+          _selectedSuggestionIndex = 0; // 순환
+        }
+      });
+      _speakCurrentSuggestion();
+    }
+  }
+
+  // 이전 추천 항목으로 이동
+  void _previousSuggestion() {
+    if (_placeSuggestions.isNotEmpty) {
+      setState(() {
+        if (_selectedSuggestionIndex > 0) {
+          _selectedSuggestionIndex--;
+        } else {
+          _selectedSuggestionIndex = _placeSuggestions.length - 1; // 순환
+        }
+      });
+      _speakCurrentSuggestion();
+    }
+  }
+
+  // 현재 선택된 항목 선택
+  void _selectCurrentSuggestion() {
+    if (_selectedSuggestionIndex >= 0 &&
+        _selectedSuggestionIndex < _placeSuggestions.length) {
+      _selectPlace(_placeSuggestions[_selectedSuggestionIndex]);
+    }
+  }
+
+  // 음성인식 버튼 누름 (실제 기능 구현)
+  void _toggleVoiceRecognition() async {
+    setState(() {
+      _isListening = !_isListening;
+    });
+    if (_isListening) {
+      _speakText('음성인식을 시작합니다.');
+      // 음성 인식 시작 (5초 녹음 후 자동 처리)
+      await _voiceService?.startListening();
+    } else {
+      _speakText('음성인식을 중지합니다.');
+      // 음성 인식 강제 중단
+      _voiceService?.forceStop();
+    }
+  }
+
+  // ---- 유틸 ----
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: AccessibleText(msg)));
+  }
+
+  // GPS 관련 코드 (네이버 맵 테스트용)
+  Future<bool> _ensureLocationPermission() async {
+    try {
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        setState(() => _status = '위치 서비스 꺼짐');
+        _toast('위치 서비스가 꺼져 있어요.');
+        return false;
+      }
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.denied) {
+        setState(() => _status = '위치 권한 거부됨');
+        _toast('설정에서 위치 권한을 허용해주세요.');
+        return false;
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        setState(() => _status = '위치 권한 영구 거부됨');
+        _toast('설정에서 위치 권한을 허용해주세요.');
+        return false;
+      }
+
+      return true;
+    } catch (e) {
+      debugPrint('Permission check failed: $e');
+      setState(() => _status = '위치 권한 점검 실패');
+      _toast('위치 권한 확인 중 오류');
+      return false;
+    }
+  }
+
+  // 실제 GPS 위치 반환
+  Future<NLatLng?> _getCurrentLatLng() async {
+    try {
+      final hasPermission = await _ensureLocationPermission();
+      if (!hasPermission) return null;
+
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 1,
+        ),
+      );
+
+      return NLatLng(position.latitude, position.longitude);
+    } catch (e) {
+      debugPrint('Failed to get current location: $e');
+      _toast('현재 위치를 가져올 수 없습니다.');
+      return null;
+    }
+  }
+
+  // ---- 서버 진단 ----
+  Future<void> _ping() async {
+    setState(() => _status = '서버 진단 중...');
+
+    try {
+      final diagnostic = await _api.pingDiagnostic();
+      final isConnected = diagnostic['isConnected'] as bool;
+      final tests = diagnostic['tests'] as List<Map<String, dynamic>>;
+
+      if (!mounted) return;
+
+      setState(() => _status = isConnected ? '서버 연결 OK' : '서버 연결 실패');
+
+      // 진단 결과 표시
+      if (isConnected) {
+        final successfulTest = tests.firstWhere(
+          (test) => test['success'] == true,
+        );
+        _toast(
+          '서버 연결 성공\n엔드포인트: ${successfulTest['endpoint']}\n응답시간: ${successfulTest['responseTime']}',
+        );
+      } else {
+        // 실패한 경우 상세 정보 표시
+        String errorMsg = '서버 연결 실패\n서버 주소: ${widget.backendBaseUrl}\n\n';
+
+        for (final test in tests) {
+          if (test['diagnosis'] != null) {
+            errorMsg += '진단: ${test['diagnosis']}\n';
+            break;
+          }
+          if (test['error'] != null) {
+            final error = test['error'] as String;
+            if (error.contains('Connection refused')) {
+              errorMsg += '진단: 서버가 다운되었거나 방화벽이 차단 중\n';
+            } else if (error.contains('TimeoutException')) {
+              errorMsg += '진단: 서버 응답 시간 초과\n';
+            } else if (error.contains('SocketException')) {
+              errorMsg += '진단: 네트워크 연결 문제\n';
+            }
+            break;
+          }
+        }
+
+        errorMsg += '\n해결 방법:\n1. 서버 상태 확인\n2. IP 주소 및 포트 확인\n3. 네트워크 연결 확인';
+        _toast(errorMsg);
+      }
+    } catch (e) {
+      debugPrint('Ping diagnostic error: $e');
+      if (!mounted) return;
+      setState(() => _status = '진단 실패');
+      _toast('서버 진단 중 오류 발생: $e');
+    }
+  }
+
+  // ---- 현재 위치로 시점 이동 ----
+  Future<void> _centerToMyLocation() async {
+    final here = await _getCurrentLatLng();
+    if (here == null) return;
+    final map = _map ?? await _controller.future;
+
+    if (_hereMarker != null) {
+      try {
+        map.deleteOverlay(_hereMarker!.info);
+      } catch (_) {}
+      _hereMarker = null;
+    }
+    _hereMarker = NMarker(
+      id: 'here_marker',
+      position: here,
+      caption: const NOverlayCaption(text: '현재 위치'),
+      captionAligns: const [NAlign.top],
+      iconTintColor: Colors.blueAccent,
+    );
+    map.addOverlay(_hereMarker!);
+
+    final cu = NCameraUpdate.scrollAndZoomTo(target: here, zoom: 16);
+    cu.setAnimation(
+      animation: NCameraAnimation.easing,
+      duration: const Duration(milliseconds: 450),
+    );
+    await map.updateCamera(cu);
+
+    setState(() => _status = '현재 위치로 이동');
+  }
+
+  // ---- 경로 그리기 (도보 전용) ----
+  Future<void> _drawRoute({
+    required String origin, // "lat,lng" 혹은 주소
+    required String destination, // "lat,lng" 혹은 주소
+    List<String>? waypoints,
+  }) async {
+    try {
+      setState(() => _status = '도보 경로 요청 중...');
+      final resp = await _api.getRoute(
+        origin: origin,
+        destination: destination,
+        waypoints: waypoints,
+      );
+
+      if (!resp.hasRoute) {
+        setState(() => _status = '경로 없음');
+        _toast('경로가 없습니다.');
+        return;
+      }
+
+      // [[lng,lat], ...] -> NLatLng(lat,lng)
+      final coords = resp.pathLngLat
+          .map((p) => NLatLng(p[1], p[0]))
+          .toList(growable: false);
+      final map = _map ?? await _controller.future;
+
+      // 기존 오버레이 제거
+      final toDelete = <NOverlayInfo>[];
+      if (_routePolyline != null) toDelete.add(_routePolyline!.info);
+      if (_startMarker != null) toDelete.add(_startMarker!.info);
+      if (_endMarker != null) toDelete.add(_endMarker!.info);
+      for (final info in toDelete) {
+        try {
+          map.deleteOverlay(info);
+        } catch (_) {}
+      }
+      _routePolyline = null;
+      _startMarker = null;
+      _endMarker = null;
+
+      // 시작/도착 마커
+      _startMarker = NMarker(
+        id: 'start_marker',
+        position: coords.first,
+        caption: const NOverlayCaption(text: '출발'),
+        captionAligns: const [NAlign.top],
+        iconTintColor: Colors.green,
+      );
+      _endMarker = NMarker(
+        id: 'end_marker',
+        position: coords.last,
+        caption: const NOverlayCaption(text: '도착'),
+        captionAligns: const [NAlign.top],
+        iconTintColor: Colors.red,
+      );
+      map.addOverlay(_startMarker!);
+      map.addOverlay(_endMarker!);
+
+      // 경로 폴리라인
+      _routePolyline = NPolylineOverlay(
+        id: 'route_polyline',
+        coords: coords,
+        width: 8.0,
+        color: Colors.blue,
+      );
+      map.addOverlay(_routePolyline!);
+
+      // 화면에 경로 전체가 보이도록 시점 맞춤
+      try {
+        final bounds = NLatLngBounds.from(coords);
+        final cu = NCameraUpdate.fitBounds(
+          bounds,
+          padding: const EdgeInsets.all(40),
+        );
+        cu.setAnimation(
+          animation: NCameraAnimation.easing,
+          duration: const Duration(milliseconds: 600),
+        );
+        await map.updateCamera(cu);
+      } catch (_) {}
+
+      setState(() => _status = '경로 표시 완료');
+      _toast(
+        '경로 표시 (${resp.provider}) • ${resp.distanceText} / ${resp.durationText}',
+      );
+
+      // 경로 응답에서 길안내 단계들 추출
+      _extractInstructions(resp);
+    } catch (e) {
+      setState(() => _status = '에러');
+      _toast('경로 요청 실패: $e');
+    }
+  }
+
+  void _extractInstructions(DirectionsResponse resp) {
+    debugPrint('Extracting instructions: ${resp.steps.length} steps found');
+    for (int i = 0; i < resp.steps.length; i++) {
+      final step = resp.steps[i];
+      debugPrint(
+        'Step $i: ${step['instruction_html']} - ${step['distance_text']}',
+      );
+    }
+
+    setState(() {
+      _instructions = resp.steps;
+      _showInstructions = _instructions.isNotEmpty;
+    });
+
+    if (_instructions.isEmpty) {
+      debugPrint('No instructions found in response');
+    } else {
+      debugPrint('Instructions panel should be visible: $_showInstructions');
+    }
+  }
+
+  // ---- 버튼 핸들러 ----
+  Future<void> _routeFromMyLocation() async {
+    final destination = _destinationController.text.trim();
+    if (destination.isEmpty) {
+      _toast('목적지를 입력해주세요.');
+      return;
+    }
+
+    try {
+      setState(() => _status = 'GPS 위치 확인 중...');
+
+      final here = await _getCurrentLatLng();
+      if (here == null) {
+        _toast('현재 위치를 확인할 수 없습니다.');
+        setState(() => _status = '위치 확인 실패');
+        return;
+      }
+
+      // 출발지 현재 GPS 위치로 고정
+      final origin = '${here.latitude},${here.longitude}';
+
+      debugPrint('GPS Location (Origin): $origin');
+      debugPrint('Destination: $destination');
+
+      setState(() => _status = '도보 경로 계산 중... (최대 45초)');
+      _toast('도보 경로를 계산하고 있습니다. 잠시만 기다려주세요.');
+
+      // 추천 목록 숨기기
+      setState(() {
+        _showSuggestions = false;
+        _placeSuggestions = [];
+        _waitingForReadConfirmation = false;
+      });
+
+      await _drawRoute(origin: origin, destination: destination);
+    } catch (e) {
+      debugPrint('Route from my location error: $e');
+      setState(() => _status = '경로 계산 실패');
+      _toast('경로 계산 중 오류가 발생했습니다: ${e.toString()}');
+    }
+  }
+
+  PreferredSizeWidget _buildAppBar() {
+    return AppBar(
+      title: const AccessibleTitle('Naver Map • 길찾기'),
+      actions: [
+        IconButton(onPressed: _ping, icon: const Icon(Icons.wifi)),
+        IconButton(
+          onPressed: _centerToMyLocation,
+          icon: const Icon(Icons.my_location), // 아이콘 변경
+        ),
+        IconButton(
+          onPressed: _routeFromMyLocation,
+          icon: const Icon(Icons.directions_walk),
+          tooltip: '입력한 목적지로 길찾기', // 툴팁 변경
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    debugPrint('📱 MapScreen build - Status: $_status');
+
+    // Web 가드 (플러그인 미지원)
+    if (kIsWeb) {
+      return Scaffold(
+        appBar: _buildAppBar(),
+        body: const Center(
+          child: AccessibleDescription('네이버 지도는 Flutter Web 미지원입니다. iOS/Android에서 실행하세요.'),
+        ),
+      );
+    }
+
+    return Scaffold(
+      appBar: _buildAppBar(),
+      body: Stack(
+        children: [
+          NaverMap(
+            // Expanded 제거
+            options: const NaverMapViewOptions(
+              initialCameraPosition: NCameraPosition(
+                target: NLatLng(37.5665, 126.9780), // 서울시청
+                zoom: 14,
+              ),
+              indoorEnable: false,
+              logoClickEnable: false,
+              locationButtonEnable: false, // 기본 버튼은 비활성화 (우리가 직접 제어)
+            ),
+            onMapReady: (c) async {
+              debugPrint('🗺️ onMapReady called');
+              _map = c;
+              if (!_controller.isCompleted) _controller.complete(c);
+
+              setState(() => _status = '맵 로드 완료');
+              debugPrint(' NaverMap widget ready');
+            },
+          ),
+          Positioned(
+            left: 16,
+            right: 16,
+            bottom: 16,
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    AccessibleDescription(
+                      'Backend: ${widget.backendBaseUrl}',
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                    const SizedBox(height: 6),
+                    AccessibleDescription(
+                      'Status: $_status',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        color: Colors.blueGrey,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        ElevatedButton.icon(
+                          onPressed: _centerToMyLocation,
+                          icon: const Icon(Icons.my_location),
+                          label: const AccessibleText('내 위치로 이동'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Column(
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _destinationController,
+                                decoration: const InputDecoration(
+                                  hintText: '목적지를 입력하세요 (예: 경복궁, 명동역)',
+                                  border: OutlineInputBorder(),
+                                  prefixIcon: Icon(Icons.place),
+                                  contentPadding: EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 8,
+                                  ),
+                                ),
+                                onChanged: _searchPlaces,
+                                onSubmitted: (_) {
+                                  _routeFromMyLocation();
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Container(
+                              decoration: BoxDecoration(
+                                color: _isListening ? Colors.red : Colors.blue,
+                                shape: BoxShape.circle,
+                              ),
+                              child: IconButton(
+                                onPressed: _toggleVoiceRecognition,
+                                icon: Icon(
+                                  _isListening ? Icons.mic : Icons.mic_none,
+                                  color: Colors.white,
+                                ),
+                                tooltip: _isListening ? '음성인식 중지' : '음성인식 시작',
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (_showSuggestions) _buildSuggestionsPanel(),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: _routeFromMyLocation,
+                        icon: const Icon(Icons.directions_walk),
+                        label: const AccessibleText('도보 경로 찾기'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          if (_showInstructions) _buildInstructionsPanel(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInstructionsPanel() {
+    return Align(
+      alignment: Alignment.topCenter,
+      child: Padding(
+        padding: const EdgeInsets.only(top: 16.0),
+        child: Container(
+          width: 300,
+          height: 400,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black26,
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Column(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: const BoxDecoration(
+                  color: Colors.blue,
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(12),
+                    topRight: Radius.circular(12),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.directions_walk, color: Colors.white),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: AccessibleTitle(
+                        '길안내',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: _hideInstructionsPanel,
+                      icon: const Icon(Icons.close, color: Colors.white),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child:
+                    _instructions.isEmpty
+                        ? const Center(child: AccessibleDescription('길안내 정보가 없습니다.'))
+                        : ListView.builder(
+                          padding: const EdgeInsets.all(8),
+                          itemCount: _instructions.length,
+                          itemBuilder: (context, index) {
+                            final instruction = _instructions[index];
+                            final html = instruction['instruction_html'] ?? '';
+                            final distanceText =
+                                instruction['distance_text'] ?? '';
+                            final durationText =
+                                instruction['duration_text'] ?? '';
+
+                            return Card(
+                              margin: const EdgeInsets.symmetric(vertical: 4),
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        CircleAvatar(
+                                          radius: 12,
+                                          backgroundColor: Colors.blue,
+                                          child: AccessibleText(
+                                            '${index + 1}',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: AccessibleDescription(
+                                            html.isNotEmpty
+                                                ? html
+                                                : '단계 ${index + 1}',
+                                            style: const TextStyle(
+                                              fontSize: 14,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    if (distanceText.isNotEmpty ||
+                                        durationText.isNotEmpty)
+                                      Padding(
+                                        padding: const EdgeInsets.only(
+                                          top: 4,
+                                          left: 32,
+                                        ),
+                                        child: AccessibleDescription(
+                                          [distanceText, durationText]
+                                              .where((s) => s.isNotEmpty)
+                                              .join(' • '),
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.grey[600],
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSuggestionsPanel() {
+    return Container(
+      margin: const EdgeInsets.only(top: 4),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black12,
+            blurRadius: 4,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      constraints: const BoxConstraints(maxHeight: 300),
+      child: Column(
+        children: [
+          // 음성 안내 확인 대기 상태 표시 및 버튼들
+          if (_waitingForReadConfirmation)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(8),
+              decoration: const BoxDecoration(
+                color: Colors.orange,
+                borderRadius: BorderRadius.only(
+                  topLeft: Radius.circular(8),
+                  topRight: Radius.circular(8),
+                ),
+              ),
+              child: Column(
+                children: [
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _startReadingSuggestions,
+                          icon: const Icon(Icons.volume_up, size: 18),
+                          label: const AccessibleText('읽기'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _skipReadingSuggestions,
+                          icon: const Icon(Icons.skip_next, size: 18),
+                          label: const AccessibleText('건너뛰기'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.grey,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+
+          // 탐색 버튼들 (음성 안내 모드가 아닐 때 표시)
+          if (!_waitingForReadConfirmation && _placeSuggestions.isNotEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.blue.shade50,
+                borderRadius:
+                    _waitingForReadConfirmation
+                        ? null
+                        : const BorderRadius.only(
+                          topLeft: Radius.circular(8),
+                          topRight: Radius.circular(8),
+                        ),
+              ),
+              child: Row(
+                children: [
+                  IconButton(
+                    onPressed: _previousSuggestion,
+                    icon: const Icon(Icons.keyboard_arrow_up),
+                    tooltip: '이전 항목',
+                  ),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _selectCurrentSuggestion,
+                      icon: const Icon(Icons.check, size: 18),
+                      label: const AccessibleText('선택'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.blue,
+                        foregroundColor: Colors.white,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: _nextSuggestion,
+                    icon: const Icon(Icons.keyboard_arrow_down),
+                    tooltip: '다음 항목',
+                  ),
+                ],
+              ),
+            ),
+
+          // 추천 목록
+          Flexible(
+            child: ListView.builder(
+              padding: EdgeInsets.zero,
+              shrinkWrap: true,
+              itemCount: _placeSuggestions.length,
+              itemBuilder: (context, index) {
+                final place = _placeSuggestions[index];
+                final name = place['description'] ?? place['name'] ?? '';
+                final address =
+                    place['structured_formatting']?['secondary_text'] ?? '';
+
+                final isSelected = index == _selectedSuggestionIndex;
+
+                return Container(
+                  decoration: BoxDecoration(
+                    color:
+                        isSelected
+                            ? Colors.blue.withValues(alpha: 0.1)
+                            : Colors.transparent,
+                    border:
+                        isSelected
+                            ? Border.all(color: Colors.blue, width: 2)
+                            : null,
+                  ),
+                  child: ListTile(
+                    dense: true,
+                    leading: Icon(
+                      Icons.place,
+                      color: isSelected ? Colors.blue : Colors.grey,
+                      size: 20,
+                    ),
+                    title: AccessibleText(
+                      name,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight:
+                            isSelected ? FontWeight.bold : FontWeight.normal,
+                        color: isSelected ? Colors.blue : Colors.black,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle:
+                        address.isNotEmpty
+                            ? AccessibleDescription(
+                              address,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color:
+                                    isSelected
+                                        ? Colors.blue[700]
+                                        : Colors.grey[600],
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            )
+                            : null,
+                    onTap: () => _selectPlace(place),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

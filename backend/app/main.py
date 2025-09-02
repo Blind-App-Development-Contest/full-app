@@ -30,6 +30,8 @@ from api import users, update_name, caregiver
 from api import voice as voice_module
 from api import camera, objects
 from api import realtime_routes
+from api.user_settings import router as user_settings_router
+from api.dashboard import router as dashboard_router
 
 # Config & Services
 from config.settings import get_settings
@@ -85,10 +87,8 @@ async def on_startup():
         service_manager.get_speech_analyzer() 
         service_manager.get_speech_service()
         
-        # FastDepth 프로세서 미리 초기화 (첫 요청 지연 방지)
-        from utils.fastdepth_processor import get_fastdepth_processor
-        get_fastdepth_processor()  # 변수에 저장하지 않고 초기화만 수행
-        logger.info("🔥 FastDepth 프로세서 초기화 완료")
+        # FastDepth 프로세서는 보폭 측정 요청시에만 지연 로딩
+        logger.info("🔥 FastDepth 프로세서는 필요시에만 로드됩니다")
         
         logger.info("✅ 서비스 인스턴스 생성 완료")
         logger.info("🎤 음성 명령 인식 시스템 준비 완료!")
@@ -223,3 +223,5 @@ app.include_router(realtime_routes.router, prefix="/api/realtime", tags=["Real-t
 
 app.include_router(camera.router)        # /api/camera
 app.include_router(objects.router)       # /api/objects
+app.include_router(user_settings_router) # /api/users/settings
+app.include_router(dashboard_router)     # /api/dashboard

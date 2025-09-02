@@ -36,7 +36,8 @@ async def process_frame(request: FrameProcessRequest):
             return FrameProcessResponse(
                 success=False,
                 message="보폭 측정이 비활성화되어 있습니다. 먼저 측정을 시작해주세요.",
-                measurement_active=False
+                measurement_active=False,
+                current_result=None
             )
         
         # 새로운 IMU 통합 시스템 사용
@@ -65,11 +66,20 @@ async def process_frame(request: FrameProcessRequest):
         if result:
             logger.debug(f"프레임 처리 성공 - 보폭: {result.step_length_cm}cm, 걸음수: {result.step_count}")
             
+            # StepCalculationResult를 딕셔너리로 변환
+            current_result = {
+                "step_length_cm": result.step_length_cm,
+                "confidence": result.confidence,
+                "tracking_quality": result.tracking_quality.value,
+                "accuracy_level": result.accuracy_level.value,
+                "measurement_method": result.measurement_method.value
+            }
+            
             return FrameProcessResponse(
                 success=True,
                 message=f"프레임 처리 완료 - 현재 보폭: {result.step_length_cm}cm",
                 measurement_active=True,
-                current_result=result
+                current_result=current_result
             )
         else:
             # 프레임 처리는 성공했지만 아직 유의미한 결과가 없음

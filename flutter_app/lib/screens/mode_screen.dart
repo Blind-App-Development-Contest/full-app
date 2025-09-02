@@ -1,13 +1,20 @@
 import 'package:flutter/material.dart';
 import '../widgets/aeye_card.dart';
+import '../widgets/accessible_text.dart';
 import 'setting_screen.dart';
 import 'map_screen.dart';
+import 'object_detection_screen.dart';
 
 class ModeScreen extends StatelessWidget {
   const ModeScreen({super.key});
 
   void _openCameraMode(BuildContext context) {
-    Navigator.pushNamed(context, '/measurement-camera');
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const ObjectDetectionScreen(),
+      ),
+    );
   }
 
   void _openNavigationMode(BuildContext context) {
@@ -48,7 +55,7 @@ class ModeScreen extends StatelessWidget {
               _ModeCard(
                 icon: Icons.photo_camera_outlined,
                 title: '카메라 모드',
-                description: '실시간 객체 인식 및 위험 감지',
+                description: '실시간 장애물 탐지 및 안전 안내',
                 panel: panel,
                 divider: divider,
                 caption: caption,
@@ -94,7 +101,6 @@ class _ModeCard extends StatelessWidget {
   final double height; // ✅ 기본값을 주는 선택 파라미터
 
   const _ModeCard({
-    super.key,
     required this.icon,
     required this.title,
     required this.description,
@@ -116,7 +122,7 @@ class _ModeCard extends StatelessWidget {
         decoration: BoxDecoration(
           color: panel,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: divider.withOpacity(0.25)),
+          border: Border.all(color: divider.withValues(alpha: 0.25)),
         ),
         child: Row(
           children: [
@@ -126,7 +132,7 @@ class _ModeCard extends StatelessWidget {
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: divider.withOpacity(0.4)),
+                border: Border.all(color: divider.withValues(alpha: 0.4)),
               ),
               child: Icon(icon, color: Colors.white, size: 28),
             ),
@@ -136,7 +142,7 @@ class _ModeCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisAlignment: MainAxisAlignment.center, // ✅ 수직 가운데 정렬
                 children: [
-                  Text(
+                  AccessibleTitle(
                     title,
                     style: const TextStyle(
                       color: Colors.white,
@@ -145,7 +151,7 @@ class _ModeCard extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 6),
-                  Text(
+                  AccessibleDescription(
                     description,
                     style: TextStyle(
                       color: caption,

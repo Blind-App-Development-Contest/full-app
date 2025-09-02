@@ -114,7 +114,8 @@ async def check_db_connection():
     """Check database connectivity"""
     try:
         async with get_async_session() as session:
-            result = await session.execute("SELECT 1")
+            from sqlalchemy import text
+            result = await session.execute(text("SELECT 1"))
             result.scalar()
         logger.info("Database connection successful")
         return True
@@ -136,15 +137,14 @@ class DatabaseManager:
         try:
             # Test async connection
             async with get_async_session() as session:
-                result = await session.execute("SELECT version()")
+                from sqlalchemy import text
+                result = await session.execute(text("SELECT version()"))
                 db_version = result.scalar()
                 
-            # Test connection pool
+            # Test connection pool (simplified without accessing specific pool attributes)
             pool_status = {
-                "pool_size": self.async_engine.pool.size(),
-                "checked_in": self.async_engine.pool.checkedin(),
-                "checked_out": self.async_engine.pool.checkedout(),
-                "overflow": self.async_engine.pool.overflow(),
+                "status": "connected",
+                "engine_name": str(self.async_engine.name) if hasattr(self.async_engine, 'name') else "postgresql",
             }
             
             return {

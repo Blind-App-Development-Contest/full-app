@@ -1,6 +1,10 @@
 # ────────────────
 # ✅ Python 관련 (백엔드)
 # ────────────────
+venv/
+.venv/
+env/
+ENV/
 backend/venv/
 backend/.venv/
 backend/env/

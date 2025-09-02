@@ -51,12 +51,37 @@ def get_commands_history(limit: int = 10):
         if limit < 1 or limit > 100:
             raise HTTPException(status_code=400, detail="limit은 1-100 사이여야 합니다")
         
-        history = command_executor.get_execution_history(limit)
+        history_data = command_executor.get_execution_history(limit)
         total_count = len(command_executor.execution_history)
         
+        # Dict를 ExecutionHistoryEntry로 변환
+        from models.common_models import ExecutionHistoryEntry, CommandExecutionResponse, ExecutionStatus
+        from datetime import datetime
+        
+        history_entries = []
+        for entry in history_data:
+            # 기본값 설정
+            execution_response = CommandExecutionResponse(
+                status=ExecutionStatus.SUCCESS,
+                message=entry.get("message", "실행 완료"),
+                data=entry.get("data", {}),
+                actions=entry.get("actions", []),
+                timestamp=datetime.now()
+            )
+            
+            history_entry = ExecutionHistoryEntry(
+                command_text=entry.get("command_text", ""),
+                intent=entry.get("intent", "UNKNOWN"),
+                execution_result=execution_response,
+                user_id=entry.get("user_id")
+            )
+            history_entries.append(history_entry)
+        
         return ExecutionHistoryResponse(
-            history=history,
-            total_count=total_count
+            history=history_entries,
+            total_count=total_count,
+            page=1,
+            page_size=limit
         )
         
     except HTTPException:

@@ -69,7 +69,7 @@ def _int_percent_to_speed_float(v: Optional[int]) -> float:
     },
 )
 async def synthesize_and_save(req: TTSRequest, request: Request):
-    pool: asyncpg.Pool = getattr(request.app.state, "db_pool", None)
+    pool = getattr(request.app.state, "db_pool", None)
     if pool is None:
         raise HTTPException(status_code=500, detail="DB pool not initialized")
 
@@ -169,8 +169,8 @@ async def synthesize_and_save(req: TTSRequest, request: Request):
 # GET /api/users/voice?user_id=... : 저장값 조회(쿼리)
 # ─────────────────────────────────────────────────────────────
 @router.get("/voice", response_model=VoiceSettings)
-async def get_voice_by_query(user_id: UUID = Query(...), request: Request = None):
-    pool: asyncpg.Pool = getattr(request.app.state, "db_pool", None)
+async def get_voice_by_query(request: Request, user_id: UUID = Query(...)):
+    pool = getattr(request.app.state, "db_pool", None)
     if pool is None:
         raise HTTPException(status_code=500, detail="DB pool not initialized")
 
@@ -191,7 +191,7 @@ async def get_voice_by_query(user_id: UUID = Query(...), request: Request = None
 # ─────────────────────────────────────────────────────────────
 @router.get("/{user_id}/voice", response_model=VoiceSettings)
 async def get_voice_by_path(user_id: UUID, request: Request):
-    pool: asyncpg.Pool = getattr(request.app.state, "db_pool", None)
+    pool = getattr(request.app.state, "db_pool", None)
     if pool is None:
         raise HTTPException(status_code=500, detail="DB pool not initialized")
 
@@ -220,7 +220,7 @@ async def update_voice(user_id: UUID, req: UpdateVoiceRequest, request: Request)
     if req.gender is None and req.speed is None:
         raise HTTPException(status_code=400, detail="At least one of gender or speed must be provided")
 
-    pool: asyncpg.Pool = getattr(request.app.state, "db_pool", None)
+    pool = getattr(request.app.state, "db_pool", None)
     if pool is None:
         raise HTTPException(status_code=500, detail="DB pool not initialized")
 

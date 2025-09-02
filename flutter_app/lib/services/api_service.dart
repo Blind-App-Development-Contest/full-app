@@ -283,6 +283,66 @@ class ApiService {
     }
   }
 
+  /// 온보딩 완료 API 호출
+  Future<Map<String, dynamic>> completeOnboarding({
+    required String userName,
+    required String voiceGender,
+    required int voiceSpeed,
+    required int stepLengthCm,
+    required String caregiverName,
+    required String caregiverPhone,
+  }) async {
+    if (_userId == null) {
+      throw Exception('사용자 ID가 초기화되지 않았습니다');
+    }
+
+    // DB 연동 비활성화시 성공 응답 반환
+    if (!enableDatabaseSync) {
+      return {
+        'test_mode': true,
+        'status': 'onboarding_completed',
+        'user_id': _userId,
+        'user_name': userName,
+        'step_length_cm': stepLengthCm,
+        'voice_settings': {'gender': voiceGender, 'speed': voiceSpeed},
+      };
+    }
+
+    try {
+      debugPrint('📋 온보딩 완료 데이터 전송 시작: $userName (사용자: $_userId)');
+
+      final response = await http.post(
+        Uri.parse('$baseUrl/api/users/onboarding/complete'),
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'user_id': _userId,
+          'user_name': userName,
+          'voice_gender': voiceGender,
+          'voice_speed': voiceSpeed,
+          'step_length_cm': stepLengthCm,
+          'caregiver_name': caregiverName,
+          'caregiver_phone': caregiverPhone,
+        }),
+      );
+
+      debugPrint('📋 온보딩 완료 API 호출: ${response.statusCode}');
+      debugPrint('📋 응답: ${response.body}');
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        debugPrint('✅ 온보딩 완료 성공: $userName');
+        return data;
+      } else {
+        throw Exception('온보딩 완료 실패: ${response.statusCode} ${response.body}');
+      }
+    } catch (e) {
+      debugPrint('❌ 온보딩 완료 오류: $e');
+      rethrow;
+    }
+  }
+
   /// 네트워크 연결 상태 확인
   Future<bool> checkConnection() async {
     try {

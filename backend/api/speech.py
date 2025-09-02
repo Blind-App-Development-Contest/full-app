@@ -9,22 +9,18 @@ from models.recognition_schemas import (
     SpeechRecognitionResponse, 
     STTResponse
 )
-from models.execution_schemas import (
-    FullCommandRequest,
-    FullCommandResponse,
-    CommandExecutionResponse
-)
+# Legacy execution schemas 제거됨 - 새로운 통합 스키마 사용
 from models.common_models import (
-    ExecutionStatus, UnifiedCommandResponse, SchemaConverter
+    UnifiedCommandResponse, SchemaConverter
 )
 from models.fastdepth_models import SpeechCommandRequest
-from services.command_executor import CommandExecutionResult
+# CommandExecutionResult는 singleton을 통해 접근
 from config.settings import get_settings
 from api.measurement import (
     get_current_context,
     execute_command_conditionally
 )
-from services.speech_analyzer import SpeechAnalyzer
+# SpeechAnalyzer는 singleton을 통해 접근
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -179,55 +175,7 @@ async def execute_unified_speech_commands(request: SpeechCommandRequest):
         logger.error(f"통합 음성 명령 처리 오류: {e}")
         raise HTTPException(status_code=500, detail=f"서버 오류: {str(e)}")
 
-@router.post("/commands/legacy", response_model=FullCommandResponse)
-async def execute_speech_commands_legacy(request: FullCommandRequest):
-    """
-    기존 호환성을 위한 음성 명령 엔드포인트 (deprecated)
-    
-    새로운 클라이언트는 /commands를 사용해주세요.
-    """
-    try:
-        if not request.command_text or not request.command_text.strip():
-            raise HTTPException(status_code=400, detail="command_text는 필수입니다")
-        
-        print(f"\n[레거시 명령 실행] 시작: '{request.command_text}'")
-        
-        # 1단계: 음성 명령 분석 - speech_analyzer 서비스 사용 (컨텍스트 자동 감지 포함)
-        context = get_current_context()
-        recognition_result = speech_analyzer.analyze_command(request.command_text, context)
-        print(f"[인식 완료] 의도: {recognition_result.intent}, 신뢰도: {recognition_result.confidence}")
-        
-        # 2단계: 명령 실행 - 통합 실행 로직 사용
-        execution_result = await execute_command_conditionally(
-            recognition_result, 
-            request.execute_immediately
-        )
-        if request.execute_immediately:
-            print(f"[실행 완료] 상태: {execution_result.status.value}")
-        
-        # 응답 생성
-        response = FullCommandResponse(
-            intent=recognition_result.intent,
-            entities=recognition_result.entities,
-            confidence=recognition_result.confidence,
-            execution=CommandExecutionResponse(
-                status=execution_result.status,
-                message=execution_result.message,
-                data=execution_result.data,
-                actions=execution_result.actions,
-                timestamp=execution_result.timestamp
-            )
-        )
-        
-        return response
-        
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[오류] 레거시 음성 액션 처리 중 오류: {e}")
-        raise HTTPException(status_code=500, detail=f"서버 오류: {str(e)}")
+# Legacy 엔드포인트 제거됨 - /commands 엔드포인트 사용
 
 @router.get("/intents", tags=["Speech Intents"])
 def get_speech_intents():

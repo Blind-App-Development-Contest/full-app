@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../widgets/aeye_card.dart';
 import '../widgets/next_button.dart';
 import '../widgets/set_button.dart'; // ✅ 추가
+import '../widgets/accessible_text.dart';
 import '../services/api_service.dart';
+import '../services/voice_service.dart';
 import 'guardian_screen.dart';
 
 class VoiceScreen extends StatefulWidget {
@@ -30,6 +33,17 @@ class _VoiceScreenState extends State<VoiceScreen> {
     super.initState();
     _gender = widget.initialGender;
     _speed = widget.initialSpeed;
+    
+    // VoiceService에 초기 속도 설정
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      try {
+        final voiceService = context.read<VoiceService>();
+        voiceService.setVoiceSpeed(_speed);
+        debugPrint('🎙️ VoiceScreen 초기화: 음성 속도 ${_speed}x 설정');
+      } catch (e) {
+        debugPrint('❌ VoiceScreen 초기화: VoiceService 음성 속도 설정 실패: $e');
+      }
+    });
   }
 
   bool get _hasChanged {
@@ -152,9 +166,14 @@ class _VoiceScreenState extends State<VoiceScreen> {
         ),
       ),
 
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
+      body: GestureDetector(
+        onTap: () {
+          // 배경 터치 시 키보드 내리기
+          FocusScope.of(context).unfocus();
+        },
+        child: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -169,7 +188,7 @@ class _VoiceScreenState extends State<VoiceScreen> {
                 decoration: BoxDecoration(
                   color: panel,
                   borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: divider.withOpacity(0.25)),
+                  border: Border.all(color: divider.withValues(alpha: 0.25)),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -178,7 +197,7 @@ class _VoiceScreenState extends State<VoiceScreen> {
                       children: const [
                         Icon(Icons.volume_up_outlined, color: Colors.white, size: 20),
                         SizedBox(width: 8),
-                        Text(
+                        AccessibleTitle(
                           '음성 설정',
                           style: TextStyle(
                             color: Colors.white,
@@ -190,7 +209,7 @@ class _VoiceScreenState extends State<VoiceScreen> {
                     ),
                     const SizedBox(height: 18),
 
-                    const Text(
+                    const AccessibleTitle(
                       '음성 종류',
                       style: TextStyle(
                         color: Colors.white,
@@ -221,7 +240,7 @@ class _VoiceScreenState extends State<VoiceScreen> {
                     ),
 
                     const SizedBox(height: 22),
-                    Text(
+                    AccessibleTitle(
                       '음성 속도: ${_speed.toStringAsFixed(1)}배속',
                       style: const TextStyle(
                         color: Colors.white,
@@ -237,13 +256,23 @@ class _VoiceScreenState extends State<VoiceScreen> {
                       decoration: BoxDecoration(
                         color: inner,
                         borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: divider.withOpacity(0.45)),
+                        border: Border.all(color: divider.withValues(alpha: 0.45)),
                       ),
                       child: Column(
                         children: [
                           Slider(
                             value: _speed,
-                            onChanged: (v) => setState(() => _speed = v),
+                            onChanged: (v) {
+                              setState(() => _speed = v);
+                              // VoiceService에 속도 변경 알리기
+                              try {
+                                final voiceService = context.read<VoiceService>();
+                                voiceService.setVoiceSpeed(v);
+                                debugPrint('🎙️ 음성 속도 변경: ${v}x');
+                              } catch (e) {
+                                debugPrint('❌ 음성 속도 변경 실패: $e');
+                              }
+                            },
                             min: 0.5,
                             max: 2.0,
                             divisions: 15, // 0.1 단위
@@ -254,9 +283,9 @@ class _VoiceScreenState extends State<VoiceScreen> {
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                Text('느림 (0.5x)',
+                                AccessibleText('느림 (0.5x)',
                                     style: TextStyle(color: hint, fontWeight: FontWeight.w600)),
-                                Text('빠름 (2.0x)',
+                                AccessibleText('빠름 (2.0x)',
                                     style: TextStyle(color: hint, fontWeight: FontWeight.w600)),
                               ],
                             ),
@@ -270,6 +299,7 @@ class _VoiceScreenState extends State<VoiceScreen> {
 
               const SizedBox(height: 120),
             ],
+            ),
           ),
         ),
       ),

@@ -10,6 +10,11 @@ import 'package:http/http.dart' as http;
 import '../services/voice_service.dart';
 import '../services/api_service.dart';
 import '../models/step_measurement_result.dart';
+import '../widgets/accessible_text.dart';
+import 'voice_screen.dart';
+
+/// 왕복 측정 단계
+enum MeasurementPhase { forward, turnAround, backward, completed }
 
 /// 보폭 측정 전용 카메라 화면
 class CameraMeasurementScreen extends StatefulWidget {
@@ -45,6 +50,13 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
   //  발 인식 실패 처리를 위한 변수 추가
   Timer? _detectionTimeoutTimer;
   bool _isFirstDetectionSuccessful = false;
+
+  // 왕복 5걸음 측정을 위한 변수
+  MeasurementPhase _currentPhase = MeasurementPhase.forward;
+  int _forwardSteps = 0;
+  int _backwardSteps = 0;
+  List<double> _forwardMeasurements = [];
+  List<double> _backwardMeasurements = [];
 
   // 통일된 변수명 사용 (시각장애인 접근성 고려)
   int _frameCount = 0;
@@ -150,9 +162,13 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
         // 저장 실패해도 계속 진행 (오프라인 모드 고려)
       }
 
-      // 측정값을 step_screen으로 반환
+      // 측정 완료 후 바로 음성 설정 온보딩으로 이동
       if (mounted) {
-        Navigator.of(context).pop(finalStepLength);
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (context) => const VoiceScreen(fromSettings: false),
+          )
+        );
       }
     } catch (e) {
       debugPrint('❌ 측정 결과 처리 오류: $e');
@@ -161,10 +177,13 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
     }
   }
 
-  // 오류 시 기본 결과 반환
+  // 오류 시 기본 결과 반환 - 음성 설정 온보딩으로 이동
   void _createFallbackResult() {
-    final fallbackStepLength = stepLength.round();
-    Navigator.of(context).pop(fallbackStepLength);
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (context) => const VoiceScreen(fromSettings: false),
+      )
+    );
   }
 
   Future<void> _initializeCamera() async {
@@ -198,7 +217,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
 
       _cameraController = CameraController(
         camera,
-        ResolutionPreset.veryHigh, // 발 인식 개선을 위해 최고 해상도 사용
+        ResolutionPreset.medium, // 성능 최적화를 위해 중간 해상도 사용 (보폭 측정에 충분)
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.jpeg, // 안정적인 JPEG 포맷
       );
@@ -290,8 +309,18 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
           });
         }
 
-        // 측정 시작 음성 안내
-        _voiceService?.speak("보폭 측정을 시작합니다. 자연스럽게 걸어주세요.", speed: 1.2);
+        // 왕복 측정 시작 음성 안내
+        _voiceService?.speak("보폭 측정을 시작합니다. 먼저 앞으로 5걸음 걸어주세요.", speed: 1.2);
+        
+        if (mounted) {
+          setState(() {
+            _currentPhase = MeasurementPhase.forward;
+            _forwardSteps = 0;
+            _backwardSteps = 0;
+            _forwardMeasurements.clear();
+            _backwardMeasurements.clear();
+          });
+        }
 
         debugPrint('✅ 자동 측정 세션 시작됨: ${result['status']}');
       }
@@ -300,68 +329,148 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
     }
   }
 
-  // 자동 측정 완료 (9-10걸음 데이터 수집 완료시 호출)
-  void _completeAutomaticMeasurement() async {
+  // 왕복 5걸음 측정 처리
+  void _handleRoundTripMeasurement(double currentStepLength) {
+    switch (_currentPhase) {
+      case MeasurementPhase.forward:
+        _forwardSteps++;
+        _forwardMeasurements.add(currentStepLength);
+        
+        if (_forwardSteps >= 5) {
+          setState(() {
+            _currentPhase = MeasurementPhase.turnAround;
+          });
+          _voiceService?.speak("5걸음 완료! 제자리에서 뒤로 돌아주세요.", speed: 1.0);
+          
+          // 3초 후 뒤로 걷기 시작
+          Timer(const Duration(seconds: 3), () {
+            if (mounted) {
+              setState(() {
+                _currentPhase = MeasurementPhase.backward;
+              });
+              _voiceService?.speak("이제 원래 자리로 5걸음 걸어주세요.", speed: 1.0);
+            }
+          });
+        } else {
+          _voiceService?.speak("$_forwardSteps걸음", speed: 1.2);
+        }
+        break;
+
+      case MeasurementPhase.backward:
+        _backwardSteps++;
+        _backwardMeasurements.add(currentStepLength);
+        
+        if (_backwardSteps >= 5) {
+          setState(() {
+            _currentPhase = MeasurementPhase.completed;
+          });
+          _completeRoundTripMeasurement();
+        } else {
+          _voiceService?.speak("$_backwardSteps걸음", speed: 1.2);
+        }
+        break;
+        
+      default:
+        break;
+    }
+  }
+
+  // 왕복 측정 완료 처리
+  void _completeRoundTripMeasurement() async {
     if (!mounted) return;
+
+    // 앞뒤 측정값 평균 계산
+    final forwardAvg = _forwardMeasurements.isNotEmpty 
+        ? _forwardMeasurements.reduce((a, b) => a + b) / _forwardMeasurements.length
+        : StepMeasurementResult.defaultStepLengthCm;
+    
+    final backwardAvg = _backwardMeasurements.isNotEmpty 
+        ? _backwardMeasurements.reduce((a, b) => a + b) / _backwardMeasurements.length
+        : StepMeasurementResult.defaultStepLengthCm;
+    
+    // 왕복 평균값으로 최종 보폭 계산
+    final finalStepLength = (forwardAvg + backwardAvg) / 2;
+    
+    debugPrint('🦶 왕복 측정 완료:');
+    debugPrint('  - 앞으로: ${forwardAvg.toStringAsFixed(1)}cm (${_forwardMeasurements.length}개)');
+    debugPrint('  - 뒤로: ${backwardAvg.toStringAsFixed(1)}cm (${_backwardMeasurements.length}개)');
+    debugPrint('  - 최종 보폭: ${finalStepLength.toStringAsFixed(1)}cm');
 
     try {
       // 스트리밍 중단
       _stopStreaming();
 
       // 측정 완료 음성 안내
-      _voiceService?.speak("측정이 완료되었습니다. 결과를 확인해보세요.", speed: 1.2);
+      _voiceService?.speak(
+        "왕복 측정이 완료되었습니다. 보폭은 ${finalStepLength.round()}센티미터입니다.", 
+        speed: 1.0
+      );
 
       // 서버에 측정 완료 요청
       final response = await http
           .post(
-            Uri.parse(
-              '${VoiceService.baseUrl}/api/users/measurement/session/stop',
-            ),
+            Uri.parse('${VoiceService.baseUrl}/api/users/measurement/session/stop'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'user_id': 'current_user'}),
           )
           .timeout(const Duration(seconds: 5));
 
       if (response.statusCode == 200) {
-        jsonDecode(utf8.decode(response.bodyBytes));
-
-        // 최종 측정 결과 생성
+        // 최종 측정 결과 생성 (왕복 데이터 포함)
         final finalResult = StepMeasurementResult(
-          stepLength: stepLength,
-          confidence: 0.8, // 자동 측정 기본 신뢰도
-          stepCount: stepCount,
-          trackingQuality: 'good',
-          accuracyLevel: '높음',
-          measurementMethod: 'automatic',
-          distanceMeters: distanceMeters,
+          stepLength: finalStepLength,
+          confidence: 0.9, // 왕복 측정으로 높은 신뢰도
+          stepCount: _forwardSteps + _backwardSteps, // 총 10걸음
+          trackingQuality: 'excellent',
+          accuracyLevel: '매우 높음',
+          measurementMethod: 'round_trip_5steps',
+          distanceMeters: finalStepLength * (_forwardSteps + _backwardSteps) / 100,
         );
 
-        // 결과 화면으로 이동
+        // 측정 완료 후 설정 화면으로 직접 이동
         if (mounted) {
-          Navigator.of(context).pop(finalResult);
+          // 음성 안내 시간을 위한 지연
+          await Future.delayed(const Duration(seconds: 2));
+          
+          // 음성 설정 온보딩으로 직접 이동 (pushReplacement 사용)
+          if (mounted) {
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(
+                builder: (context) => const VoiceScreen(fromSettings: false),
+              )
+            );
+          }
         }
 
-        debugPrint(
-          '✅ 자동 측정 완료: ${finalResult.stepLength}cm, ${finalResult.stepCount}걸음',
-        );
+        debugPrint('✅ 왕복 측정 완료: ${finalResult.stepLength}cm, 신뢰도: ${finalResult.confidence}');
       }
     } catch (e) {
-      debugPrint('❌ 자동 측정 완료 처리 실패: $e');
-      // 오류 발생 시에도 결과 화면으로 이동
+      debugPrint('❌ 왕복 측정 완료 처리 실패: $e');
+      // 오류 발생 시에도 결과 화면으로 이동 (Navigator 안전 처리)
       if (mounted) {
         final fallbackResult = StepMeasurementResult(
-          stepLength: stepLength,
-          confidence: 0.6, // 오류 상황에서는 낮은 신뢰도
-          stepCount: stepCount,
-          trackingQuality: 'fair',
-          accuracyLevel: '보통',
-          measurementMethod: 'automatic_fallback',
-          distanceMeters: distanceMeters,
+          stepLength: finalStepLength,
+          confidence: 0.8, // 오류 상황에서는 조금 낮은 신뢰도
+          stepCount: _forwardSteps + _backwardSteps,
+          trackingQuality: 'good',
+          accuracyLevel: '높음',
+          measurementMethod: 'round_trip_fallback',
+          distanceMeters: finalStepLength * (_forwardSteps + _backwardSteps) / 100,
         );
-        Navigator.of(context).pop(fallbackResult);
+        
+        // 오류 시에도 음성 설정 온보딩으로 이동
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (mounted) {
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(
+              builder: (context) => const VoiceScreen(fromSettings: false),
+            )
+          );
+        }
       }
     }
   }
+
 
   // 일정 시간(60초) 동안 인식이 안 되면 피드백을 주는 함수
   void _startDetectionTimeout() {
@@ -378,10 +487,14 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
       // 햅틱 피드백
       HapticFeedback.heavyImpact();
 
-      // 스트리밍 중지 및 이전 화면으로 자동 복귀
+      // 스트리밍 중지 및 음성 설정 온보딩으로 이동
       _stopStreaming();
       if (mounted) {
-        Navigator.of(context).pop(); // 결과 없이 pop하여 실패 전달
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (context) => const VoiceScreen(fromSettings: false),
+          )
+        );
       }
     });
   }
@@ -400,7 +513,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
         });
       }
       _voiceService?.speak(
-        "인식이 시작되었습니다. 명치 높이에서 바닥을 향해 카메라를 고정하고 자연스럽게 걸어주세요. 9걸음 후 자동으로 측정이 완료됩니다.",
+        "인식이 시작되었습니다. 명치 높이에서 바닥을 향해 카메라를 고정하고 앞으로 5걸음 걸어주세요.",
         speed: 0.9,
       );
     }
@@ -439,10 +552,8 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
           // 성공적인 측정 시 실패 카운터 리셋
           _failedDetectionCount = 0;
 
-          // 9-10걸음 데이터 수집 시 자동 완료
-          if (stepCount >= 9) {
-            _completeAutomaticMeasurement();
-          }
+          // 왕복 측정 로직
+          _handleRoundTripMeasurement(stepLength);
         } else if (data['success'] == false) {
           // 서버에서 오는 실패 메시지는 그대로 표시 (예: "너무 가까움")
           final errorMsg = data['message'] ?? '알 수 없는 오류';
@@ -535,13 +646,17 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('보폭 측정'),
+        title: const AccessibleTitle('보폭 측정'),
         backgroundColor: Colors.black87,
         foregroundColor: Colors.white,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () {
-            Navigator.of(context).pop();
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(
+                builder: (context) => const VoiceScreen(fromSettings: false)
+              )
+            );
           },
         ),
       ),
@@ -567,7 +682,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
                         children: [
                           const CircularProgressIndicator(color: Colors.white),
                           const SizedBox(height: 16),
-                          Text(
+                          AccessibleDescription(
                             _statusMessage,
                             style: const TextStyle(
                               color: Colors.white,
@@ -606,6 +721,17 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             if (stepLength > 0) ...[
+              // 현재 측정 단계 표시
+              AccessibleText(
+                _getCurrentPhaseText(),
+                style: const TextStyle(
+                  color: Colors.orange,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -615,7 +741,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
                     size: 24,
                   ),
                   const SizedBox(width: 8),
-                  Text(
+                  AccessibleText(
                     '${stepLength.toStringAsFixed(1)}cm',
                     style: const TextStyle(
                       color: Colors.white,
@@ -624,6 +750,15 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
                     ),
                   ),
                 ],
+              ),
+              const SizedBox(height: 4),
+              AccessibleDescription(
+                _getStepCountText(),
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 14,
+                ),
+                textAlign: TextAlign.center,
               ),
             ] else ...[
               Row(
@@ -641,7 +776,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
                     const SizedBox(width: 12),
                   ],
                   Flexible(
-                    child: Text(
+                    child: AccessibleDescription(
                       _statusMessage,
                       style: const TextStyle(color: Colors.white, fontSize: 16),
                       textAlign: TextAlign.center,
@@ -684,43 +819,26 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
     }
   }
 
+  String _getCurrentPhaseText() {
+    switch (_currentPhase) {
+      case MeasurementPhase.forward:
+        return '앞으로 걷기 ($_forwardSteps/5)';
+      case MeasurementPhase.turnAround:
+        return '뒤로 돌아주세요';
+      case MeasurementPhase.backward:
+        return '뒤로 걷기 ($_backwardSteps/5)';
+      case MeasurementPhase.completed:
+        return '측정 완료!';
+    }
+  }
+
+  String _getStepCountText() {
+    final totalSteps = _forwardSteps + _backwardSteps;
+    return '총 걸음수: $totalSteps/10';
+  }
+
   Widget _buildVoiceControlHint() {
-    return Positioned(
-      bottom: 20,
-      left: 20,
-      right: 20,
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.black54,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: const Column(
-          children: [
-            Text(
-              '📱 정확한 인식을 위한 촬영 팁',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 14,
-                fontWeight: FontWeight.bold,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            SizedBox(height: 4),
-            Text(
-              '• 명치 높이에서 바닥을 향해 카메라를 비추세요\n• 화면을 줌인하여 측정해주세요\n• 발이 화면 중앙에 선명하게 보이도록 하세요\n• 천천히 걸어주세요',
-              style: TextStyle(color: Colors.white70, fontSize: 10.5),
-              textAlign: TextAlign.center,
-            ),
-            SizedBox(height: 6),
-            Text(
-              '"측정 완료"라고 말하면 종료됩니다',
-              style: TextStyle(color: Colors.orange, fontSize: 12),
-              textAlign: TextAlign.center,
-            ),
-          ],
-        ),
-      ),
-    );
+    // 시각장애인을 위한 음성 안내만 사용 - 텍스트 팁 박스 제거
+    return const SizedBox.shrink();
   }
 }

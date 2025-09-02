@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../widgets/aeye_card.dart';
 import '../widgets/next_button.dart';
+import '../widgets/accessible_text.dart';
 import 'step_screen.dart';
 
 class NameScreen extends StatefulWidget {
@@ -58,9 +59,14 @@ class _NameScreenState extends State<NameScreen> {
           onPressed: _canNext ? _goNext : null,
         ),
       ),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
+      body: GestureDetector(
+        onTap: () {
+          // 배경 터치 시 키보드 내리기
+          FocusScope.of(context).unfocus();
+        },
+        child: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -73,12 +79,12 @@ class _NameScreenState extends State<NameScreen> {
                 decoration: BoxDecoration(
                   color: panel,
                   borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: divider.withOpacity(0.25)),
+                  border: Border.all(color: divider.withValues(alpha: 0.25)),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('이름',
+                    const AccessibleTitle('이름',
                         style: TextStyle(
                             color: Colors.white,
                             fontSize: 18,
@@ -88,7 +94,7 @@ class _NameScreenState extends State<NameScreen> {
                       decoration: BoxDecoration(
                         color: field,
                         borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: divider.withOpacity(0.4)),
+                        border: Border.all(color: divider.withValues(alpha: 0.4)),
                       ),
                       child: TextField(
                         controller: _nameCtrl,
@@ -111,10 +117,10 @@ class _NameScreenState extends State<NameScreen> {
                       ),
                     ),
                     const SizedBox(height: 14),
-                    Text(
+                    AccessibleDescription(
                       '입력하신 이름은 음성 안내 시 사용됩니다.',
                       style: TextStyle(
-                        color: Colors.white.withOpacity(0.75),
+                        color: Colors.white.withValues(alpha: 0.75),
                         fontSize: 14,
                         fontWeight: FontWeight.w500,
                       ),
@@ -123,6 +129,7 @@ class _NameScreenState extends State<NameScreen> {
                 ),
               ),
             ],
+            ),
           ),
         ),
       ),

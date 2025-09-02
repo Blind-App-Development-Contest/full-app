@@ -14,11 +14,9 @@ enum VoiceState { idle, listening, processing }
 
 class VoiceService with ChangeNotifier {
   final Record _audioRecorder = Record();
-  static AudioPlayer? _sharedAudioPlayer;
-  AudioPlayer get _audioPlayer {
-    _sharedAudioPlayer ??= AudioPlayer();
-    return _sharedAudioPlayer!;
-  }
+  // AudioPlayer 싱글톤 관리 클래스
+  static final _AudioPlayerManager _playerManager = _AudioPlayerManager();
+  AudioPlayer get _audioPlayer => _playerManager.player;
 
   // --- http.Client를 멤버 변수로 선언하여 재사용 ---
   final http.Client _httpClient = http.Client();
@@ -45,11 +43,27 @@ class VoiceService with ChangeNotifier {
   Function(Map<String, dynamic>)? onMeasurementComplete;
   Function(Map<String, dynamic>)? onMeasurementStart;
 
+  // === 음성 속도 설정 ===
+  double? _currentVoiceSpeed; // 사용자가 설정한 음성 속도
+  static const double _defaultSpeed = 0.9; // 기본 속도 (사용자 설정 전)
+
   // === Getters ===
   VoiceState get currentState => _currentState;
   String get lastRecognizedText => _lastRecognizedText;
   String get statusMessage => _statusMessage;
   List<String> get debugLogs => _debugLogs;
+
+  /// 현재 음성 속도 반환
+  /// 사용자가 설정한 속도가 있으면 해당 속도, 없으면 기본 속도 0.9 반환
+  double getCurrentSpeed() {
+    return _currentVoiceSpeed ?? _defaultSpeed;
+  }
+
+  /// 음성 속도 설정 (사용자가 VoiceScreen에서 설정)
+  void setVoiceSpeed(double speed) {
+    _currentVoiceSpeed = speed;
+    debugPrint('🔊 음성 속도 설정됨: ${speed}x');
+  }
 
   /// 서비스 초기화 및 환경 체크
   Future<void> _initialize() async {
@@ -808,23 +822,35 @@ class VoiceService with ChangeNotifier {
 
         await _ttsSubscription?.cancel();
 
-        // 오디오 플레이어 정지 후 새 파일 재생
-        await _audioPlayer.stop();
-        await _audioPlayer.setAudioSource(AudioSource.file(audioFile.path));
-        await _audioPlayer.play();
+        // 오디오 플레이어 안전한 사용
+        try {
+          final player = _audioPlayer; // getter를 통해 안전하게 접근
+          await player.stop();
+          await player.setAudioSource(AudioSource.file(audioFile.path));
+          await player.play();
 
-        // 재생이 완료될 때까지 대기 후 파일 삭제
-        _ttsSubscription = _audioPlayer.processingStateStream
-            .where((state) => state == ProcessingState.completed)
-            .take(1)
-            .listen((_) {
-              Future.delayed(const Duration(milliseconds: 500)).then((_) {
-                if (audioFile.existsSync()) {
-                  audioFile.deleteSync();
-                  _addDebugLog("🔊 임시 TTS 파일 삭제됨");
-                }
+          // 재생이 완료될 때까지 대기 후 파일 삭제
+          _ttsSubscription = player.processingStateStream
+              .where((state) => state == ProcessingState.completed)
+              .take(1)
+              .listen((_) {
+                Future.delayed(const Duration(milliseconds: 500)).then((_) {
+                  if (audioFile.existsSync()) {
+                    audioFile.deleteSync();
+                    _addDebugLog("🔊 임시 TTS 파일 삭제됨");
+                  }
+                });
               });
-            });
+        } catch (playerError) {
+          _addDebugLog("❌ AudioPlayer 사용 오류: $playerError");
+          // AudioPlayer 오류 시에도 파일 삭제
+          Future.delayed(const Duration(milliseconds: 500)).then((_) {
+            if (audioFile.existsSync()) {
+              audioFile.deleteSync();
+            }
+          });
+          rethrow;
+        }
       } else {
         _addDebugLog("❌ TTS 실패: ${response.statusCode}");
       }
@@ -838,7 +864,65 @@ class VoiceService with ChangeNotifier {
     _httpClient.close(); // HTTP 클라이언트 해제
     _ttsSubscription?.cancel(); // TTS 스트림 리스너 해제
     _audioRecorder.dispose();
-    // AudioPlayer는 정적 변수이므로 dispose하지 않음
+    // AudioPlayer 관리자의 dispose 호출 (필요시)
+    // _playerManager.dispose(); // 전역 사용시에는 dispose하지 않음
     super.dispose();
+  }
+}
+
+/// AudioPlayer 싱글톤 관리 클래스
+class _AudioPlayerManager {
+  static _AudioPlayerManager? _instance;
+  AudioPlayer? _player;
+  bool _isInitializing = false;
+  
+  _AudioPlayerManager._internal();
+  
+  factory _AudioPlayerManager() {
+    _instance ??= _AudioPlayerManager._internal();
+    return _instance!;
+  }
+  
+  AudioPlayer get player {
+    if (_player == null && !_isInitializing) {
+      _initializePlayer();
+    }
+    // 초기화 실패한 경우에도 안전하게 처리
+    if (_player == null) {
+      debugPrint('❌ AudioPlayer가 초기화되지 않았습니다. 임시 플레이어를 생성하지 않고 오류를 발생시킵니다.');
+      throw Exception('AudioPlayer 초기화 실패: Platform player already exists 오류로 인해 플레이어를 생성할 수 없습니다.');
+    }
+    return _player!;
+  }
+  
+  void _initializePlayer() {
+    if (_isInitializing) return;
+    
+    _isInitializing = true;
+    try {
+      _player = AudioPlayer();
+      debugPrint('✅ AudioPlayer 초기화 성공');
+    } catch (e) {
+      debugPrint('❌ AudioPlayer 초기화 오류: $e');
+      if (e.toString().contains('Platform player already exists')) {
+        debugPrint('ℹ️ 기존 AudioPlayer를 재사용합니다');
+        // 기존 플레이어가 있다면 그대로 사용 (null 유지)
+        _player = null;
+      } else {
+        // 다른 오류의 경우 재시도
+        try {
+          _player = AudioPlayer();
+        } catch (e2) {
+          debugPrint('❌ AudioPlayer 재시도 실패: $e2');
+        }
+      }
+    } finally {
+      _isInitializing = false;
+    }
+  }
+  
+  void dispose() {
+    _player?.dispose();
+    _player = null;
   }
 }

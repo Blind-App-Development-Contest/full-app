@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from uuid import UUID
 from typing import Dict, Any
@@ -11,7 +11,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-# 요청/응답 스키마
+# 통합 스텝 모델 import - 중복 제거됨
+from models.step_models import (
+    StepMeasurementRequest,
+    StepMeasurementResponse,
+    StepUpdateRequest,
+    StepMeasurementMethod,
+    validate_step_measurement_inputs
+)
+
+# 레거시 호환성을 위한 모델들 (새 코드는 step_models 사용 권장)
 class FootstepUpdateRequest(BaseModel):
     user_id: UUID
     step_length_cm: int
@@ -21,24 +30,10 @@ class FootstepResponse(BaseModel):
     step_length_cm: int
     updated_at: datetime
 
-# 통합 스텝 모델 import
-from models.step_models import (
-    StepMeasurementRequest,
-    StepMeasurementResponse,
-    StepUpdateRequest,
-    StepMeasurementMethod,
-    validate_step_measurement_inputs
-)
-
 # 새로운 IMU 통합 시스템 import (레거시 호환성 유지)
 from utils.fastdepth_processor import get_fastdepth_processor
 
 router = APIRouter()
-
-# 레거시 호환성을 위한 별칭
-FootstepDepthMeasurementRequest = StepMeasurementRequest
-FootstepDepthMeasurementResponse = StepMeasurementResponse
-FootstepUpdateRequest = StepUpdateRequest
 
 # 싱글톤 서비스 인스턴스 사용
 from services.singleton import service_manager
@@ -80,7 +75,7 @@ async def create_footstep_measurement(request: StepMeasurementRequest):
         # 새로운 통합 시스템으로 계산 (레거시 API 호환)
         step_result = await processor.process_frame_for_measurement(
             cv_image=dummy_image,
-            user_id=str(request.user_id) if request.user_id else 'api_user',
+            user_id=str(request.user_id) if getattr(request, 'user_id', None) else 'api_user',
             imu_data=default_imu_data,
             enable_advanced_fusion=False  # API 호출에서는 기본 모드 사용
         )
@@ -88,6 +83,9 @@ async def create_footstep_measurement(request: StepMeasurementRequest):
         # 레거시 API 호환을 위해 결과가 없으면 거리 기반 단순 계산
         if not step_result:
             from models.step_models import StepCalculationResult, AccuracyConverter
+            # 거리 기반 단순 계산 (None 체크)
+            if request.distance_meters is None or request.step_count is None or request.step_count == 0:
+                raise HTTPException(status_code=400, detail="거리와 걸음 수는 필수입니다.")
             step_length_cm = (request.distance_meters / request.step_count) * 100
             confidence = 0.7 if request.distance_meters >= 3.0 else 0.5
             
@@ -98,8 +96,9 @@ async def create_footstep_measurement(request: StepMeasurementRequest):
                 tracking_quality=AccuracyConverter.confidence_to_quality(confidence),
                 accuracy_level=AccuracyConverter.confidence_to_korean_level(confidence),
                 measurement_method=request.measurement_method,
-                timestamp=time.time(),
-                user_id=str(request.user_id) if request.user_id else 'api_user',
+                consistency_score=None,
+                processing_time_ms=None,
+                timestamp=datetime.now(),
                 source_data={
                     "method": "distance_based_api_fallback",
                     "distance_meters": request.distance_meters,
@@ -142,7 +141,8 @@ async def create_footstep_measurement(request: StepMeasurementRequest):
                 "method": "distance_based_calculation",
                 "previous_step_length": previous_step_length,
                 "updated_user_settings": True
-            }
+            },
+            validation=None
         )
         
     except Exception as e:
@@ -175,8 +175,8 @@ async def update_footstep(
         existing_footstep = footstep_result.scalar_one_or_none()
         
         if existing_footstep:
-            # 기존 데이터 업데이트
-            existing_footstep.step_length = request.step_length_cm
+            # 실제 값 할당
+            setattr(existing_footstep, "step_length", request.step_length_cm)
             await session.commit()
             await session.refresh(existing_footstep)
             footstep = existing_footstep
@@ -191,9 +191,9 @@ async def update_footstep(
             await session.refresh(footstep)
         
         return FootstepResponse(
-            user_id=footstep.user_id,
-            step_length_cm=footstep.step_length,
-            updated_at=footstep.step_updated_at
+            user_id=getattr(footstep, "user_id"),
+            step_length_cm=getattr(footstep, "step_length"),
+            updated_at=getattr(footstep, "step_updated_at")
         )
         
     except HTTPException:
@@ -221,9 +221,9 @@ async def get_user_footstep(
             raise HTTPException(status_code=404, detail="사용자 보폭 정보를 찾을 수 없습니다")
         
         return FootstepResponse(
-            user_id=footstep.user_id,
-            step_length_cm=footstep.step_length,
-            updated_at=footstep.step_updated_at
+            user_id=getattr(footstep, "user_id"),
+            step_length_cm=getattr(footstep, "step_length"),
+            updated_at=getattr(footstep, "step_updated_at")
         )
         
     except HTTPException:
@@ -365,3 +365,27 @@ async def validate_measurement_request(distance_meters: float, step_count: int):
     except Exception as e:
         print(f"[오류] 데이터 검증 중 오류: {e}")
         raise HTTPException(status_code=500, detail=f"검증 실패: {str(e)}")
+
+@router.delete("/user/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user_footstep(
+    user_id: UUID,
+    session: AsyncSession = Depends(get_async_db)
+):
+    """
+    사용자별 보폭 정보 삭제 (ORM 방식)
+    """
+    try:
+        result = await session.execute(
+            select(Footstep).where(Footstep.user_id == user_id)
+        )
+        footstep = result.scalar_one_or_none()
+        if not footstep:
+            raise HTTPException(status_code=404, detail="삭제할 보폭 정보가 없습니다")
+        await session.delete(footstep)
+        await session.commit()
+        return  # 204 No Content
+    except HTTPException:
+        raise
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(status_code=500, detail=f"보폭 삭제 오류: {str(e)}")

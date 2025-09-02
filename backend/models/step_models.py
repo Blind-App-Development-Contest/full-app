@@ -107,15 +107,13 @@ class StepMeasurementRequest(BaseModel):
         None,
         description="측정된 거리 (미터)",
         gt=0.1,  # 최소 10cm
-        le=100.0,  # 최대 100미터
-        example=3.0
+        le=100.0  # 최대 100미터
     )
     step_count: Optional[int] = Field(
         None,
         description="걸음 수",
         gt=0,
-        le=1000,
-        example=45
+        le=1000
     )
     
     # 측정 방식 및 설정
@@ -127,8 +125,7 @@ class StepMeasurementRequest(BaseModel):
         None,
         description="수동 입력 보폭 (cm)",
         gt=20,
-        lt=200,
-        example=65.5
+        lt=200
     )
     
     # 메타데이터
@@ -159,13 +156,11 @@ class StepUpdateRequest(BaseModel):
         ...,
         description="새로운 보폭 길이 (cm)",
         gt=20,
-        lt=200,
-        example=65.5
+        lt=200
     )
     update_reason: Optional[str] = Field(
         None,
-        description="업데이트 사유",
-        example="수동 조정"
+        description="업데이트 사유"
     )
     user_id: Optional[str] = Field(None, description="사용자 ID")
 
@@ -177,19 +172,16 @@ class StepCalculationResult(BaseModel):
     # 핵심 측정 결과
     step_length_cm: float = Field(
         description="계산된 보폭 길이 (cm)",
-        gt=0,
-        example=65.5
+        gt=0
     )
     confidence: float = Field(
         description="측정 신뢰도 (0.0-1.0)",
         ge=0.0,
-        le=1.0,
-        example=0.85
+        le=1.0
     )
     step_count: int = Field(
         description="측정에 사용된 걸음 수",
-        ge=0,
-        example=45
+        ge=0
     )
     
     # 품질 지표
@@ -420,7 +412,10 @@ class StepModelConverter:
             distance_meters=distance_meters,
             step_count=step_count,
             measurement_method=StepMeasurementMethod.DISTANCE_BASED,
-            user_id=user_id
+            user_id=user_id,
+            manual_step_length_cm=None,
+            context=None,
+            notes=None
         )
     
     @staticmethod
@@ -438,7 +433,9 @@ class StepModelConverter:
             tracking_quality=AccuracyConverter.confidence_to_quality(0.7),  # 기본값
             accuracy_level=AccuracyLevel(calc_dict.get("accuracy_level", "보통")),
             measurement_method=method,
-            source_data=calc_dict
+            source_data=calc_dict,
+            consistency_score=None,
+            processing_time_ms=None
         )
     
     @staticmethod

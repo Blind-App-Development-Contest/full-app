@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../widgets/aeye_card.dart';
 import '../widgets/next_button.dart';
 import '../widgets/set_button.dart';
+import '../widgets/accessible_text.dart';
 import '../services/voice_service.dart';
 import '../services/api_service.dart';
 import 'voice_screen.dart';
@@ -211,7 +212,7 @@ class _StepScreenState extends State<StepScreen> {
                   ),
                   onPressed: _backWithoutSave,
                 ),
-                title: const Text(
+                title: const AccessibleTitle(
                   '보폭 설정',
                   style: TextStyle(
                     color: Colors.white,
@@ -248,9 +249,14 @@ class _StepScreenState extends State<StepScreen> {
                 ),
       ),
 
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
+      body: GestureDetector(
+        onTap: () {
+          // 배경 터치 시 키보드 내리기
+          FocusScope.of(context).unfocus();
+        },
+        child: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -273,7 +279,7 @@ class _StepScreenState extends State<StepScreen> {
                     ),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Text(
+                      child: AccessibleDescription(
                         widget.fromSettings
                             ? '보폭을 다시 측정해 저장할 수 있습니다.'
                             : 'A아이 앱에 오신 것을 환영합니다. 먼저 보폭을 측정해주세요.',
@@ -306,7 +312,7 @@ class _StepScreenState extends State<StepScreen> {
                           size: 20,
                         ),
                         SizedBox(width: 8),
-                        Text(
+                        AccessibleTitle(
                           '보폭 측정',
                           style: TextStyle(
                             color: Colors.white,
@@ -355,7 +361,7 @@ class _StepScreenState extends State<StepScreen> {
                     const SizedBox(height: 14),
                     Column(
                       children: [
-                        Text(
+                        AccessibleText(
                           widget.fromSettings
                               ? (stepLength == null
                                   ? '현재 설정된 보폭: ${widget.initialStepLengthCm ?? '-'} cm'
@@ -372,7 +378,7 @@ class _StepScreenState extends State<StepScreen> {
                         ),
                         if (_measured && !_resultConfirmed) ...[
                           const SizedBox(height: 8),
-                          Text(
+                          AccessibleDescription(
                             '측정이 완료되었습니다. 결과를 확인해주세요.',
                             textAlign: TextAlign.center,
                             style: TextStyle(
@@ -384,7 +390,7 @@ class _StepScreenState extends State<StepScreen> {
                         ],
                         if (_resultConfirmed) ...[
                           const SizedBox(height: 8),
-                          Text(
+                          AccessibleDescription(
                             '✓ 보폭이 설정되었습니다. 다음 단계로 진행해주세요.',
                             textAlign: TextAlign.center,
                             style: TextStyle(
@@ -402,6 +408,7 @@ class _StepScreenState extends State<StepScreen> {
 
               const SizedBox(height: 120), // 스크롤 여유
             ],
+            ),
           ),
         ),
       ),
