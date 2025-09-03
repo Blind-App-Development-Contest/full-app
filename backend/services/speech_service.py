@@ -24,7 +24,7 @@ class SpeechService:
         """오디오 파일 타입 및 기본 검증"""
         try:
             # 파일 타입 검증
-            if not any(file.content_type.startswith(t) for t in settings.SUPPORTED_AUDIO_TYPES):
+            if file.content_type and not any(file.content_type.startswith(t) for t in settings.SUPPORTED_AUDIO_TYPES):
                 return False, f"지원하지 않는 파일 타입: {file.content_type}"
             
             # 파일명 검증
@@ -66,7 +66,7 @@ class SpeechService:
         
         logger.info(f"[STT] 파일 크기: {len(audio_bytes)} bytes ({file_size_mb:.2f}MB)")
         
-        return audio_bytes, file_size_mb, file.content_type
+        return audio_bytes, file_size_mb, file.content_type or "application/octet-stream"
     
     async def transcribe_from_file(self, file: UploadFile) -> str:
         """UploadFile에서 직접 음성 인식 (통합된 전처리 포함)"""

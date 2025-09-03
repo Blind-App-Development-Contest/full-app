@@ -98,7 +98,7 @@ class SpeechAnalyzer:
             'fast': ['빠르게', '빨리', '빠름']
         }
     
-    def analyze_command(self, text: str, context: str = None) -> SpeechRecognitionResponse:
+    def analyze_command(self, text: str, context: str = "default") -> SpeechRecognitionResponse:
         """
         음성 텍스트를 분석하여 의도와 엔티티를 추출 (칼만 필터 지원)
         
@@ -181,7 +181,13 @@ class SpeechAnalyzer:
                         command_text=original_text
                     )
         
-        return None
+        # 기본 응답 반환
+        return SpeechRecognitionResponse(
+            intent="UNKNOWN",
+            entities={},
+            confidence=0.1,
+            command_text=original_text
+        )
     
     def _analyze_with_keywords(self, normalized_text: str, original_text: str) -> SpeechRecognitionResponse:
         """키워드 매칭 기반 분석"""
@@ -325,7 +331,7 @@ class SpeechAnalyzer:
                 
                 # 측정 방식 키워드 감지
                 if any(keyword in text for keyword in ['정밀', '실시간', '칼만']):
-                    entities['precision_mode'] = True
+                    entities['precision_mode'] = "true"
                     
             elif intent == 'FOOTSTEP_MEASUREMENT_COMPLETE':
                 entities['action'] = 'complete_measurement'
@@ -338,7 +344,7 @@ class SpeechAnalyzer:
                 
                 # 구체적인 정보 요청 감지
                 if any(keyword in text for keyword in ['얼마나', '몇', '현재']):
-                    entities['detail_requested'] = True
+                    entities['detail_requested'] = "true"
         
         # 기존 엔티티 추출 로직들
         elif intent == 'FIND_POI':
@@ -518,7 +524,7 @@ class SpeechAnalyzer:
         
         return commands
     
-    def analyze_command_batch(self, commands: List[str], context: str = None) -> List[SpeechRecognitionResponse]:
+    def analyze_command_batch(self, commands: List[str], context: str = "default") -> List[SpeechRecognitionResponse]:
         """여러 명령어 배치 분석"""
         return [self.analyze_command(cmd, context) for cmd in commands]
     

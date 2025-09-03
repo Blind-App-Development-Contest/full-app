@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../widgets/aeye_card.dart';
 import '../widgets/next_button.dart';
 import '../widgets/set_button.dart'; // ✅ 추가
+import '../widgets/accessible_text.dart';
+import '../services/api_service.dart';
+import '../services/voice_service.dart';
 import 'guardian_screen.dart';
 
 class VoiceScreen extends StatefulWidget {
@@ -29,6 +33,17 @@ class _VoiceScreenState extends State<VoiceScreen> {
     super.initState();
     _gender = widget.initialGender;
     _speed = widget.initialSpeed;
+    
+    // VoiceService에 초기 속도 설정
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      try {
+        final voiceService = context.read<VoiceService>();
+        voiceService.setVoiceSpeed(_speed);
+        debugPrint('🎙️ VoiceScreen 초기화: 음성 속도 ${_speed}x 설정');
+      } catch (e) {
+        debugPrint('❌ VoiceScreen 초기화: VoiceService 음성 속도 설정 실패: $e');
+      }
+    });
   }
 
   bool get _hasChanged {
@@ -39,24 +54,56 @@ class _VoiceScreenState extends State<VoiceScreen> {
   }
 
   // 온보딩 플로우: 다음 단계(GuardianScreen) 이동
-  void _goNext() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const GuardianScreen()),
-    );
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('설정 저장: ${_gender == 'F' ? '여성' : '남성'}, ${_speed.toStringAsFixed(1)}x'),
-      ),
-    );
+  void _goNext() async {
+    // 음성 설정 저장 (온보딩 플로우)
+    try {
+      debugPrint('🎙️ 온보딩 음성 설정 저장 시도: ${_gender == 'F' ? 'female' : 'male'}, ${_speed}x');
+      await ApiService().saveVoiceSettings(
+        gender: _gender == 'F' ? 'female' : 'male',
+        speed: _speed,
+      );
+      debugPrint('✅ 온보딩 음성 설정 저장 성공');
+    } catch (e) {
+      debugPrint('❌ 온보딩 음성 설정 저장 실패: $e');
+      // 저장 실패해도 계속 진행 (오프라인 모드 고려)
+    }
+    
+    if (mounted) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const GuardianScreen()),
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('설정 저장: ${_gender == 'F' ? '여성' : '남성'}, ${_speed.toStringAsFixed(1)}x'),
+        ),
+      );
+    }
   }
 
   // 설정에서 진입: 값 저장 후 되돌아가기
-  void _saveAndPop() {
-    Navigator.pop<Map<String, dynamic>>(context, {
-      'gender': _gender,
-      'speed': _speed,
-    });
+  void _saveAndPop() async {
+    if (_hasChanged) {
+      // 음성 설정 저장 (설정 화면에서 진입)
+      try {
+        debugPrint('🎙️ 설정 음성 변경 저장 시도: ${_gender == 'F' ? 'female' : 'male'}, ${_speed}x');
+        await ApiService().saveVoiceSettings(
+          gender: _gender == 'F' ? 'female' : 'male',
+          speed: _speed,
+        );
+        debugPrint('✅ 설정 음성 변경 저장 성공');
+      } catch (e) {
+        debugPrint('❌ 설정 음성 변경 저장 실패: $e');
+        // 저장 실패해도 계속 진행 (오프라인 모드 고려)
+      }
+    }
+    
+    if (mounted) {
+      Navigator.pop<Map<String, dynamic>>(context, {
+        'gender': _gender,
+        'speed': _speed,
+      });
+    }
   }
 
   // 뒤로가기(설정 경로): 저장 없이 나감
@@ -119,9 +166,14 @@ class _VoiceScreenState extends State<VoiceScreen> {
         ),
       ),
 
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
+      body: GestureDetector(
+        onTap: () {
+          // 배경 터치 시 키보드 내리기
+          FocusScope.of(context).unfocus();
+        },
+        child: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -136,7 +188,7 @@ class _VoiceScreenState extends State<VoiceScreen> {
                 decoration: BoxDecoration(
                   color: panel,
                   borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: divider.withOpacity(0.25)),
+                  border: Border.all(color: divider.withValues(alpha: 0.25)),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -145,7 +197,7 @@ class _VoiceScreenState extends State<VoiceScreen> {
                       children: const [
                         Icon(Icons.volume_up_outlined, color: Colors.white, size: 20),
                         SizedBox(width: 8),
-                        Text(
+                        AccessibleTitle(
                           '음성 설정',
                           style: TextStyle(
                             color: Colors.white,
@@ -157,7 +209,7 @@ class _VoiceScreenState extends State<VoiceScreen> {
                     ),
                     const SizedBox(height: 18),
 
-                    const Text(
+                    const AccessibleTitle(
                       '음성 종류',
                       style: TextStyle(
                         color: Colors.white,
@@ -188,7 +240,7 @@ class _VoiceScreenState extends State<VoiceScreen> {
                     ),
 
                     const SizedBox(height: 22),
-                    Text(
+                    AccessibleTitle(
                       '음성 속도: ${_speed.toStringAsFixed(1)}배속',
                       style: const TextStyle(
                         color: Colors.white,
@@ -204,13 +256,23 @@ class _VoiceScreenState extends State<VoiceScreen> {
                       decoration: BoxDecoration(
                         color: inner,
                         borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: divider.withOpacity(0.45)),
+                        border: Border.all(color: divider.withValues(alpha: 0.45)),
                       ),
                       child: Column(
                         children: [
                           Slider(
                             value: _speed,
-                            onChanged: (v) => setState(() => _speed = v),
+                            onChanged: (v) {
+                              setState(() => _speed = v);
+                              // VoiceService에 속도 변경 알리기
+                              try {
+                                final voiceService = context.read<VoiceService>();
+                                voiceService.setVoiceSpeed(v);
+                                debugPrint('🎙️ 음성 속도 변경: ${v}x');
+                              } catch (e) {
+                                debugPrint('❌ 음성 속도 변경 실패: $e');
+                              }
+                            },
                             min: 0.5,
                             max: 2.0,
                             divisions: 15, // 0.1 단위
@@ -221,9 +283,9 @@ class _VoiceScreenState extends State<VoiceScreen> {
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                Text('느림 (0.5x)',
+                                AccessibleText('느림 (0.5x)',
                                     style: TextStyle(color: hint, fontWeight: FontWeight.w600)),
-                                Text('빠름 (2.0x)',
+                                AccessibleText('빠름 (2.0x)',
                                     style: TextStyle(color: hint, fontWeight: FontWeight.w600)),
                               ],
                             ),
@@ -237,6 +299,7 @@ class _VoiceScreenState extends State<VoiceScreen> {
 
               const SizedBox(height: 120),
             ],
+            ),
           ),
         ),
       ),

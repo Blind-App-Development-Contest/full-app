@@ -18,9 +18,11 @@ from models.common_models import (
     SystemStatusResponse,
     MeasurementProgress,
     AppMode,
-    UserSettings
+    UserSettings,
+    RealTimeMeasurementStatus,
+    MeasurementStatus
 )
-from models.common_models import SystemStatusResponse as ExecutionStatusResponse
+# ExecutionStatusResponse는 SystemStatusResponse의 별칭으로 사용됨
 from services.singleton import service_manager
 
 logger = logging.getLogger(__name__)
@@ -32,7 +34,7 @@ class StatusServiceResult:
     data: Optional[Union[Dict[str, Any], object]] = None
     error: Optional[str] = None
     warning: Optional[str] = None
-    timestamp: datetime = None
+    timestamp: Optional[datetime] = None
     
     def __post_init__(self):
         if self.timestamp is None:
@@ -67,10 +69,35 @@ class StatusService:
                 warning_msg = f"일부 필드가 누락됨: {missing_fields}"
                 logger.warning(f"[StatusService] {warning_msg}")
             
-            # ExecutionStatusResponse 생성
-            execution_status = ExecutionStatusResponse(
+            # SystemStatusResponse 생성 (모든 필수 필드 포함)
+            
+            execution_status = SystemStatusResponse(
+                current_mode=AppMode.NORMAL,  # 기본 모드
+                setup_complete=True,  # 기본값
                 is_listening=status_data.get("is_listening", True),
-                current_mode=status_data.get("current_mode", "normal"),
+                measurement_status=RealTimeMeasurementStatus(
+                    measurement_active=False,
+                    measurement_status=MeasurementStatus.INACTIVE,
+                    measurement_type=None,
+                    progress=MeasurementProgress(
+                        frame_count=0,
+                        elapsed_time=0.0,
+                        fps=0.0,
+                        step_count=0,
+                        current_step_length_cm=None
+                    ),
+                    current_result=None,
+                    session_id=None,
+                    start_time=None
+                ),
+                user_settings=UserSettings(
+                    user_name="기본 사용자",
+                    step_length_cm=75.0,
+                    voice_gender="F",
+                    voice_speed=1.0,
+                    caregiver_name=None,
+                    caregiver_phone=None
+                ),
                 last_execution=status_data.get("last_execution"),
                 total_commands=status_data.get("total_commands", 0)
             )
@@ -293,23 +320,30 @@ class StatusService:
         Returns:
             MeasurementStatusResponse: 구성된 측정 상태
         """
+        from models.common_models import MeasurementStatus, MeasurementType
+        
         measurement_status = MeasurementStatusResponse(
             measurement_active=status_data.get("measurement_active", False),
-            measurement_type="kalman_filter" if status_data.get("measurement_active") else None,
+            measurement_status=MeasurementStatus.ACTIVE if status_data.get("measurement_active", False) else MeasurementStatus.INACTIVE,
+            measurement_type=MeasurementType.KALMAN_FILTER if status_data.get("measurement_active") else None,
             progress=MeasurementProgress(
                 frame_count=progress_data.get("frame_count", 0),
                 elapsed_time=progress_data.get("elapsed_time", 0.0),
                 fps=progress_data.get("fps", 0.0),
-                step_count=progress_data.get("step_count", 0)
+                step_count=progress_data.get("step_count", 0),
+                current_step_length_cm=progress_data.get("current_step_length_cm")
             ),
-            current_step=None
+            current_result=None,
+            session_id=None,
+            start_time=None
         )
         
         # 추적기 상태가 있는 경우 세부 정보 추가
         if (progress_data.get("tracker_status") and 
             progress_data["tracker_status"].get("current_step")):
             step_result = progress_data["tracker_status"]["current_step"]
-            measurement_status.current_step = step_result
+            # current_step 필드가 없으므로 current_result에 저장
+            measurement_status.current_result = {"current_step": step_result}
             logger.debug("[StatusService] 현재 스텝 정보 추가됨")
         
         return measurement_status
@@ -329,7 +363,14 @@ class StatusService:
             return UserSettings(**user_settings_data)
         except Exception as settings_error:
             logger.warning(f"[StatusService] 사용자 설정 파싱 오류: {settings_error}")
-            return UserSettings()  # 기본값 사용
+            return UserSettings(
+                user_name=None,
+                step_length_cm=None,
+                voice_gender="F",
+                voice_speed=1.0,
+                caregiver_name=None,
+                caregiver_phone=None
+            )  # 기본값 사용
     
     def get_cache_info(self) -> Dict[str, Any]:
         """캐시 정보 조회"""

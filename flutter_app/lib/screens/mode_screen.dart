@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../widgets/aeye_card.dart';
+import '../widgets/accessible_text.dart';
 import 'setting_screen.dart';
+import 'map_screen.dart';
+import 'object_detection_screen.dart';
 
 enum AppPreferredMode { camera, navigation }
 
@@ -52,24 +55,34 @@ class _ModeScreenState extends State<ModeScreen> {
     setState(() => _preferred = mode);
   }
 
-  void _openCameraMode(BuildContext context) async {
+  Future<void> _openCameraMode(BuildContext context) async {
     await _savePreferred(AppPreferredMode.camera);
-    // 실제 카메라 화면 라우트가 있다면 사용
+    // 먼저 네임드 라우트 시도
     final pushed = await _tryPushNamed(context, '/camera');
+    // 실패하면 직접 화면으로 이동
     if (!pushed && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('카메라 모드로 이동합니다. (데모)')),
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => const ObjectDetectionScreen(),
+        ),
       );
     }
   }
 
-  void _openNavigationMode(BuildContext context) async {
+  Future<void> _openNavigationMode(BuildContext context) async {
     await _savePreferred(AppPreferredMode.navigation);
-    // 실제 길찾기 화면 라우트가 있다면 사용
+    // 먼저 네임드 라우트 시도
     final pushed = await _tryPushNamed(context, '/navigation');
+    // 실패하면 직접 화면으로 이동
     if (!pushed && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('길찾기 모드로 이동합니다. (데모)')),
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => const MapScreen(
+            backendBaseUrl: 'http://20.22.6.21:8000',
+          ),
+        ),
       );
     }
   }
@@ -162,7 +175,7 @@ class _ModeScreenState extends State<ModeScreen> {
               _ModeCard(
                 icon: Icons.photo_camera_outlined,
                 title: '카메라 모드',
-                description: '실시간 객체 인식 및 위험 감지',
+                description: '실시간 장애물 탐지 및 안전 안내',
                 panel: panel,
                 divider: divider,
                 caption: caption,
@@ -208,7 +221,6 @@ class _ModeCard extends StatelessWidget {
   final double height;
 
   const _ModeCard({
-    super.key,
     required this.icon,
     required this.title,
     required this.description,
@@ -230,7 +242,7 @@ class _ModeCard extends StatelessWidget {
         decoration: BoxDecoration(
           color: panel,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: divider.withOpacity(0.25)),
+          border: Border.all(color: divider.withValues(alpha: 0.25)),
         ),
         child: Row(
           children: [
@@ -240,7 +252,7 @@ class _ModeCard extends StatelessWidget {
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: divider.withOpacity(0.4)),
+                border: Border.all(color: divider.withValues(alpha: 0.4)),
               ),
               child: Icon(icon, color: Colors.white, size: 28),
             ),
@@ -250,7 +262,7 @@ class _ModeCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Text(
+                  AccessibleTitle(
                     title,
                     style: const TextStyle(
                       color: Colors.white,
@@ -259,7 +271,7 @@ class _ModeCard extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 6),
-                  Text(
+                  AccessibleDescription(
                     description,
                     style: TextStyle(
                       color: caption,

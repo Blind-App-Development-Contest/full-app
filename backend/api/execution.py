@@ -10,6 +10,7 @@ router = APIRouter()
 from services.singleton import service_manager
 command_executor = service_manager.get_command_executor()
 
+@router.get("", response_model=SystemStatusResponse)
 @router.get("/", response_model=SystemStatusResponse)
 def get_execution_status():
     """
@@ -50,12 +51,37 @@ def get_commands_history(limit: int = 10):
         if limit < 1 or limit > 100:
             raise HTTPException(status_code=400, detail="limit은 1-100 사이여야 합니다")
         
-        history = command_executor.get_execution_history(limit)
+        history_data = command_executor.get_execution_history(limit)
         total_count = len(command_executor.execution_history)
         
+        # Dict를 ExecutionHistoryEntry로 변환
+        from models.common_models import ExecutionHistoryEntry, CommandExecutionResponse, ExecutionStatus
+        from datetime import datetime
+        
+        history_entries = []
+        for entry in history_data:
+            # 기본값 설정
+            execution_response = CommandExecutionResponse(
+                status=ExecutionStatus.SUCCESS,
+                message=entry.get("message", "실행 완료"),
+                data=entry.get("data", {}),
+                actions=entry.get("actions", []),
+                timestamp=datetime.now()
+            )
+            
+            history_entry = ExecutionHistoryEntry(
+                command_text=entry.get("command_text", ""),
+                intent=entry.get("intent", "UNKNOWN"),
+                execution_result=execution_response,
+                user_id=entry.get("user_id")
+            )
+            history_entries.append(history_entry)
+        
         return ExecutionHistoryResponse(
-            history=history,
-            total_count=total_count
+            history=history_entries,
+            total_count=total_count,
+            page=1,
+            page_size=limit
         )
         
     except HTTPException:
@@ -80,7 +106,6 @@ def get_setup_configuration():
             "current_step": status.get("setup_step"),
             "current_mode": status["current_mode"],
             "user_settings": status["user_settings"],
-            "progress": _get_setup_progress(status.get("setup_step")),
             "is_listening": status["is_listening"]
         }
         
@@ -110,54 +135,3 @@ def delete_setup_configuration():
     except Exception as e:
         print(f"[오류] 설정 초기화 중 오류: {e}")
         raise HTTPException(status_code=500, detail=f"초기화 오류: {str(e)}")
-
-@router.get("/setup/progress", tags=["Setup Management"])
-def get_setup_progress_status():
-    """
-    설정 진행률만 간단히 조회
-    
-    Returns:
-        진행률 정보
-    """
-    try:
-        status = command_executor.get_current_status()
-        current_step = status.get("setup_step")
-        
-        return {
-            "current_step": current_step,
-            "progress": _get_setup_progress(current_step),
-            "setup_complete": status["setup_complete"],
-            "next_step": _get_next_step(current_step)
-        }
-        
-    except Exception as e:
-        print(f"[오류] 설정 진행률 조회 중 오류: {e}")
-        raise HTTPException(status_code=500, detail=f"진행률 조회 오류: {str(e)}")
-
-def _get_setup_progress(step: str) -> str:
-    """설정 진행률 계산"""
-    step_mapping = {
-        "start": "0/6",
-        "user_name": "1/6", 
-        "step_length": "2/6",
-        "voice_gender": "3/6",
-        "voice_speed": "4/6",
-        "caregiver_info": "5/6",
-        "mode_selection": "6/6",
-        "complete": "6/6"
-    }
-    return step_mapping.get(step, "0/6")
-
-def _get_next_step(current_step: str) -> str:
-    """다음 설정 단계 반환"""
-    step_flow = {
-        "start": "user_name",
-        "user_name": "step_length", 
-        "step_length": "voice_gender",
-        "voice_gender": "voice_speed",
-        "voice_speed": "caregiver_info",
-        "caregiver_info": "mode_selection",
-        "mode_selection": "complete",
-        "complete": "complete"
-    }
-    return step_flow.get(current_step, "user_name")

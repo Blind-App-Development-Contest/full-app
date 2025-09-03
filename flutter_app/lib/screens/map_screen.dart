@@ -3,11 +3,10 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_naver_map/flutter_naver_map.dart';
-import 'package:geolocator/geolocator.dart'; // geolocator import 추가
+import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
-import 'directions_api.dart';
-import './services/voice_service.dart';
-import 'widgets/accessible_text.dart';
+import '../directions_api.dart';
+import '../services/voice_service.dart';
 
 class MapScreen extends StatefulWidget {
   final String backendBaseUrl;
@@ -20,7 +19,6 @@ class MapScreen extends StatefulWidget {
 class _MapScreenState extends State<MapScreen> {
   late final DirectionsApi _api;
   final Completer<NaverMapController> _controller = Completer();
-  VoiceService? _voiceService;
 
   NaverMapController? _map;
   NPolylineOverlay? _routePolyline;
@@ -37,51 +35,43 @@ class _MapScreenState extends State<MapScreen> {
   int _selectedSuggestionIndex = -1; // 선택된 추천 항목 인덱스
   bool _waitingForReadConfirmation = false; // 음성 안내 확인 대기 상태
   bool _isListening = false; // 음성인식 상태
+  
+  // VoiceService 연동
+  VoiceService? _voiceService;
 
   @override
   void initState() {
     super.initState();
     _api = DirectionsApi(widget.backendBaseUrl);
-    // VoiceService를 Provider에서 가져오도록 지연 초기화
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      try {
-        _voiceService = context.read<VoiceService>();
-        _voiceService?.addListener(_onVoiceServiceUpdate);
-        debugPrint('🗺️ MapScreen: VoiceService Provider에서 가져오기 성공');
-      } catch (e) {
-        debugPrint('❌ MapScreen: VoiceService 초기화 실패: $e');
-      }
-    });
+    _initializeVoiceService();
   }
 
   @override
   void dispose() {
-    _voiceService?.removeListener(_onVoiceServiceUpdate);
-    // Provider에서 가져온 VoiceService는 dispose하지 않음
     _destinationController.dispose();
     super.dispose();
   }
-
-  // 음성 인식 결과 및 상태 업데이트 핸들러
-  void _onVoiceServiceUpdate() {
-    if (_voiceService == null || !mounted) return;
-    
-    setState(() {
-      // 음성 인식 결과가 있으면 목적지 입력창에 자동 입력
-      if (_voiceService!.lastRecognizedText.isNotEmpty) {
-        _destinationController.text = _voiceService!.lastRecognizedText;
-      }
-      // 음성 인식 상태에 따라 버튼 색상 등 UI 갱신
-      _isListening = _voiceService!.currentState == VoiceState.listening;
-      _status = _voiceService!.statusMessage;
-    });
+  
+  void _initializeVoiceService() {
+    try {
+      _voiceService = context.read<VoiceService>();
+      debugPrint("✅ MapScreen VoiceService 초기화 성공");
+    } catch (e) {
+      debugPrint("❌ MapScreen VoiceService 초기화 실패: $e");
+    }
   }
 
-  // 음성 안내 메서드
-  void _speakText(String text) {
-    // TTS 기능을 추가해야 하지만, 일단 디버그 메시지로 대체
-    debugPrint('🔊 음성 안내: $text');
-    // 나중에 flutter_tts 패키지 사용하여 실제 음성 출력 구현
+  // 음성 안내 메서드 (VoiceService 사용)
+  Future<void> _speakText(String text) async {
+    try {
+      if (_voiceService != null) {
+        await _voiceService!.speak(text);
+      } else {
+        debugPrint('🔊 음성 안내 (VoiceService 없음): $text');
+      }
+    } catch (e) {
+      debugPrint('❌ 음성 출력 실패: $e');
+    }
   }
 
   // 현재 선택된 추천 항목 음성 안내
@@ -251,26 +241,23 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
-  // 음성인식 버튼 누름 (실제 기능 구현)
-  void _toggleVoiceRecognition() async {
+  // 음성인식 버튼 누름 (기능은 나중에 구현)
+  void _toggleVoiceRecognition() {
     setState(() {
       _isListening = !_isListening;
     });
+
     if (_isListening) {
       _speakText('음성인식을 시작합니다.');
-      // 음성 인식 시작 (5초 녹음 후 자동 처리)
-      await _voiceService?.startListening();
     } else {
       _speakText('음성인식을 중지합니다.');
-      // 음성 인식 강제 중단
-      _voiceService?.forceStop();
     }
   }
 
   // ---- 유틸 ----
   void _toast(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: AccessibleText(msg)));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   // GPS 관련 코드 (네이버 맵 테스트용)
@@ -573,7 +560,7 @@ class _MapScreenState extends State<MapScreen> {
 
   PreferredSizeWidget _buildAppBar() {
     return AppBar(
-      title: const AccessibleTitle('Naver Map • 길찾기'),
+      title: const Text('Naver Map • 길찾기'),
       actions: [
         IconButton(onPressed: _ping, icon: const Icon(Icons.wifi)),
         IconButton(
@@ -598,7 +585,7 @@ class _MapScreenState extends State<MapScreen> {
       return Scaffold(
         appBar: _buildAppBar(),
         body: const Center(
-          child: AccessibleDescription('네이버 지도는 Flutter Web 미지원입니다. iOS/Android에서 실행하세요.'),
+          child: Text('네이버 지도는 Flutter Web 미지원입니다. iOS/Android에서 실행하세요.'),
         ),
       );
     }
@@ -638,12 +625,12 @@ class _MapScreenState extends State<MapScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    AccessibleDescription(
+                    Text(
                       'Backend: ${widget.backendBaseUrl}',
                       style: const TextStyle(fontSize: 13),
                     ),
                     const SizedBox(height: 6),
-                    AccessibleDescription(
+                    Text(
                       'Status: $_status',
                       style: const TextStyle(
                         fontSize: 13,
@@ -656,7 +643,7 @@ class _MapScreenState extends State<MapScreen> {
                         ElevatedButton.icon(
                           onPressed: _centerToMyLocation,
                           icon: const Icon(Icons.my_location),
-                          label: const AccessibleText('내 위치로 이동'),
+                          label: const Text('내 위치로 이동'),
                         ),
                       ],
                     ),
@@ -709,7 +696,7 @@ class _MapScreenState extends State<MapScreen> {
                       child: ElevatedButton.icon(
                         onPressed: _routeFromMyLocation,
                         icon: const Icon(Icons.directions_walk),
-                        label: const AccessibleText('도보 경로 찾기'),
+                        label: const Text('도보 경로 찾기'),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.blue,
                           foregroundColor: Colors.white,
@@ -763,7 +750,7 @@ class _MapScreenState extends State<MapScreen> {
                     const Icon(Icons.directions_walk, color: Colors.white),
                     const SizedBox(width: 8),
                     const Expanded(
-                      child: AccessibleTitle(
+                      child: Text(
                         '길안내',
                         style: TextStyle(
                           color: Colors.white,
@@ -782,7 +769,7 @@ class _MapScreenState extends State<MapScreen> {
               Expanded(
                 child:
                     _instructions.isEmpty
-                        ? const Center(child: AccessibleDescription('길안내 정보가 없습니다.'))
+                        ? const Center(child: Text('길안내 정보가 없습니다.'))
                         : ListView.builder(
                           padding: const EdgeInsets.all(8),
                           itemCount: _instructions.length,
@@ -806,7 +793,7 @@ class _MapScreenState extends State<MapScreen> {
                                         CircleAvatar(
                                           radius: 12,
                                           backgroundColor: Colors.blue,
-                                          child: AccessibleText(
+                                          child: Text(
                                             '${index + 1}',
                                             style: const TextStyle(
                                               color: Colors.white,
@@ -816,7 +803,7 @@ class _MapScreenState extends State<MapScreen> {
                                         ),
                                         const SizedBox(width: 8),
                                         Expanded(
-                                          child: AccessibleDescription(
+                                          child: Text(
                                             html.isNotEmpty
                                                 ? html
                                                 : '단계 ${index + 1}',
@@ -834,7 +821,7 @@ class _MapScreenState extends State<MapScreen> {
                                           top: 4,
                                           left: 32,
                                         ),
-                                        child: AccessibleDescription(
+                                        child: Text(
                                           [distanceText, durationText]
                                               .where((s) => s.isNotEmpty)
                                               .join(' • '),
@@ -896,7 +883,7 @@ class _MapScreenState extends State<MapScreen> {
                         child: ElevatedButton.icon(
                           onPressed: _startReadingSuggestions,
                           icon: const Icon(Icons.volume_up, size: 18),
-                          label: const AccessibleText('읽기'),
+                          label: const Text('읽기'),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.green,
                             foregroundColor: Colors.white,
@@ -909,7 +896,7 @@ class _MapScreenState extends State<MapScreen> {
                         child: ElevatedButton.icon(
                           onPressed: _skipReadingSuggestions,
                           icon: const Icon(Icons.skip_next, size: 18),
-                          label: const AccessibleText('건너뛰기'),
+                          label: const Text('건너뛰기'),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.grey,
                             foregroundColor: Colors.white,
@@ -949,7 +936,7 @@ class _MapScreenState extends State<MapScreen> {
                     child: ElevatedButton.icon(
                       onPressed: _selectCurrentSuggestion,
                       icon: const Icon(Icons.check, size: 18),
-                      label: const AccessibleText('선택'),
+                      label: const Text('선택'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.blue,
                         foregroundColor: Colors.white,
@@ -997,7 +984,7 @@ class _MapScreenState extends State<MapScreen> {
                       color: isSelected ? Colors.blue : Colors.grey,
                       size: 20,
                     ),
-                    title: AccessibleText(
+                    title: Text(
                       name,
                       style: TextStyle(
                         fontSize: 14,
@@ -1010,7 +997,7 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                     subtitle:
                         address.isNotEmpty
-                            ? AccessibleDescription(
+                            ? Text(
                               address,
                               style: TextStyle(
                                 fontSize: 12,

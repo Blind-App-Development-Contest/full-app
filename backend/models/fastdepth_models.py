@@ -3,7 +3,6 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any
 from datetime import datetime
-from .common_models import StepResult, MeasurementStatusResponse, SystemStatusResponse
 
 class FastDepthFootData(BaseModel):
     """FastDepth 발 위치 데이터"""
@@ -30,7 +29,7 @@ class FrameProcessResponse(BaseModel):
     success: bool = Field(description="처리 성공 여부")
     message: str = Field(description="처리 결과 메시지")
     measurement_active: bool = Field(description="측정 활성 상태")
-    current_result: Optional[StepResult] = Field(None, description="현재 측정 결과")
+    current_result: Optional[Dict[str, Any]] = Field(None, description="현재 측정 결과")
     timestamp: datetime = Field(default_factory=datetime.now, description="처리 시각")
 
 class SpeechCommandRequest(BaseModel):

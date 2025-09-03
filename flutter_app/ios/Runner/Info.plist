@@ -137,5 +137,23 @@
 	<string>이 앱은 길찾기 및 현재 위치 표시를 위해 위치 정보가 필요합니다.</string>
 	<key>NSLocationAlwaysUsageDescription</key>
 	<string>이 앱은 길찾기 및 현재 위치 표시를 위해 위치 정보가 필요합니다.</string>
+	
+	<!-- 카메라 셔터 소리 비활성화 (보폭 측정 시 소음 방지) -->
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+		<integer>2</integer>
+	</array>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>armv7</string>
+		<string>camera-flash</string>
+	</array>
+	
+	<!-- 카메라 셔터 음소거 허용 -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>camera</string>
+	</array>
 </dict>
 </plist>

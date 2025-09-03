@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../widgets/aeye_card.dart';
 import '../widgets/next_button.dart';
 import '../widgets/set_button.dart';
+import '../widgets/accessible_text.dart';
 import 'mode_screen.dart';
 
 class GuardianScreen extends StatefulWidget {
@@ -87,7 +88,7 @@ class _GuardianScreenState extends State<GuardianScreen> {
       );
     }
     Navigator.pop(context); // 결과 없이 Pop → 저장 안 됨
-    return false; // WillPopScope에 의해 기본 pop 막기
+    return false; // PopScope에 의해 기본 pop 막기
   }
 
   @override
@@ -113,31 +114,40 @@ class _GuardianScreenState extends State<GuardianScreen> {
     final BoxDecoration fieldBox = BoxDecoration(
       color: field,
       borderRadius: BorderRadius.circular(14),
-      border: Border.all(color: divider.withOpacity(0.4)),
+      border: Border.all(color: divider.withValues(alpha: 0.4)),
     );
 
-    return WillPopScope(
-      onWillPop: widget.fromSettings ? _backWithoutSave : null,
-      child: Scaffold(
-        backgroundColor: bg,
-
-        // 설정에서만 AppBar + 뒤로가기
-        appBar: widget.fromSettings
-            ? AppBar(
+    return PopScope(
+      onPopInvokedWithResult: widget.fromSettings 
+          ? (didPop, _) async {
+              if (!didPop) await _backWithoutSave();
+            } 
+          : null,
+      child: GestureDetector(
+        onTap: () {
+          // 배경 터치 시 키보드 내리기
+          FocusScope.of(context).unfocus();
+        },
+        child: Scaffold(
           backgroundColor: bg,
-          elevation: 0,
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back_ios_new,
-                color: Colors.white),
-            onPressed: _backWithoutSave,
-          ),
-          title: const Text(
-            '보호자 설정',
-            style: TextStyle(
-                color: Colors.white, fontWeight: FontWeight.w900),
-          ),
-        )
-            : null,
+
+          // 설정에서만 AppBar + 뒤로가기
+          appBar: widget.fromSettings
+              ? AppBar(
+            backgroundColor: bg,
+            elevation: 0,
+            leading: IconButton(
+              icon: const Icon(Icons.arrow_back_ios_new,
+                  color: Colors.white),
+              onPressed: _backWithoutSave,
+            ),
+            title: const Text(
+              '보호자 설정',
+              style: TextStyle(
+                  color: Colors.white, fontWeight: FontWeight.w900),
+            ),
+          )
+              : null,
 
         // 하단 버튼 분기
         bottomNavigationBar: Padding(
@@ -172,7 +182,7 @@ class _GuardianScreenState extends State<GuardianScreen> {
                   decoration: BoxDecoration(
                     color: panel,
                     borderRadius: BorderRadius.circular(18),
-                    border: Border.all(color: divider.withOpacity(0.25)),
+                    border: Border.all(color: divider.withValues(alpha: 0.25)),
                   ),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -181,7 +191,7 @@ class _GuardianScreenState extends State<GuardianScreen> {
                           color: Colors.white, size: 20),
                       const SizedBox(width: 8),
                       Expanded(
-                        child: Text(
+                        child: AccessibleDescription(
                           widget.fromSettings
                               ? '보호자 정보를 수정하고 완료를 눌러 저장하세요.'
                               : '보호자 정보를 등록해주세요. 긴급 상황 시 연락할 분의 정보입니다.',
@@ -205,7 +215,7 @@ class _GuardianScreenState extends State<GuardianScreen> {
                   decoration: BoxDecoration(
                     color: panel,
                     borderRadius: BorderRadius.circular(18),
-                    border: Border.all(color: divider.withOpacity(0.25)),
+                    border: Border.all(color: divider.withValues(alpha: 0.25)),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -215,7 +225,7 @@ class _GuardianScreenState extends State<GuardianScreen> {
                           Icon(Icons.person_outline,
                               color: Colors.white, size: 22),
                           SizedBox(width: 8),
-                          Text(
+                          AccessibleTitle(
                             '보호자 정보',
                             style: TextStyle(
                               color: Colors.white,
@@ -227,7 +237,7 @@ class _GuardianScreenState extends State<GuardianScreen> {
                       ),
 
                       const SizedBox(height: 22),
-                      const Text(
+                      const AccessibleTitle(
                         '이름',
                         style: TextStyle(
                           color: Colors.white,
@@ -251,7 +261,7 @@ class _GuardianScreenState extends State<GuardianScreen> {
                       ),
 
                       const SizedBox(height: 22),
-                      const Text(
+                      const AccessibleTitle(
                         '전화번호',
                         style: TextStyle(
                           color: Colors.white,
@@ -275,10 +285,10 @@ class _GuardianScreenState extends State<GuardianScreen> {
                       ),
 
                       const SizedBox(height: 16),
-                      Text(
+                      AccessibleDescription(
                         '긴급 상황 시 GPS 위치와 함께 문자 메시지가 전송됩니다',
                         style: TextStyle(
-                          color: Colors.white.withOpacity(0.75),
+                          color: Colors.white.withValues(alpha: 0.75),
                           fontSize: 14,
                           fontWeight: FontWeight.w500,
                         ),
@@ -290,7 +300,7 @@ class _GuardianScreenState extends State<GuardianScreen> {
                 if (widget.fromSettings) ...[
                   const SizedBox(height: 12),
                   // 현재/변경 값 안내 (설정 진입 시에만)
-                  Text(
+                  AccessibleText(
                     _canSave
                         ? '변경 사항이 있습니다. 완료를 눌러 저장하세요.'
                         : '변경 사항이 없습니다.',
@@ -307,6 +317,7 @@ class _GuardianScreenState extends State<GuardianScreen> {
               ],
             ),
           ),
+        ),
         ),
       ),
     );

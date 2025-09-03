@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Any
 from uuid import UUID
 import cv2
 import numpy as np
@@ -33,8 +33,8 @@ except Exception as e:
 
 # FastDepth 모델은 사용하지 않음
 # MiDaS 모델 로드 (FastDepth 대체)
-midas_model = None
-midas_transform = None
+midas_model: Optional[Any] = None
+midas_transform: Optional[Any] = None
 try:
     # MiDaS 모델 로드 (DPT_Hybrid_384 사용)
     # torch.hub를 사용하여 모델을 로드합니다.
@@ -44,7 +44,7 @@ try:
     midas_model.eval()
 
     # MiDaS 모델에 맞는 변환기 로드
-    midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
+    midas_transforms: Any = torch.hub.load("intel-isl/MiDaS", "transforms")
     midas_transform = midas_transforms.small_transform if midas_model_type == "MiDaS_small" else midas_transforms.dpt_transform
 
     logger.info(f"MiDaS model ({midas_model_type}) loaded successfully.")

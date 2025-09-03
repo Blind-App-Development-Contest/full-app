@@ -1,14 +1,20 @@
 import sys
 import os
 import logging
+import warnings
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# 각종 라이브러리 경고 숨김
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=FutureWarning) 
+warnings.filterwarnings("ignore", message=".*deprecated.*")
+warnings.filterwarnings("ignore", message=".*timm.*")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 import asyncpg
-import logging
 import uvicorn
 
 # 통합 에러 처리 미들웨어
@@ -16,7 +22,6 @@ from middleware.error_handler import ErrorHandlerMiddleware
 
 # API 라우터 imports
 from api.speech import router as speech_router
-from api.speech_routes import router as speech_router
 from api.measurement import router as measurement_router
 from api.execution import router as execution_router
 from api.footstep import router as footstep_router
@@ -25,6 +30,8 @@ from api import users, update_name, caregiver
 from api import voice as voice_module
 from api import camera, objects
 from api import realtime_routes
+from api.user_settings import router as user_settings_router
+from api.dashboard import router as dashboard_router
 
 # Config & Services
 from config.settings import get_settings
@@ -39,7 +46,6 @@ settings = get_settings()
 app = FastAPI(title="Full App", debug=settings.DEBUG)
 
 load_dotenv()
-logger = logging.getLogger("uvicorn.error")
 
 def _normalize_dsn(dsn: str) -> str:
     """sqlalchemy 스타일 DSN을 asyncpg용으로 보정"""
@@ -67,49 +73,45 @@ app.add_middleware(
 # === 앱 라이프사이클 ===
 @app.on_event("startup")
 async def on_startup():
-  
     """서버 시작 시 초기화"""
     logger.info("🚀 음성 명령 인식 서버 시작")
     
-    # 데이터베이스 연결 풀 생성
-    # DB 연결
-    dsn = _normalize_dsn(os.getenv("DB_URL", settings.db_url or "postgresql://appuser:1111@localhost:5432/appdb"))
-    app.state.db_pool = await asyncpg.create_pool(dsn=dsn)
-    
-    # 싱글톤 서비스 인스턴스 미리 생성
-    command_executor = service_manager.get_command_executor()
-    speech_analyzer = service_manager.get_speech_analyzer()
-    speech_service = service_manager.get_speech_service()
-    
-    logger.info("✅ 서비스 인스턴스 생성 완료")
-    logger.info("🎤 음성 명령 인식 시스템 준비 완료!")
-
     try:
-        dsn = _normalize_dsn(os.getenv("DB_URL", "postgresql://appuser:1111@localhost:5432/appdb"))
+        # 데이터베이스 연결 풀 생성
+        dsn = _normalize_dsn(os.getenv("DB_URL", settings.db_url or "postgresql://appuser:1111@localhost:5432/appdb"))
         app.state.db_pool = await asyncpg.create_pool(dsn=dsn)
         logger.info("Database connection pool started successfully.")
-    except Exception as e:
-        logger.critical(f"FATAL: Could not connect to database via asyncpg pool: {e}")
         
-    # 유용한 환경키 로딩 여부 로깅 (값은 노출하지 않음)
-    has_mapbox = bool(os.getenv("MAPBOX_ACCESS_TOKEN"))
-    has_naver_id = bool(os.getenv("NAVER_CLIENT_ID") or getattr(settings, "NAVER_CLIENT_ID", None))
-    has_naver_secret = bool(os.getenv("NAVER_CLIENT_SECRET") or getattr(settings, "NAVER_CLIENT_SECRET", None))
-    print(f"🔑 ENV CHECK | MAPBOX_TOKEN={'OK' if has_mapbox else 'MISSING'} "
-          f"| NAVER_ID={'OK' if has_naver_id else 'MISSING'} "
-          f"| NAVER_SECRET={'OK' if has_naver_secret else 'MISSING'}")
-
+        # 싱글톤 서비스 인스턴스 미리 생성
+        service_manager.get_command_executor()
+        service_manager.get_speech_analyzer() 
+        service_manager.get_speech_service()
+        
+        # FastDepth 프로세서는 보폭 측정 요청시에만 지연 로딩
+        logger.info("🔥 FastDepth 프로세서는 필요시에만 로드됩니다")
+        
+        logger.info("✅ 서비스 인스턴스 생성 완료")
+        logger.info("🎤 음성 명령 인식 시스템 준비 완료!")
+        
+        # 환경키 로딩 여부 로깅 (값은 노출하지 않음)
+        has_mapbox = bool(os.getenv("MAPBOX_ACCESS_TOKEN"))
+        has_naver_id = bool(os.getenv("NAVER_CLIENT_ID") or getattr(settings, "NAVER_CLIENT_ID", None))
+        has_naver_secret = bool(os.getenv("NAVER_CLIENT_SECRET") or getattr(settings, "NAVER_CLIENT_SECRET", None))
+        print(f"🔑 ENV CHECK | MAPBOX_TOKEN={'OK' if has_mapbox else 'MISSING'} "
+              f"| NAVER_ID={'OK' if has_naver_id else 'MISSING'} "
+              f"| NAVER_SECRET={'OK' if has_naver_secret else 'MISSING'}")
+        
+    except Exception as e:
+        logger.critical(f"FATAL: Could not start server: {e}")
 
 @app.on_event("shutdown")
 async def on_shutdown():
     """서버 종료 시 정리"""
-    
-    # 데이터베이스 연결 종료
+    logger.info("🛑 서버 종료 시작")
     pool = getattr(app.state, "db_pool", None)
     if pool:
         await pool.close()
-    
-    logger.info(" 서버 종료 완료")
+        logger.info("Database connection pool closed.")
 
 
 # === 루트/헬스 ===
@@ -138,13 +140,6 @@ def root():
     }
 
 if __name__ == "__main__":
-    print("🚀 서버 시작: http://%s:%s" % (settings.HOST, settings.PORT))
-    uvicorn.run(
-        app,
-        host=settings.HOST,
-        port=settings.PORT,
-        reload=settings.DEBUG
-    )
     logger.info("🚀 시각장애인 음성 보조 시스템 서버 시작")
     logger.info(f"📍 서버 주소: http://{settings.HOST}:{settings.PORT}")
     logger.info(f"📖 API 문서: http://{settings.HOST}:{settings.PORT}/docs")
@@ -228,5 +223,5 @@ app.include_router(realtime_routes.router, prefix="/api/realtime", tags=["Real-t
 
 app.include_router(camera.router)        # /api/camera
 app.include_router(objects.router)       # /api/objects
-app.include_router(camera.router)        # /api/camera
-app.include_router(objects.router)       # /api/objects
+app.include_router(user_settings_router) # /api/users/settings
+app.include_router(dashboard_router)     # /api/dashboard

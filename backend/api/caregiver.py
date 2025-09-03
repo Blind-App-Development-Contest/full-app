@@ -39,7 +39,7 @@ class CaregiverAlertResponse(BaseModel):
     status: str
     message: str
     caregiver_phone: str
-    current_location: str = Field(..., description="사용자의 현재 위치 주소", example="서울시 강남구 테헤란로 123")
+    current_location: str = Field(..., description="사용자의 현재 위치 주소")
 
 # ─────────────────────────────────────────────────────────────
 # POST /api/users/caregiver : 보호자 정보 등록

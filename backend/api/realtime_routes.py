@@ -1,18 +1,14 @@
 """실시간 FastDepth 프레임 처리 전용 라우터"""
 
 from fastapi import APIRouter, HTTPException
-from typing import Optional, Dict, Any
 import logging
 import time
-import base64
-import cv2
-import numpy as np
 
 from models.fastdepth_models import (
-    FastDepthFrameData, FrameProcessRequest, FrameProcessResponse
+    FrameProcessRequest, FrameProcessResponse
 )
 from models.common_models import (
-    RealTimeMeasurementStatus, SchemaConverter
+    RealTimeMeasurementStatus
 )
 from services.singleton import service_manager
 # 카메라 스트림 통합을 위한 추가 임포트
@@ -40,26 +36,50 @@ async def process_frame(request: FrameProcessRequest):
             return FrameProcessResponse(
                 success=False,
                 message="보폭 측정이 비활성화되어 있습니다. 먼저 측정을 시작해주세요.",
-                measurement_active=False
+                measurement_active=False,
+                current_result=None
             )
         
-        # FastDepthFrame을 딕셔너리로 변환
-        frame_dict = SchemaConverter.fastdepth_frame_to_dict(request.frame)
+        # 새로운 IMU 통합 시스템 사용
+        fastdepth_processor = get_fastdepth_processor()
         
-        # CommandExecutor의 통합 프레임 처리 메서드 사용
-        result = command_executor.process_step_frame(frame_dict)
+        # 더미 이미지 생성 (실제로는 클라이언트에서 이미지를 함께 보내야 함)
+        import numpy as np
+        dummy_image = np.zeros((480, 640, 3), dtype=np.uint8)
         
-        # 현재 측정 상태 가져오기
-        measurement_status = command_executor.get_step_measurement_status()
+        # 기본 IMU 데이터
+        default_imu_data = {
+            'accelerometer': [0, 0, 9.81],
+            'gyroscope': [0, 0, 0],
+            'timestamp': time.time(),
+            'device_orientation': 'portrait'
+        }
+        
+        # 새로운 시스템으로 처리
+        result = await fastdepth_processor.process_frame_for_measurement(
+            cv_image=dummy_image,
+            user_id=request.user_id or "realtime_user",
+            imu_data=default_imu_data,
+            enable_advanced_fusion=False
+        )
         
         if result:
             logger.debug(f"프레임 처리 성공 - 보폭: {result.step_length_cm}cm, 걸음수: {result.step_count}")
+            
+            # StepCalculationResult를 딕셔너리로 변환
+            current_result = {
+                "step_length_cm": result.step_length_cm,
+                "confidence": result.confidence,
+                "tracking_quality": result.tracking_quality.value,
+                "accuracy_level": result.accuracy_level.value,
+                "measurement_method": result.measurement_method.value
+            }
             
             return FrameProcessResponse(
                 success=True,
                 message=f"프레임 처리 완료 - 현재 보폭: {result.step_length_cm}cm",
                 measurement_active=True,
-                current_result=result
+                current_result=current_result
             )
         else:
             # 프레임 처리는 성공했지만 아직 유의미한 결과가 없음
