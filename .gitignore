@@ -112,3 +112,10 @@ app.*.map.json
 # MCP gemini
 backend/.gemini/
 backend/tools.yaml
+.gemini/
+
+# 소영 레포 파일 참고하는거 무시
+temp_repo/
+
+# 에러 코드 분석(재혁이양)
+error.txt

@@ -1,36 +1,115 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 import '../widgets/aeye_card.dart';
 import '../widgets/accessible_text.dart';
 import 'setting_screen.dart';
 import 'map_screen.dart';
 import 'object_detection_screen.dart';
 
-class ModeScreen extends StatelessWidget {
+enum AppPreferredMode { camera, navigation }
+
+class ModeScreen extends StatefulWidget {
   const ModeScreen({super.key});
 
-  void _openCameraMode(BuildContext context) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => const ObjectDetectionScreen(),
-      ),
-    );
+  @override
+  State<ModeScreen> createState() => _ModeScreenState();
+}
+
+class _ModeScreenState extends State<ModeScreen> {
+  static const String kUserNameKey = 'user_name';
+  static const String kPreferredModeKey = 'preferred_mode'; // 'camera' | 'navigation'
+
+  String? _userName;
+  AppPreferredMode? _preferred;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUserPrefs();
   }
 
-  void _openNavigationMode(BuildContext context) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => const MapScreen(backendBaseUrl: 'http://20.22.6.21:8000'),
-      ),
+  Future<void> _loadUserPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    final name = prefs.getString(kUserNameKey);
+    final prefStr = prefs.getString(kPreferredModeKey);
+
+    setState(() {
+      _userName = (name?.trim().isNotEmpty == true) ? name!.trim() : null;
+      if (prefStr == 'camera') {
+        _preferred = AppPreferredMode.camera;
+      } else if (prefStr == 'navigation') {
+        _preferred = AppPreferredMode.navigation;
+      } else {
+        _preferred = null;
+      }
+    });
+  }
+
+  Future<void> _savePreferred(AppPreferredMode mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      kPreferredModeKey,
+      mode == AppPreferredMode.camera ? 'camera' : 'navigation',
     );
+    setState(() => _preferred = mode);
+  }
+
+  Future<void> _openCameraMode(BuildContext context) async {
+    await _savePreferred(AppPreferredMode.camera);
+    // 먼저 네임드 라우트 시도
+    final pushed = await _tryPushNamed(context, '/camera');
+    // 실패하면 직접 화면으로 이동
+    if (!pushed && context.mounted) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => const ObjectDetectionScreen(),
+        ),
+      );
+    }
+  }
+
+  Future<void> _openNavigationMode(BuildContext context) async {
+    await _savePreferred(AppPreferredMode.navigation);
+    // 먼저 네임드 라우트 시도
+    final pushed = await _tryPushNamed(context, '/navigation');
+    // 실패하면 직접 화면으로 이동
+    if (!pushed && context.mounted) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => const MapScreen(
+            backendBaseUrl: 'http://20.22.6.21:8000',
+          ),
+        ),
+      );
+    }
   }
 
   void _openSettings(BuildContext context) {
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const SettingsScreen()),
-    );
+    ).then((_) {
+      // 설정에서 이름/모드가 바뀌었을 수 있으니 복귀 시 재로딩
+      _loadUserPrefs();
+    });
+  }
+
+  /// 라우트가 등록돼 있으면 pushNamed, 없으면 false 반환
+  Future<bool> _tryPushNamed(BuildContext context, String routeName) async {
+    try {
+      if (Navigator.of(context).canPop()) {
+        // 그냥 pushNamed만 시도 (등록 안됐으면 throw)
+        await Navigator.of(context).pushNamed(routeName);
+      } else {
+        await Navigator.of(context).pushNamed(routeName);
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   @override
@@ -40,18 +119,59 @@ class ModeScreen extends StatelessWidget {
     const divider = Color(0xFF22304A);
     const caption = Color(0xFF9AA3B2);
 
+    // 선호 모드 뱃지 텍스트
+    String? preferredBadge;
+    if (_preferred == AppPreferredMode.camera) {
+      preferredBadge = '최근: 카메라';
+    } else if (_preferred == AppPreferredMode.navigation) {
+      preferredBadge = '최근: 길찾기';
+    }
+
     return Scaffold(
       backgroundColor: bg,
+      appBar: AppBar(
+        backgroundColor: bg,
+        elevation: 0,
+        actions: [
+          IconButton(
+            tooltip: '설정',
+            onPressed: () => _openSettings(context),
+            icon: const Icon(Icons.settings_outlined, color: Colors.white),
+          ),
+        ],
+      ),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const AeyeCard(
-                title: 'A:EYE',
+              AeyeCard(
+                title: _userName == null ? 'A:EYE' : '안녕하세요, $_userName님',
                 subtitle: '모드 선택',
               ),
+              if (preferredBadge != null) ...[
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF151C2C),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(color: divider.withOpacity(0.35)),
+                    ),
+                    child: Text(
+                      preferredBadge,
+                      style: TextStyle(
+                        color: caption,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
               _ModeCard(
                 icon: Icons.photo_camera_outlined,
                 title: '카메라 모드',
@@ -98,7 +218,7 @@ class _ModeCard extends StatelessWidget {
   final Color divider;
   final Color caption;
   final VoidCallback onTap;
-  final double height; // ✅ 기본값을 주는 선택 파라미터
+  final double height;
 
   const _ModeCard({
     required this.icon,
@@ -108,7 +228,7 @@ class _ModeCard extends StatelessWidget {
     required this.divider,
     required this.caption,
     required this.onTap,
-    this.height = 110, // ✅ 기본값만 사용 (required 제거)
+    this.height = 110,
   });
 
   @override
@@ -117,7 +237,7 @@ class _ModeCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(18),
       onTap: onTap,
       child: Container(
-        height: height, // ✅ 높이 적용
+        height: height,
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
           color: panel,
@@ -140,7 +260,7 @@ class _ModeCard extends StatelessWidget {
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.center, // ✅ 수직 가운데 정렬
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   AccessibleTitle(
                     title,
