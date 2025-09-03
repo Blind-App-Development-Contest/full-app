@@ -55,8 +55,25 @@ class _ModeScreenState extends State<ModeScreen> {
     setState(() => _preferred = mode);
   }
 
+  /// 백그라운드에서 선호 모드 저장 (UI 블로킹 없음)
+  void _savePreferredInBackground(AppPreferredMode mode) {
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.setString(
+        kPreferredModeKey,
+        mode == AppPreferredMode.camera ? 'camera' : 'navigation',
+      );
+    }).catchError((e) {
+      debugPrint('선호 모드 저장 실패: $e');
+    });
+  }
+
   Future<void> _openCameraMode(BuildContext context) async {
-    await _savePreferred(AppPreferredMode.camera);
+    // 즉시 UI 상태 업데이트 (사용자에게 빠른 피드백)
+    setState(() => _preferred = AppPreferredMode.camera);
+    
+    // 백그라운드에서 SharedPreferences 저장
+    _savePreferredInBackground(AppPreferredMode.camera);
+    
     // 먼저 네임드 라우트 시도
     final pushed = await _tryPushNamed(context, '/camera');
     // 실패하면 직접 화면으로 이동
@@ -71,7 +88,12 @@ class _ModeScreenState extends State<ModeScreen> {
   }
 
   Future<void> _openNavigationMode(BuildContext context) async {
-    await _savePreferred(AppPreferredMode.navigation);
+    // 즉시 UI 상태 업데이트 (사용자에게 빠른 피드백)
+    setState(() => _preferred = AppPreferredMode.navigation);
+    
+    // 백그라운드에서 SharedPreferences 저장
+    _savePreferredInBackground(AppPreferredMode.navigation);
+    
     // 먼저 네임드 라우트 시도
     final pushed = await _tryPushNamed(context, '/navigation');
     // 실패하면 직접 화면으로 이동
@@ -80,7 +102,7 @@ class _ModeScreenState extends State<ModeScreen> {
         context,
         MaterialPageRoute(
           builder: (_) => const MapScreen(
-            backendBaseUrl: 'http://20.22.6.21:8000',
+            backendBaseUrl: 'http://192.168.45.74:8000',
           ),
         ),
       );
@@ -158,7 +180,7 @@ class _ModeScreenState extends State<ModeScreen> {
                     decoration: BoxDecoration(
                       color: const Color(0xFF151C2C),
                       borderRadius: BorderRadius.circular(999),
-                      border: Border.all(color: divider.withOpacity(0.35)),
+                      border: Border.all(color: divider.withValues(alpha: 0.35)),
                     ),
                     child: Text(
                       preferredBadge,
@@ -236,6 +258,8 @@ class _ModeCard extends StatelessWidget {
     return InkWell(
       borderRadius: BorderRadius.circular(18),
       onTap: onTap,
+      splashColor: Colors.white.withValues(alpha: 0.1),
+      highlightColor: Colors.white.withValues(alpha: 0.05),
       child: Container(
         height: height,
         padding: const EdgeInsets.all(20),

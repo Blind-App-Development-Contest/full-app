@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../services/onboarding_service.dart';
+import '../services/api_service.dart';
 import '../widgets/aeye_card.dart';
 import '../widgets/next_button.dart';
 import '../widgets/set_button.dart';
@@ -58,33 +61,81 @@ class _GuardianScreenState extends State<GuardianScreen> {
   // 설정에서 진입 시 SetButton 활성화 조건(유효 + 변경됨)
   bool get _canSave => _nameOk && _phoneOk && _changedOnly;
 
-  // 온보딩 플로우: 모드 선택으로 이동
-  void _goNext() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const ModeScreen()),
-    );
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content:
-        Text('보호자 등록: ${_nameCtrl.text} / ${_phoneCtrl.text}'),
-      ),
-    );
+  // 온보딩 플로우: 모드 선택으로 이동 (백엔드 연동)
+  void _goNext() async {
+    final name = _nameCtrl.text.trim();
+    final phone = _phoneCtrl.text.trim();
+
+    try {
+      // 백엔드에 보호자 정보 등록
+      await ApiService().createCaregiver(caregivers_name: name, phoneNumber: phone);
+
+      // OnboardingService에도 데이터 저장
+      if (mounted) {
+        Provider.of<OnboardingService>(context, listen: false)
+            .setCaregiverInfo(name, phone);
+
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const ModeScreen()),
+        );
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: AccessibleText('보호자 등록 완료: $name'),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: AccessibleText('보호자 등록 실패: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
-  // 설정에서 진입: 값 저장 후 이전 화면으로 반환
-  void _saveAndPop() {
-    Navigator.pop<Map<String, String>>(context, {
-      'name': _nameCtrl.text.trim(),
-      'phone': _phoneCtrl.text.trim(),
-    });
+  // 설정에서 진입: 값 저장 후 이전 화면으로 반환 (백엔드 연동)
+  void _saveAndPop() async {
+    final name = _nameCtrl.text.trim();
+    final phone = _phoneCtrl.text.trim();
+
+    try {
+      // 백엔드에 보호자 정보 수정
+      await ApiService().updateCaregiver(name: name, phoneNumber: phone);
+
+      if (mounted) {
+        Navigator.pop<Map<String, String>>(context, {
+          'name': name,
+          'phone': phone,
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: AccessibleText('보호자 정보 수정 완료'),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: AccessibleText('보호자 정보 수정 실패: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   // 뒤로가기(설정 경로): 저장 없이 나감
   Future<bool> _backWithoutSave() async {
     if (widget.fromSettings && _changedOnly) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('변경사항이 저장되지 않았습니다.')),
+        const SnackBar(content: AccessibleText('변경사항이 저장되지 않았습니다.')),
       );
     }
     Navigator.pop(context); // 결과 없이 Pop → 저장 안 됨

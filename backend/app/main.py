@@ -209,7 +209,7 @@ async def test_camera_page():
 
 
 # === 라우터 등록 ===
-app.include_router(users.router)
+app.include_router(users.router, prefix="/api", tags=["User Management"])
 app.include_router(voice_module.router)  # /api/users/voice
 app.include_router(update_name.router)
 app.include_router(caregiver.router)

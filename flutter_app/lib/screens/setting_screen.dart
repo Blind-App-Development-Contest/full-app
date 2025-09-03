@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../models/step_measurement_result.dart';
-import '../widgets/accessible_text.dart';
 import '../services/api_service.dart';
+import '../services/voice_service.dart';
+import '../widgets/accessible_text.dart';
 import 'step_screen.dart';
 import 'voice_screen.dart';
 import 'guardian_screen.dart';
@@ -14,8 +16,8 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  // 통일된 변수명 사용 (StepMeasurementResult와 일치)
-  double stepLength = StepMeasurementResult.defaultStepLengthCm; // 보폭 (cm)
+  // 백엔드와 동일한 변수명 사용
+  double step_length_cm = StepMeasurementResult.defaultStepLengthCm; // 보폭 (cm)
   String voiceGender = '여성'; // '여성' | '남성'
   double voiceSpeed = 1.0; // 0.5 ~ 2.0
   int guardians = 0; // 등록된 보호자 수
@@ -23,12 +25,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // 측정 완료 상태 관리
   bool measurementCompleted = false;
   String? completionMessage;
+  
+  // 설정 로드 상태 관리
+  bool _isLoadingSettings = false;
+  
+  // 음성 서비스
+  VoiceService? _voiceService;
 
   @override
   void initState() {
     super.initState();
+    _initializeVoiceService();
     _handleMeasurementCompletion();
     _loadUserSettings(); // 사용자 설정 불러오기
+  }
+  
+  void _initializeVoiceService() {
+    try {
+      _voiceService = Provider.of<VoiceService>(context, listen: false);
+      debugPrint('✅ SettingsScreen VoiceService 초기화 성공');
+    } catch (e) {
+      debugPrint('❌ SettingsScreen VoiceService 초기화 실패: $e');
+    }
   }
   
   void _handleMeasurementCompletion() {
@@ -39,7 +57,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (args != null && args['measurement_completed'] == true) {
         setState(() {
           measurementCompleted = true;
-          stepLength = args['stepLength']?.toDouble() ?? stepLength;
+          step_length_cm = args['stepLength']?.toDouble() ?? step_length_cm;
           completionMessage = args['message'] as String?;
         });
         
@@ -51,32 +69,191 @@ class _SettingsScreenState extends State<SettingsScreen> {
   
   // 사용자 설정 불러오기 (온보딩 정보 포함)
   void _loadUserSettings() async {
+    // 이미 로딩 중이면 중복 호출 방지
+    if (_isLoadingSettings) {
+      debugPrint('⚠️ 이미 설정 로딩 중 - 중복 호출 방지');
+      return;
+    }
+    
+    _isLoadingSettings = true;
+    
     try {
       debugPrint('📊 사용자 설정 불러오기 시도');
       
-      // 현재 ApiService에 개별 getter 메서드가 없으므로 기본값 사용
-      // TODO: 실제 구현시 ApiService에 다음 메서드들 추가:
-      // - getStepLength(): 저장된 보폭 가져오기
-      // - getVoiceSettings(): 음성 설정 가져오기
-      // - getGuardianInfo(): 보호자 정보 가져오기
-      
-      debugPrint('✅ 사용자 설정 불러오기 완료 (기본값 사용)');
+      final settings = await ApiService().getUserSettings();
+      if (settings != null) {
+        setState(() {
+          // 사용자 이름 로드
+          if (settings.containsKey('user_name') && settings['user_name'] != null) {
+            debugPrint('✅ 서버에서 사용자 이름 로드: ${settings['user_name']}');
+          }
+          
+          // 보폭 설정 로드 (서버 필드명: step_length)
+          if (settings.containsKey('step_length') && settings['step_length'] != null) {
+            step_length_cm = (settings['step_length'] as num).toDouble();
+            debugPrint('✅ 서버에서 보폭 설정 로드: ${step_length_cm.toStringAsFixed(1)}cm');
+          } else if (settings.containsKey('step_length_cm') && settings['step_length_cm'] != null) {
+            step_length_cm = (settings['step_length_cm'] as num).toDouble();
+            debugPrint('✅ 서버에서 보폭 설정 로드 (legacy): ${step_length_cm.toStringAsFixed(1)}cm');
+          }
+          
+          // 음성 설정 로드 (서버 필드명: voice_speed, voice_gender)
+          if (settings.containsKey('voice_speed') && settings['voice_speed'] != null) {
+            final dynamic serverSpeed = settings['voice_speed'];
+            if (serverSpeed is int) {
+              // 서버 값(1-20)을 앱 내부 속도(0.5-1.5)로 변환
+              voiceSpeed = 0.5 + (serverSpeed - 1) * 0.05;
+              debugPrint('✅ 서버에서 음성 속도 로드: $serverSpeed -> ${voiceSpeed.toStringAsFixed(2)}x');
+            } else if (serverSpeed is double) {
+              voiceSpeed = serverSpeed;
+              debugPrint('✅ 서버에서 음성 속도 로드 (직접): ${voiceSpeed.toStringAsFixed(2)}x');
+            }
+          }
+          
+          if (settings.containsKey('voice_gender') && settings['voice_gender'] != null) {
+            final String gender = settings['voice_gender'].toString().toLowerCase();
+            voiceGender = (gender == 'male' || gender == 'm') ? '남성' : '여성';
+            debugPrint('✅ 서버에서 음성 성별 로드: $gender -> $voiceGender');
+          }
+          
+          // 보호자 정보 로드 (서버 필드명: caregiver_name, caregiver_phone)
+          if (settings.containsKey('caregiver_name') && settings['caregiver_name'] != null && 
+              settings['caregiver_name'].toString().isNotEmpty) {
+            guardians = 1; // 보호자가 등록되어 있으면 1명
+            debugPrint('✅ 서버에서 보호자 정보 로드: ${settings['caregiver_name']} (${settings['caregiver_phone']})');
+          } else {
+            guardians = 0;
+          }
+        });
+        debugPrint('✅ 서버에서 사용자 설정 불러오기 완료');
+        
+        // null 값들이 많은 경우 로그로 알림
+        final nullFields = <String>[];
+        if (settings['voice_speed'] == null) nullFields.add('voice_speed');
+        if (settings['voice_gender'] == null) nullFields.add('voice_gender');
+        if (settings['step_length'] == null) nullFields.add('step_length');
+        if (settings['caregiver_name'] == null) nullFields.add('caregiver_name');
+        
+        if (nullFields.isNotEmpty) {
+          debugPrint('⚠️ 서버에서 null인 필드들: ${nullFields.join(', ')} - 기본값 유지');
+        }
+      } else {
+        // 서버 연결 실패 시 로컬 기본값 사용
+        debugPrint('⚠️ 서버 연결 실패 - 로컬 기본값 사용');
+        _loadLocalDefaultSettings();
+      }
     } catch (e) {
       debugPrint('❌ 사용자 설정 불러오기 실패: $e');
+      // 오류 발생 시 로컬 기본값으로 대체
+      _loadLocalDefaultSettings();
+    } finally {
+      _isLoadingSettings = false;
     }
+  }
+  
+  // 서버 연결 실패 시 로컬 기본값 설정
+  void _loadLocalDefaultSettings() {
+    setState(() {
+      step_length_cm = StepMeasurementResult.defaultStepLengthCm;
+      voiceGender = '여성';
+      voiceSpeed = 1.0;
+      guardians = 0;
+    });
+    debugPrint('✅ 로컬 기본값으로 설정 완료 (보폭: ${step_length_cm.toStringAsFixed(0)}cm, 음성: $voiceGender ${voiceSpeed.toStringAsFixed(1)}배속, 보호자: $guardians명)');
   }
 
   void _announceCompletion() async {
-    if (completionMessage != null) {
-      // 음성 안내: 측정 완료 메시지
-      debugPrint('🔊 음성 안내: $completionMessage');
-      
-      // 1초 후 다음 단계 안내
-      await Future.delayed(const Duration(seconds: 1));
-      
-      if (mounted) {
-        debugPrint('🔊 음성 안내: 다음 단계로 버튼을 눌러서 음성 설정을 진행할 수 있습니다.');
+    if (completionMessage != null && _voiceService != null) {
+      try {
+        // 음성 안내: 측정 완료 메시지
+        await _voiceService!.speak(completionMessage!, speed: 1.0);
+        
+        // 1초 후 상세 안내
+        await Future.delayed(const Duration(seconds: 1));
+        
+        if (mounted) {
+          await _voiceService!.speak(
+            "보폭이 ${step_length_cm.toStringAsFixed(0)}센티미터로 측정되었습니다. "
+            "다음 단계로 버튼을 눌러서 음성 설정을 진행할 수 있습니다.", 
+            speed: 0.9
+          );
+        }
+      } catch (e) {
+        debugPrint('❌ 측정 완료 음성 안내 실패: $e');
       }
+    }
+  }
+
+  /// 보폭 측정 완료 시 상세 음성 안내 (시각장애인 전용)
+  void _announceStepMeasurementComplete(int stepLengthCm) async {
+    if (_voiceService == null) return;
+    
+    try {
+      // 1단계: 측정 완료 알림
+      await _voiceService!.speak("보폭 측정이 완료되었습니다!", speed: 1.0);
+      
+      await Future.delayed(const Duration(milliseconds: 800));
+      
+      // 2단계: 측정 결과 안내
+      await _voiceService!.speak(
+        "측정된 보폭은 $stepLengthCm 센티미터입니다.", 
+        speed: 0.9
+      );
+      
+      await Future.delayed(const Duration(milliseconds: 600));
+      
+      // 3단계: 상태 변경 안내
+      await _voiceService!.speak(
+        "설정 화면에서 보폭 항목이 측정 완료 상태로 변경되었습니다.", 
+        speed: 0.9
+      );
+      
+      await Future.delayed(const Duration(milliseconds: 400));
+      
+      // 4단계: 다음 액션 안내
+      await _voiceService!.speak(
+        "다른 설정을 변경하거나 음성 설정을 진행할 수 있습니다.", 
+        speed: 0.9
+      );
+      
+    } catch (e) {
+      debugPrint('❌ 보폭 측정 완료 음성 안내 실패: $e');
+    }
+  }
+
+  /// 음성 설정 변경 완료 안내 (시각장애인 전용)
+  void _announceVoiceSettingsChanged() async {
+    if (_voiceService == null) return;
+    
+    try {
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      await _voiceService!.speak(
+        "음성 설정이 업데이트되었습니다. "
+        "현재 설정은 $voiceGender 음성, ${voiceSpeed.toStringAsFixed(1)}배속입니다.", 
+        speed: 0.9
+      );
+      
+    } catch (e) {
+      debugPrint('❌ 음성 설정 변경 안내 실패: $e');
+    }
+  }
+
+  /// 보호자 설정 변경 완료 안내 (시각장애인 전용)
+  void _announceGuardianSettingsChanged() async {
+    if (_voiceService == null) return;
+    
+    try {
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      final guardianMessage = guardians > 0 
+        ? "보호자 설정이 업데이트되었습니다. 현재 $guardians명의 보호자가 등록되어 있습니다."
+        : "보호자 설정이 업데이트되었습니다. 현재 등록된 보호자가 없습니다.";
+      
+      await _voiceService!.speak(guardianMessage, speed: 0.9);
+      
+    } catch (e) {
+      debugPrint('❌ 보호자 설정 변경 안내 실패: $e');
     }
   }
 
@@ -132,8 +309,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             // 보폭 설정 (시각장애인 접근성 강화)
             Semantics(
               label: measurementCompleted 
-                ? '보폭 측정이 완료되었습니다. 측정된 보폭은 ${stepLength.toStringAsFixed(0)}센티미터입니다.'
-                : '보폭 설정하기. 현재 보폭은 ${stepLength.toStringAsFixed(0)}센티미터입니다.',
+                ? '보폭 측정이 완료되었습니다. 측정된 보폭은 ${step_length_cm.toStringAsFixed(0)}센티미터입니다.'
+                : '보폭 설정하기. 현재 보폭은 ${step_length_cm.toStringAsFixed(0)}센티미터입니다.',
               button: true,
               child: _SettingTile(
                 panel: panel,
@@ -142,8 +319,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 leadingIcon: measurementCompleted ? Icons.check_circle : Icons.near_me_outlined,
                 title: measurementCompleted ? '보폭 측정 완료' : '보폭 설정',
                 subtitle: measurementCompleted 
-                  ? '측정 완료: ${stepLength.toStringAsFixed(0)}cm ✅'
-                  : '현재: ${stepLength.toStringAsFixed(0)}cm',
+                  ? '측정 완료: ${step_length_cm.toStringAsFixed(0)}cm ✅'
+                  : '현재: ${step_length_cm.toStringAsFixed(0)}cm',
               onTap: () async {
                 final result = await Navigator.push<int>(
                   context,
@@ -151,7 +328,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     builder:
                         (_) => StepScreen(
                           fromSettings: true,
-                          initialStepLengthCm: stepLength.toInt(),
+                          initialStepLengthCm: step_length_cm.toInt(),
                         ),
                   ),
                 );
@@ -159,11 +336,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 if (result != null) {
                   if (mounted) {
                     setState(() {
-                      stepLength = result.toDouble();
+                      step_length_cm = result.toDouble();
+                      measurementCompleted = true; // 측정 완료 상태로 변경
+                      completionMessage = '보폭 측정이 완료되었습니다.';
                     });
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('보폭이 ${result}cm로 변경되었습니다.')),
-                    );
+                    
+                    // 시각장애인용 상세 음성 안내
+                    _announceStepMeasurementComplete(result);
+                    
+                    // 서버에서 최신 설정도 다시 로드
+                    _loadUserSettings();
                   }
                 }
               },
@@ -178,7 +360,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               captionColor: caption,
               leadingIcon: Icons.volume_up_outlined,
               title: '음성 설정',
-              subtitle: '$voiceGender 음성, ${voiceSpeed.toStringAsFixed(0)}배속',
+              subtitle: '$voiceGender 음성, ${voiceSpeed.toStringAsFixed(1)}배속',
               onTap: () async {
                 await Navigator.push(
                   context,
@@ -186,8 +368,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     builder: (_) => const VoiceScreen(fromSettings: true),
                   ),
                 );
-                // TODO: 되돌아오면 음성 값 갱신
-                setState(() {});
+                // 음성 설정이 변경되었을 수 있으므로 서버에서 최신 설정 로드
+                if (mounted) {
+                  _loadUserSettings();
+                  
+                  // 음성 설정 변경 완료 안내
+                  _announceVoiceSettingsChanged();
+                }
               },
             ),
             const SizedBox(height: 16),
@@ -199,7 +386,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               captionColor: caption,
               leadingIcon: Icons.person_outline,
               title: '보호자 설정',
-              subtitle: '└ ($guardians)',
+              subtitle: guardians > 0 ? '$guardians명 등록됨' : '등록된 보호자 없음',
               onTap: () async {
                 await Navigator.push(
                   context,
@@ -207,8 +394,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     builder: (_) => const GuardianScreen(fromSettings: true),
                   ),
                 );
-                // TODO: 되돌아오면 보호자 수 갱신
-                setState(() {});
+                // 보호자 설정이 변경되었을 수 있으므로 서버에서 최신 설정 로드
+                if (mounted) {
+                  _loadUserSettings();
+                  
+                  // 보호자 설정 변경 완료 안내
+                  _announceGuardianSettingsChanged();
+                }
               },
             ),
             

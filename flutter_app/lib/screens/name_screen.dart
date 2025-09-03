@@ -83,7 +83,8 @@ class _NameScreenState extends State<NameScreen> {
       //    - iOS 시뮬/맥에선 localhost OK
       //    - Android 에뮬레이터면 http://10.0.2.2:8000/users/register 사용
       //    - 실기기는 PC의 LAN IP 사용
-      final uri = Uri.parse('http://localhost:8000/users/register');
+      // final uri = Uri.parse('http://localhost:8000/users/register'); // 로컬 테스트
+      final uri = Uri.parse('http://192.168.45.74:8000/api/users/register');
       final resp = await http.post(
         uri,
         headers: {
@@ -123,7 +124,7 @@ class _NameScreenState extends State<NameScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('가입 처리 중 오류: $e')),
+        SnackBar(content: AccessibleText('가입 처리 중 오류: $e')),
       );
     } finally {
       if (mounted) setState(() => _loading = false);

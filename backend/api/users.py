@@ -43,6 +43,15 @@ class OnboardingComplete(BaseModel):
     caregiver_name: str = ""
     caregiver_phone: str = ""
 
+class ImprovedMeasurement(BaseModel):
+    """개선된 10m 표준거리 + 사용자 걸음수 측정 결과"""
+    user_id: str
+    step_length_cm: float
+    step_count: int
+    method: str = "10m_standard_distance_user_counted"
+    confidence: float = 0.85
+    measurement_distance_cm: float = 1000.0
+
 # FastAPI 앱
 router = APIRouter()
 

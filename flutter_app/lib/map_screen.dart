@@ -566,6 +566,7 @@ class _MapScreenState extends State<MapScreen> {
       await _drawRoute(origin: origin, destination: destination);
     } catch (e) {
       debugPrint('Route from my location error: $e');
+      if (!mounted) return; // 위젯이 화면에 없을 경우 UI 업데이트 방지
       setState(() => _status = '경로 계산 실패');
       _toast('경로 계산 중 오류가 발생했습니다: ${e.toString()}');
     }

@@ -1,6 +1,6 @@
 class StepMeasurementResult {
   // === 통일된 변수명 (시각장애인 접근성 고려) ===
-  final double stepLength;      // 보폭 (cm) - 모든 곳에서 이 이름 사용
+  final double step_length_cm;  // 보폭 (cm) - 백엔드와 동일한 변수명
   final int stepCount;          // 걸음 수 - 모든 곳에서 이 이름 사용  
   final double? distanceMeters; // 총 이동거리 (m) - 모든 곳에서 이 이름 사용
   
@@ -19,7 +19,7 @@ class StepMeasurementResult {
   static const int defaultMeasurementSteps = 10;
 
   const StepMeasurementResult({
-    required this.stepLength,
+    required this.step_length_cm,
     required this.confidence,
     required this.stepCount,
     required this.trackingQuality,
@@ -35,7 +35,7 @@ class StepMeasurementResult {
     final steps = json['step_count'] ?? 0;
     
     return StepMeasurementResult(
-      stepLength: stepLengthCm,
+      step_length_cm: stepLengthCm,
       confidence: (json['confidence'] ?? 0.0).toDouble(),
       stepCount: steps,
       trackingQuality: json['tracking_quality'] ?? 'poor',
@@ -50,7 +50,7 @@ class StepMeasurementResult {
 
   Map<String, dynamic> toJson() {
     return {
-      'step_length_cm': stepLength,
+      'step_length_cm': step_length_cm,
       'confidence': confidence,
       'step_count': stepCount,
       'tracking_quality': trackingQuality,
@@ -70,14 +70,14 @@ class StepMeasurementResult {
 
   // 계산된 총 이동거리 (미터)
   double get calculatedDistance {
-    return distanceMeters ?? ((stepLength * stepCount) / 100.0);
+    return distanceMeters ?? ((step_length_cm * stepCount) / 100.0);
   }
 
   // === 시각장애인을 위한 유틸리티 메서드들 ===
   
   /// 보폭 유효성 검증
   bool get isValidStepLength => 
-      stepLength >= minValidStepLengthCm && stepLength <= maxValidStepLengthCm;
+      step_length_cm >= minValidStepLengthCm && step_length_cm <= maxValidStepLengthCm;
   
   /// 정확도 기반 음성 설명
   String get accuracyVoiceDescription {
@@ -94,7 +94,7 @@ class StepMeasurementResult {
         ? ", 총 이동거리는 ${calculatedDistance.toStringAsFixed(1)}미터입니다" 
         : "";
 
-    return "측정된 보폭은 ${stepLength.toStringAsFixed(1)}센티미터이며, "
+    return "측정된 보폭은 ${step_length_cm.toStringAsFixed(1)}센티미터이며, "
         "총 $stepCount걸음을 기록했습니다$distanceText. $accuracyVoiceDescription.";
   }
   
@@ -107,7 +107,7 @@ class StepMeasurementResult {
     final stepCnt = customStepCount ?? defaultMeasurementSteps;
     
     return StepMeasurementResult(
-      stepLength: stepLen,
+      step_length_cm: stepLen,
       confidence: 0.7,
       stepCount: stepCnt,
       trackingQuality: 'good',

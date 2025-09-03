@@ -664,25 +664,7 @@ class MediaPipePoseProcessor(StepMeasurementBase):
             logger.error(f"[MediaPipe] 보폭 계산 오류: {e}")
             return None
     
-    def _determine_tracking_quality(self, confidence: float):
-        """신뢰도 기반 추적 품질 결정"""
-        # TrackingQuality enum 값 실제 정의에 맞게 변환 - 베이스 클래스 설정 사용
-        if confidence >= self.config.good_confidence:
-            return TrackingQuality.GOOD
-        elif confidence >= self.config.acceptable_confidence:
-            return TrackingQuality.FAIR
-        else:
-            return TrackingQuality.POOR
-    
-    def _determine_accuracy_level(self, confidence: float):
-        """신뢰도 기반 정확도 수준 결정"""
-        # AccuracyLevel enum 값 실제 정의에 맞게 변환 - 베이스 클래스 설정 사용
-        if confidence >= self.config.excellent_confidence:
-            return AccuracyLevel.HIGH
-        elif confidence >= self.config.good_confidence:
-            return AccuracyLevel.MEDIUM
-        else:
-            return AccuracyLevel.LOW
+    # _determine_tracking_quality와 _determine_accuracy_level 메서드는 사용되지 않으므로 제거됨
     
     def _update_processing_stats(self, processing_time: float, confidence: float):
         """처리 통계 업데이트"""

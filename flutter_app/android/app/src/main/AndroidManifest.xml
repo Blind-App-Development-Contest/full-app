@@ -24,6 +24,11 @@
             <meta-data
               android:name="com.google.android.geo.API_KEY"
               android:value="AIzaSyCYDAwPDhYm8KbdhH01-9s7Koe2hyuzAGE" />
+              
+            <!-- Naver Map 클라이언트 ID -->
+            <meta-data
+              android:name="com.naver.maps.map.CLIENT_ID"
+              android:value="5z23wo0mnc" />
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
