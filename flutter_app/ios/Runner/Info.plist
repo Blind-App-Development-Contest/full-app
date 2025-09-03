@@ -155,5 +155,9 @@
 	<array>
 		<string>camera</string>
 	</array>
+	
+	<!-- Naver Map 클라이언트 ID -->
+	<key>NMFNcpKeyId</key>
+	<string>5z23wo0mnc</string>
 </dict>
 </plist>

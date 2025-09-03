@@ -1,9 +1,8 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'dart:convert';
-import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:camera/camera.dart';
 
 import 'package:provider/provider.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -14,6 +13,7 @@ import 'screens/mode_screen.dart';
 import 'screens/camera_measurement_screen.dart'; // 필요 없으면 제거
 import 'services/api_service.dart';
 import 'services/voice_service.dart';
+import 'package:flutter_naver_map/flutter_naver_map.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
@@ -23,7 +23,9 @@ const String kUuidKey = 'app_uuid';
 const bool kUseBackendStatusCheck = true;
 
 /// 기본 상태 조회 엔드포인트 (dotenv 가 있으면 그걸 우선)
-const String kStatusEndpointBaseDefault = 'http://localhost:8000/api/app/status';
+/// const String kStatusEndpointBaseDefault = 'http://localhost:8000/api/users/measurement/';
+const String kStatusEndpointBaseDefault = 'http://192.168.45.74:8000/api/users/measurement/';
+
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -41,12 +43,79 @@ Future<void> main() async {
     debugPrint("Warning: .env 파일을 찾을 수 없습니다: $e");
   }
 
-  // 사용자 UUID 생성/로드 등 초기화
+  // NaverMap SDK 초기화
+  try {
+    // 환경변수에서 클라이언트 ID를 가져오되, 없으면 플랫폼별 설정을 사용
+    final clientId = dotenv.env['NAVER_MAP_CLIENT_ID'];
+    
+    if (clientId != null && clientId.isNotEmpty && clientId != 'YOUR_NAVER_MAP_CLIENT_ID_HERE') {
+      // 유효한 클라이언트 ID가 있는 경우
+      await NaverMapSdk.instance.initialize(
+        clientId: clientId,
+        onAuthFailed: (error) {
+          debugPrint("❌ NaverMap 인증 실패: $error");
+          debugPrint("💡 해결방법:");
+          debugPrint("   1. 네이버 클라우드 플랫폼에서 클라이언트 ID 발급");
+          debugPrint("   2. .env 파일에 NAVER_MAP_CLIENT_ID 설정");
+          debugPrint("   3. iOS: Info.plist의 NMFNcpKeyId 값 설정");
+          debugPrint("   4. Android: AndroidManifest.xml의 com.naver.maps.map.CLIENT_ID 값 설정");
+        },
+      );
+      debugPrint("✅ NaverMap SDK 초기화 완료 (클라이언트 ID: ${clientId.substring(0, 8)}...)");
+    } else {
+      // 클라이언트 ID가 없는 경우 플랫폼별 설정 사용
+      debugPrint("⚠️ .env에 NAVER_MAP_CLIENT_ID가 설정되지 않음");
+      debugPrint("📱 플랫폼별 설정 파일에서 클라이언트 ID를 읽어옵니다:");
+      debugPrint("   - iOS: Info.plist의 NMFNcpKeyId");
+      debugPrint("   - Android: AndroidManifest.xml의 com.naver.maps.map.CLIENT_ID");
+      
+      await NaverMapSdk.instance.initialize(
+        clientId: '', // 플랫폼별 설정에서 자동으로 읽어옴
+        onAuthFailed: (error) {
+          debugPrint("❌ NaverMap 인증 실패: $error");
+          debugPrint("💡 해결방법:");
+          debugPrint("   1. 네이버 클라우드 플랫폼(https://console.ncloud.com/)에서 클라이언트 ID 발급");
+          debugPrint("   2. iOS: Info.plist의 NMFNcpKeyId에 클라이언트 ID 입력");
+          debugPrint("   3. Android: AndroidManifest.xml의 com.naver.maps.map.CLIENT_ID에 클라이언트 ID 입력");
+          debugPrint("   4. 또는 .env 파일 생성 후 NAVER_MAP_CLIENT_ID 설정");
+        },
+      );
+      debugPrint("✅ NaverMap SDK 초기화 시도 완료 (플랫폼별 설정 사용)");
+    }
+  } catch (e) {
+    debugPrint("❌ NaverMap SDK 초기화 실패: $e");
+    debugPrint("💡 문제 해결을 위해 다음을 확인하세요:");
+    debugPrint("   1. 네이버 클라우드 플랫폼에서 클라이언트 ID 발급 여부");
+    debugPrint("   2. 플랫폼별 설정 파일에 클라이언트 ID 정확히 입력 여부");
+    debugPrint("   3. 인터넷 연결 상태");
+  }
+
+  // 병렬로 초기화 작업 수행 (성능 최적화)
+  await Future.wait([
+    // 사용자 UUID 생성/로드
+    _initializeApiService(),
+    // 카메라 권한 미리 확인 (카메라 화면 진입 속도 향상)
+    _preCheckCameraPermission(),
+  ]);
+}
+
+/// ApiService 초기화
+Future<void> _initializeApiService() async {
   try {
     await ApiService().initializeUser();
     debugPrint("✅ ApiService 초기화 완료");
   } catch (e) {
     debugPrint("❌ ApiService 초기화 실패: $e");
+  }
+}
+
+/// 카메라 권한 미리 확인
+Future<void> _preCheckCameraPermission() async {
+  try {
+    final cameras = await availableCameras();
+    debugPrint("📷 앱 시작 시 카메라 권한 확인 완료 - 카메라 ${cameras.length}개 발견");
+  } catch (e) {
+    debugPrint("⚠️ 카메라 권한 확인 실패: $e");
   }
 
   runApp(const MyApp());
@@ -75,7 +144,7 @@ class MyApp extends StatelessWidget {
 }
 
 class _StartupRouter extends StatefulWidget {
-  const _StartupRouter({super.key});
+  const _StartupRouter();
   @override
   State<_StartupRouter> createState() => _StartupRouterState();
 }
@@ -137,12 +206,41 @@ class _StartupRouterState extends State<_StartupRouter> {
     return _start!;
   }
 }
-  runApp(const MyApp());
+
+/// 시작 분기용 내부 타입
+enum _StartTarget { name, mode }
+
+class _LaunchDecision {
+  final _StartTarget target;
+  const _LaunchDecision(this.target);
+
+  factory _LaunchDecision.name() => const _LaunchDecision(_StartTarget.name);
+  factory _LaunchDecision.mode() => const _LaunchDecision(_StartTarget.mode);
+
+  // uuid 자체가 없으면 셋업 필요
+  static _LaunchDecision noUuid() => _LaunchDecision.name();
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+/// 단순 스플래시 위젯
+class _Splash extends StatelessWidget {
+  const _Splash();
 
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      body: Center(child: CircularProgressIndicator()),
+    );
+  }
+}
+
+class _AlternativeStartup extends StatefulWidget {
+  const _AlternativeStartup();
+  
+  @override
+  State<_AlternativeStartup> createState() => _AlternativeStartupState();
+}
+
+class _AlternativeStartupState extends State<_AlternativeStartup> {
   Future<_LaunchDecision> _decideLaunch() async {
     // ===== 1) 로컬에서 uuid 확인 =====
     final prefs = await SharedPreferences.getInstance();
@@ -158,7 +256,7 @@ class MyApp extends StatelessWidget {
     // ===== 2) (옵션) 백엔드로 현재 상태 확인 =====
     if (kUseBackendStatusCheck) {
       try {
-        final uri = Uri.parse('$kStatusEndpointBase?uuid=$uuid');
+        final uri = Uri.parse('${kStatusEndpointBaseDefault}?uuid=$uuid');
         final resp = await http.get(uri, headers: {'Accept': 'application/json'});
         if (resp.statusCode == 200) {
           final json = jsonDecode(resp.body) as Map<String, dynamic>;
@@ -216,32 +314,5 @@ class MyApp extends StatelessWidget {
         },
       ),
     );
-    }
-
-    /// 단순 스플래시 위젯
-    class _Splash extends StatelessWidget {
-      const _Splash();
-
-      @override
-      Widget build(BuildContext context) {
-        return const Scaffold(
-          body: Center(child: CircularProgressIndicator()),
-        );
-      }
-    }
-
-    /// 시작 분기용 내부 타입
-    enum _StartTarget { name, mode }
-
-    class _LaunchDecision {
-      final _StartTarget target;
-      const _LaunchDecision(this.target);
-
-      factory _LaunchDecision.name() => const _LaunchDecision(_StartTarget.name);
-      factory _LaunchDecision.mode() => const _LaunchDecision(_StartTarget.mode);
-
-      // uuid 자체가 없으면 셋업 필요
-      static _LaunchDecision noUuid() => _LaunchDecision.name();
-    }
-
+  }
 }

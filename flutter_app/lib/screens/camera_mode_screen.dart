@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:html' hide VoidCallback; // VoidCallback 이름 충돌 해결
 import 'dart:math'; // min 함수 사용을 위해 추가
-import 'dart:ui_web' as ui_web;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
-import 'package:uuid/uuid.dart'; // Added import
+
+// 조건부 import
+import 'dart:html' if (dart.library.html) 'dart:html' hide VoidCallback;
+import 'dart:ui_web' as ui_web if (dart.library.html) 'dart:ui_web';
 
 class CameraModeScreen extends StatefulWidget {
   const CameraModeScreen({super.key});
@@ -16,7 +18,7 @@ class CameraModeScreen extends StatefulWidget {
 
 class _CameraModeScreenState extends State<CameraModeScreen> {
   late final String _viewId;
-  late VideoElement _videoElement;
+  dynamic _videoElement; // 웹에서는 VideoElement, 다른 플랫폼에서는 null
   final Completer<void> _cameraReadyCompleter = Completer<void>();
 
   WebSocketChannel? _channel;
@@ -35,16 +37,19 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
   }
 
   void _registerViewFactory() {
-    ui_web.platformViewRegistry.registerViewFactory(_viewId, (int viewId) {
-      _videoElement = VideoElement()
-        ..id = _viewId
-        ..autoplay = true
-        ..style.width = '100%'
-        ..style.height = '100%'
-        ..style.objectFit = 'cover';
+    if (kIsWeb) {
+      // 웹 전용 코드
+      try {
+        ui_web.platformViewRegistry.registerViewFactory(_viewId, (int viewId) {
+          _videoElement = VideoElement()
+            ..id = _viewId
+            ..autoplay = true
+            ..style.width = '100%'
+            ..style.height = '100%'
+            ..style.objectFit = 'cover';
 
-      window.navigator.mediaDevices
-          ?.getUserMedia({'video': true, 'audio': false})
+          window.navigator.mediaDevices
+              ?.getUserMedia({'video': true, 'audio': false})
           .then((stream) {
             _videoElement.srcObject = stream;
             // 비디오 데이터가 로드되면 Completer를 완료하여 FutureBuilder에 신호를 보냄
@@ -65,8 +70,20 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
             }
           });
 
-      return _videoElement;
-    });
+          return _videoElement;
+        });
+      } catch (e) {
+        debugPrint('웹 카메라 초기화 실패: $e');
+        if (!_cameraReadyCompleter.isCompleted) {
+          _cameraReadyCompleter.completeError(e);
+        }
+      }
+    } else {
+      // 웹이 아닌 플랫폼에서는 카메라를 사용할 수 없음을 알림
+      if (!_cameraReadyCompleter.isCompleted) {
+        _cameraReadyCompleter.completeError('웹 플랫폼에서만 지원됩니다');
+      }
+    }
   }
 
   void _initializeWebSocket() {
@@ -90,23 +107,29 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
   }
 
   void _startFrameSending() {
+    if (!kIsWeb) return; // 웹이 아니면 프레임 전송 불가
+    
     _frameSender = Timer.periodic(const Duration(milliseconds: 100), (timer) {
-      if (_channel == null || _videoElement.readyState < 2) return;
+      if (_channel == null || _videoElement == null || _videoElement.readyState < 2) return;
 
-      final canvas = CanvasElement(
-        width: _videoElement.videoWidth,
-        height: _videoElement.videoHeight,
-      );
-      canvas.context2D.drawImage(_videoElement, 0, 0);
-      final dataUrl = canvas.toDataUrl('image/jpeg', 0.75);
-      final base64String = dataUrl.split(',')[1];
+      try {
+        final canvas = CanvasElement(
+          width: _videoElement.videoWidth,
+          height: _videoElement.videoHeight,
+        );
+        canvas.context2D.drawImage(_videoElement, 0, 0);
+        final dataUrl = canvas.toDataUrl('image/jpeg', 0.75);
+        final base64String = dataUrl.split(',')[1];
 
-      final data = json.encode({
-        'frame': base64String,
-        'timestamp': DateTime.now().toIso8601String(),
-      });
+        final data = json.encode({
+          'frame': base64String,
+          'timestamp': DateTime.now().toIso8601String(),
+        });
 
-      _channel!.sink.add(data);
+        _channel!.sink.add(data);
+      } catch (e) {
+        debugPrint('프레임 전송 오류: $e');
+      }
     });
   }
 
@@ -139,7 +162,7 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
                     return Center(
                       child: Container(
                         padding: const EdgeInsets.all(20),
-                        color: Colors.black.withOpacity(0.7),
+                        color: Colors.black.withValues(alpha: 0.7),
                         child: Text(
                           _error ?? snapshot.error.toString(),
                           style: const TextStyle(color: Colors.red, fontSize: 16),
@@ -188,7 +211,7 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
               child: Container(
                 padding: const EdgeInsets.symmetric(vertical: 15.0, horizontal: 10.0),
                 decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.7),
+                  color: Colors.black.withValues(alpha: 0.7),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Row(

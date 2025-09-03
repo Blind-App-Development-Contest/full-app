@@ -11,7 +11,7 @@ class OnboardingService with ChangeNotifier {
   String _userName = '';
   String _voiceGender = 'F'; // F or M
   int _voiceSpeed = 10; // 1-20 (10이 기본)
-  int _stepLengthCm = 0;
+  int step_length_cm = 0; // 백엔드와 동일한 변수명
   String _caregiverName = '';
   String _caregiverPhone = '';
 
@@ -21,7 +21,7 @@ class OnboardingService with ChangeNotifier {
   String get userName => _userName;
   String get voiceGender => _voiceGender;
   int get voiceSpeed => _voiceSpeed;
-  int get stepLengthCm => _stepLengthCm;
+  int get stepLengthCm => step_length_cm;
   String get caregiverName => _caregiverName;
   String get caregiverPhone => _caregiverPhone;
   bool get isCompleted => _isCompleted;
@@ -39,7 +39,7 @@ class OnboardingService with ChangeNotifier {
   }
 
   void setStepLength(int stepLengthCm) {
-    _stepLengthCm = stepLengthCm;
+    step_length_cm = stepLengthCm;
     notifyListeners();
   }
 
@@ -55,19 +55,19 @@ class OnboardingService with ChangeNotifier {
       debugPrint('📋 온보딩 데이터 전송 시작');
       debugPrint('👤 사용자: $_userName');
       debugPrint('🎙️ 음성: $_voiceGender, 속도: $_voiceSpeed');
-      debugPrint('📏 보폭: ${_stepLengthCm}cm');
+      debugPrint('📏 보폭: ${step_length_cm}cm');
       debugPrint('👨‍👩‍👧‍👦 보호자: $_caregiverName ($_caregiverPhone)');
 
-      final result = await ApiService().completeOnboarding(
-        userName: _userName,
-        voiceGender: _voiceGender,
-        voiceSpeed: _voiceSpeed,
-        stepLengthCm: _stepLengthCm,
-        caregiverName: _caregiverName,
-        caregiverPhone: _caregiverPhone,
-      );
+      final result = await ApiService().completeOnboarding({
+        'userName': _userName,
+        'voiceGender': _voiceGender,
+        'voiceSpeed': _voiceSpeed,
+        'stepLengthCm': step_length_cm,
+        'caregiverName': _caregiverName,
+        'caregiverPhone': _caregiverPhone,
+      });
 
-      if (result['status'] == 'onboarding_completed' || result['test_mode'] == true) {
+      if (result) {
         _isCompleted = true;
         notifyListeners();
         debugPrint('✅ 온보딩 완료 성공');
@@ -87,7 +87,7 @@ class OnboardingService with ChangeNotifier {
     _userName = '';
     _voiceGender = 'F';
     _voiceSpeed = 10;
-    _stepLengthCm = 0;
+    step_length_cm = 0;
     _caregiverName = '';
     _caregiverPhone = '';
     _isCompleted = false;
@@ -97,7 +97,7 @@ class OnboardingService with ChangeNotifier {
   /// 온보딩 데이터 유효성 검증
   bool get isDataValid {
     return _userName.isNotEmpty &&
-           _stepLengthCm > 0 &&
+           step_length_cm > 0 &&
            _caregiverName.isNotEmpty &&
            _caregiverPhone.isNotEmpty;
   }

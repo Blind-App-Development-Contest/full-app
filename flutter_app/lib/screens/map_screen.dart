@@ -1,3 +1,4 @@
+
 // lib/map_screen.dart
 import 'dart:async';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -7,6 +8,8 @@ import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
 import '../directions_api.dart';
 import '../services/voice_service.dart';
+import 'package:html/parser.dart' show parse;
+
 
 class MapScreen extends StatefulWidget {
   final String backendBaseUrl;
@@ -35,19 +38,45 @@ class _MapScreenState extends State<MapScreen> {
   int _selectedSuggestionIndex = -1; // 선택된 추천 항목 인덱스
   bool _waitingForReadConfirmation = false; // 음성 안내 확인 대기 상태
   bool _isListening = false; // 음성인식 상태
+  bool _mapAuthFailed = false; // 맵 인증 실패 상태
   
   // VoiceService 연동
   VoiceService? _voiceService;
+
+  // 음성 길안내 관련 상태 변수
+  StreamSubscription<Position>? _positionStream;
+  int _currentInstructionIndex = 0;
+  bool _isNavigating = false;
+  
+  // 시각장애인용 상세 음성 안내 상태
+  bool _detailedVoiceMode = true; // 상세 음성 안내 모드
+  Timer? _statusAnnouncementTimer; // 주기적 상태 안내 타이머
 
   @override
   void initState() {
     super.initState();
     _api = DirectionsApi(widget.backendBaseUrl);
     _initializeVoiceService();
+    _checkMapAuthStatus();
+  }
+  
+  void _checkMapAuthStatus() {
+    // 맵 로드 후 인증 상태 확인
+    Future.delayed(const Duration(seconds: 3), () {
+      if (mounted && _status == '대기' && _map == null) {
+        debugPrint('⚠️ 맵 로딩 시간 초과 - 인증 실패로 추정');
+        setState(() {
+          _mapAuthFailed = true;
+          _status = '맵 인증 실패';
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
+    _stopVoiceGuidance(); // 음성 안내 중지
+    _statusAnnouncementTimer?.cancel(); // 상태 안내 타이머 취소
     _destinationController.dispose();
     super.dispose();
   }
@@ -56,18 +85,164 @@ class _MapScreenState extends State<MapScreen> {
     try {
       _voiceService = context.read<VoiceService>();
       debugPrint("✅ MapScreen VoiceService 초기화 성공");
+      
+      // 지도 화면 진입 시 시각장애인용 안내
+      _announceMapScreenEntry();
+      
     } catch (e) {
       debugPrint("❌ MapScreen VoiceService 초기화 실패: $e");
+    }
+  }
+
+  /// 지도 화면 진입 시 시각장애인용 상세 안내
+  Future<void> _announceMapScreenEntry() async {
+    if (_voiceService == null) return;
+    
+    try {
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      await _voiceService!.speak(
+        "길찾기 모드에 진입했습니다. "
+        "목적지를 입력하면 음성으로 경로를 안내해드립니다.", 
+        speed: 0.9
+      );
+      
+      await Future.delayed(const Duration(milliseconds: 800));
+      
+      await _voiceService!.speak(
+        "화면 하단의 입력창에 목적지를 말하거나 입력하세요. "
+        "음성인식 버튼을 사용할 수 있습니다.", 
+        speed: 0.9
+      );
+      
+    } catch (e) {
+      debugPrint('❌ 지도 화면 진입 안내 실패: $e');
+    }
+  }
+
+  /// 경로 안내 시작 시 시각장애인용 상세 안내
+  Future<void> _announceRouteStart() async {
+    if (_voiceService == null || _instructions.isEmpty) return;
+    
+    try {
+      // 1단계: 경로 안내 시작 알림
+      await _voiceService!.speak("경로 안내를 시작합니다!", speed: 1.0);
+      
+      await Future.delayed(const Duration(milliseconds: 800));
+      
+      // 2단계: 전체 경로 정보 안내
+      final totalSteps = _instructions.length;
+      await _voiceService!.speak(
+        "총 $totalSteps단계의 경로로 안내해드리겠습니다.", 
+        speed: 0.9
+      );
+      
+      await Future.delayed(const Duration(milliseconds: 600));
+      
+      // 3단계: 첫 번째 안내 시작
+      final firstInstruction = _instructions.first['instruction_html'] as String;
+      await _voiceService!.speak("첫 번째 안내입니다. $firstInstruction", speed: 0.9);
+      
+      // 4단계: 주기적 상태 안내 시작
+      _startPeriodicStatusAnnouncement();
+      
+    } catch (e) {
+      debugPrint('❌ 경로 안내 시작 음성 안내 실패: $e');
+    }
+  }
+
+  /// 주기적 상태 안내 시작 (시각장애인용)
+  void _startPeriodicStatusAnnouncement() {
+    _statusAnnouncementTimer?.cancel();
+    
+    // 30초마다 현재 상태 안내
+    _statusAnnouncementTimer = Timer.periodic(
+      const Duration(seconds: 30), 
+      (timer) {
+        if (_isNavigating && _currentInstructionIndex < _instructions.length) {
+          _announceCurrentStatus();
+        } else {
+          timer.cancel();
+        }
+      }
+    );
+  }
+
+  /// 현재 진행 상태 안내 (시각장애인용)
+  Future<void> _announceCurrentStatus() async {
+    if (_voiceService == null) return;
+    
+    try {
+      final remainingSteps = _instructions.length - _currentInstructionIndex;
+      final currentStep = _currentInstructionIndex + 1;
+      
+      await _voiceService!.speak(
+        "현재 ${_instructions.length}단계 중 $currentStep단계 진행 중입니다. "
+        "남은 안내는 $remainingSteps단계입니다.", 
+        speed: 0.9
+      );
+      
+    } catch (e) {
+      debugPrint('❌ 현재 상태 음성 안내 실패: $e');
+    }
+  }
+
+  /// 다음 단계 안내 시 상세 음성 피드백 (시각장애인용)
+  Future<void> _announceNextStep(String instruction) async {
+    if (_voiceService == null) return;
+    
+    try {
+      final currentStep = _currentInstructionIndex + 1;
+      final totalSteps = _instructions.length;
+      
+      // 단계 정보와 함께 안내
+      await _voiceService!.speak(
+        "$totalSteps단계 중 $currentStep단계입니다. $instruction", 
+        speed: 0.9
+      );
+      
+    } catch (e) {
+      debugPrint('❌ 다음 단계 음성 안내 실패: $e');
+    }
+  }
+
+  /// 목적지 도착 시 상세 음성 안내 (시각장애인용)
+  Future<void> _announceDestinationArrival() async {
+    if (_voiceService == null) return;
+    
+    try {
+      await _voiceService!.speak("목적지에 도착했습니다!", speed: 1.0);
+      
+      await Future.delayed(const Duration(milliseconds: 800));
+      
+      await _voiceService!.speak(
+        "경로 안내가 완료되었습니다. 안전하게 도착하셨습니다.", 
+        speed: 0.9
+      );
+      
+      await Future.delayed(const Duration(milliseconds: 600));
+      
+      await _voiceService!.speak(
+        "새로운 경로를 검색하거나 다른 모드로 이동할 수 있습니다.", 
+        speed: 0.9
+      );
+      
+    } catch (e) {
+      debugPrint('❌ 목적지 도착 음성 안내 실패: $e');
     }
   }
 
   // 음성 안내 메서드 (VoiceService 사용)
   Future<void> _speakText(String text) async {
     try {
+      // HTML 태그 제거
+      final document = parse(text);
+      final String parsedString = parse(document.body?.text).documentElement!.text;
+
       if (_voiceService != null) {
-        await _voiceService!.speak(text);
+        await _voiceService!.speak(parsedString);
       } else {
-        debugPrint('🔊 음성 안내 (VoiceService 없음): $text');
+        debugPrint('🔊 음성 안내 (VoiceService 없음): $parsedString');
       }
     } catch (e) {
       debugPrint('❌ 음성 출력 실패: $e');
@@ -407,6 +582,8 @@ class _MapScreenState extends State<MapScreen> {
     required String destination, // "lat,lng" 혹은 주소
     List<String>? waypoints,
   }) async {
+    // 음성 안내가 진행 중이면 중지
+    _stopVoiceGuidance();
     try {
       setState(() => _status = '도보 경로 요청 중...');
       final resp = await _api.getRoute(
@@ -489,9 +666,25 @@ class _MapScreenState extends State<MapScreen> {
 
       // 경로 응답에서 길안내 단계들 추출
       _extractInstructions(resp);
+      // 음성 길안내 시작
+      _startVoiceGuidance();
     } catch (e) {
-      setState(() => _status = '에러');
-      _toast('경로 요청 실패: $e');
+      setState(() => _status = '경로 요청 실패');
+      String userMessage = '경로 요청 실패';
+      
+      final errorStr = e.toString();
+      if (errorStr.contains('TimeoutException')) {
+        userMessage = '서버 응답이 너무 느려 연결이 끊어졌습니다. 네트워크 연결을 확인하거나 잠시 후 다시 시도해주세요.';
+      } else if (errorStr.contains('Connection refused')) {
+        userMessage = '서버에 연결할 수 없습니다. 네트워크 연결을 확인해주세요.';
+      } else if (errorStr.contains('SocketException')) {
+        userMessage = '네트워크 연결에 문제가 있습니다. WiFi 또는 모바일 데이터 연결을 확인해주세요.';
+      } else if (errorStr.contains('overloaded')) {
+        userMessage = '서버가 과부하 상태입니다. 잠시 후 다시 시도해주세요.';
+      }
+      
+      _toast(userMessage);
+      debugPrint('Route error details: $e');
     }
   }
 
@@ -515,6 +708,81 @@ class _MapScreenState extends State<MapScreen> {
       debugPrint('Instructions panel should be visible: $_showInstructions');
     }
   }
+
+  // ---- 음성 길안내 관련 메서드 ----
+
+  void _startVoiceGuidance() {
+    if (_instructions.isEmpty) return;
+
+    _stopVoiceGuidance(); // 기존 안내 중지
+
+    setState(() {
+      _isNavigating = true;
+      _currentInstructionIndex = 0;
+      _status = '음성 길안내 시작';
+    });
+
+    // 시각장애인용 상세 경로 안내 시작
+    _announceRouteStart();
+
+    _positionStream = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 10, // 10미터 이동 시 업데이트
+      ),
+    ).listen(_checkUserPosition);
+  }
+
+  void _stopVoiceGuidance() {
+    _positionStream?.cancel();
+    _positionStream = null;
+    _statusAnnouncementTimer?.cancel(); // 주기적 안내 중지
+    if (mounted) {
+      setState(() {
+        _isNavigating = false;
+        _status = '음성 길안내 중지';
+      });
+    }
+  }
+
+  void _checkUserPosition(Position position) {
+    if (!_isNavigating || _currentInstructionIndex >= _instructions.length) {
+      return;
+    }
+
+    final nextInstruction = _instructions[_currentInstructionIndex];
+    // API 응답에 'start_location'이 있다고 가정
+    final locationData = nextInstruction['start_location'] as Map?;
+    if (locationData == null) return;
+
+    final lat = locationData['lat'] as double?;
+    final lng = locationData['lng'] as double?;
+    if (lat == null || lng == null) return;
+
+    final distance = Geolocator.distanceBetween(
+      position.latitude,
+      position.longitude,
+      lat,
+      lng,
+    );
+
+    // 다음 안내 지점에 20미터 이내로 가까워지면 안내
+    if (distance < 20) {
+      _currentInstructionIndex++;
+      if (_currentInstructionIndex < _instructions.length) {
+        final instructionText = _instructions[_currentInstructionIndex]['instruction_html'] as String?;
+        if (instructionText != null) {
+          // 시각장애인용 상세 다음 단계 안내
+          _announceNextStep(instructionText);
+        }
+      } else {
+        // 시각장애인용 상세 도착 안내
+        _announceDestinationArrival();
+        _stopVoiceGuidance();
+      }
+    }
+  }
+
 
   // ---- 버튼 핸들러 ----
   Future<void> _routeFromMyLocation() async {
@@ -540,7 +808,7 @@ class _MapScreenState extends State<MapScreen> {
       debugPrint('GPS Location (Origin): $origin');
       debugPrint('Destination: $destination');
 
-      setState(() => _status = '도보 경로 계산 중... (최대 45초)');
+      setState(() => _status = '도보 경로 계산 중... (최대 15초)');
       _toast('도보 경로를 계산하고 있습니다. 잠시만 기다려주세요.');
 
       // 추천 목록 숨기기
@@ -554,8 +822,143 @@ class _MapScreenState extends State<MapScreen> {
     } catch (e) {
       debugPrint('Route from my location error: $e');
       setState(() => _status = '경로 계산 실패');
-      _toast('경로 계산 중 오류가 발생했습니다: ${e.toString()}');
+      
+      String userMessage = '경로 계산 중 오류가 발생했습니다';
+      final errorStr = e.toString();
+      
+      if (errorStr.contains('TimeoutException')) {
+        userMessage = '경로 계산 시간이 초과되었습니다. 네트워크 상태를 확인하고 다시 시도해주세요.';
+      } else if (errorStr.contains('Connection refused') || errorStr.contains('unreachable')) {
+        userMessage = '지도 서버에 연결할 수 없습니다. 네트워크 연결을 확인해주세요.';
+      } else if (errorStr.contains('SocketException')) {
+        userMessage = '인터넷 연결에 문제가 있습니다. WiFi나 모바일 데이터를 확인해주세요.';
+      }
+      
+      _toast(userMessage);
     }
+  }
+
+  Widget _buildMapWidget() {
+    if (_mapAuthFailed) {
+      return Container(
+        color: Colors.grey[100],
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.map_outlined,
+                  size: 80,
+                  color: Colors.grey[400],
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  '네이버 지도 인증 실패',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    color: Colors.grey[700],
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '네이버 지도를 사용하려면 클라이언트 ID가 필요합니다.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.grey[600],
+                    fontSize: 16,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.blue[50],
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.blue[200]!),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.info, color: Colors.blue[700], size: 20),
+                          const SizedBox(width: 8),
+                          Text(
+                            '해결 방법',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.blue[700],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      const Text('1. 네이버 클라우드 플랫폼에서 클라이언트 ID 발급'),
+                      const Text('   → https://console.ncloud.com/'),
+                      const SizedBox(height: 8),
+                      const Text('2. 플랫폼별 설정 파일에 클라이언트 ID 입력:'),
+                      const Text('   • iOS: Info.plist의 NMFNcpKeyId'),
+                      const Text('   • Android: AndroidManifest.xml'),
+                      const SizedBox(height: 8),
+                      const Text('3. 또는 .env 파일에 NAVER_MAP_CLIENT_ID 설정'),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    setState(() {
+                      _mapAuthFailed = false;
+                      _status = '맵 재시도 중...';
+                    });
+                  },
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('다시 시도'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return NaverMap(
+      options: const NaverMapViewOptions(
+        initialCameraPosition: NCameraPosition(
+          target: NLatLng(37.5665, 126.9780), // 서울시청
+          zoom: 14,
+        ),
+        indoorEnable: false,
+        logoClickEnable: false,
+        locationButtonEnable: false,
+      ),
+      onMapReady: (c) async {
+        debugPrint('🗺️ onMapReady called');
+        _map = c;
+        if (!_controller.isCompleted) _controller.complete(c);
+
+        setState(() => _status = '맵 로드 완료');
+        debugPrint('✅ NaverMap widget ready');
+        
+        // 맵이 준비되면 현재 위치로 자동 이동
+        try {
+          await Future.delayed(const Duration(milliseconds: 500));
+          await _centerToMyLocation();
+        } catch (e) {
+          debugPrint('⚠️ 초기 위치 이동 실패: $e');
+        }
+      },
+      onMapTapped: (point, latLng) {
+        // 맵 탭 시 인증 오류 감지
+        debugPrint('🗺️ 맵 탭됨: $latLng');
+      },
+    );
   }
 
   PreferredSizeWidget _buildAppBar() {
@@ -565,12 +968,12 @@ class _MapScreenState extends State<MapScreen> {
         IconButton(onPressed: _ping, icon: const Icon(Icons.wifi)),
         IconButton(
           onPressed: _centerToMyLocation,
-          icon: const Icon(Icons.my_location), // 아이콘 변경
+          icon: const Icon(Icons.my_location),
         ),
         IconButton(
           onPressed: _routeFromMyLocation,
           icon: const Icon(Icons.directions_walk),
-          tooltip: '입력한 목적지로 길찾기', // 툴팁 변경
+          tooltip: '입력한 목적지로 길찾기',
         ),
       ],
     );
@@ -594,26 +997,7 @@ class _MapScreenState extends State<MapScreen> {
       appBar: _buildAppBar(),
       body: Stack(
         children: [
-          NaverMap(
-            // Expanded 제거
-            options: const NaverMapViewOptions(
-              initialCameraPosition: NCameraPosition(
-                target: NLatLng(37.5665, 126.9780), // 서울시청
-                zoom: 14,
-              ),
-              indoorEnable: false,
-              logoClickEnable: false,
-              locationButtonEnable: false, // 기본 버튼은 비활성화 (우리가 직접 제어)
-            ),
-            onMapReady: (c) async {
-              debugPrint('🗺️ onMapReady called');
-              _map = c;
-              if (!_controller.isCompleted) _controller.complete(c);
-
-              setState(() => _status = '맵 로드 완료');
-              debugPrint(' NaverMap widget ready');
-            },
-          ),
+          _buildMapWidget(),
           Positioned(
             left: 16,
             right: 16,
@@ -645,6 +1029,17 @@ class _MapScreenState extends State<MapScreen> {
                           icon: const Icon(Icons.my_location),
                           label: const Text('내 위치로 이동'),
                         ),
+                        if (_isNavigating) ...[
+                          const SizedBox(width: 8),
+                          ElevatedButton.icon(
+                            onPressed: _stopVoiceGuidance,
+                            icon: const Icon(Icons.cancel),
+                            label: const Text('안내 중지'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red,
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                     const SizedBox(height: 12),

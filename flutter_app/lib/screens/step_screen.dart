@@ -26,13 +26,13 @@ class StepScreen extends StatefulWidget {
 class _StepScreenState extends State<StepScreen> {
   bool _measured = false;
   bool _resultConfirmed = false; // 측정 결과 확인 여부
-  double? stepLength; // 통일된 변수명 사용
+  double? step_length_cm; // 백엔드와 동일한 변수명 사용
   VoiceService? _voiceService;
 
   bool get _hasChangedFromSettings =>
       widget.fromSettings &&
-      stepLength != null &&
-      stepLength!.toInt() != widget.initialStepLengthCm;
+      step_length_cm != null &&
+      step_length_cm!.toInt() != widget.initialStepLengthCm;
 
   @override
   void initState() {
@@ -60,18 +60,22 @@ class _StepScreenState extends State<StepScreen> {
 
   // 카메라 측정 화면으로 이동 후 결과 받기
   void _startMeasure() async {
-    debugPrint("보폭 측정 시작");
+    debugPrint("🎯 보폭 측정 시작 버튼 클릭");
 
-    // 음성 안내
-    if (_voiceService != null) {
-      try {
-        await _voiceService!.speak("보폭 측정을 시작합니다.");
-      } catch (e) {
-        debugPrint('❌ 음성 안내 실패: $e');
-      }
+    if (!mounted) {
+      debugPrint("❌ Widget이 마운트되지 않음");
+      return;
     }
 
-    if (!mounted) return;
+    // 즉시 카메라 화면으로 이동
+    debugPrint("🎥 CameraMeasurementScreen으로 이동 시작");
+    
+    // 임시로 음성 안내 제거 (디버깅용)
+    // if (_voiceService != null) {
+    //   _voiceService!.speak("보폭 측정을 시작합니다.").catchError((e) {
+    //     debugPrint('❌ 음성 안내 실패: $e');
+    //   });
+    // }
 
     final result = await Navigator.push<int>(
       context,
@@ -83,11 +87,13 @@ class _StepScreenState extends State<StepScreen> {
       ),
     );
 
+    debugPrint("🔙 CameraMeasurementScreen에서 돌아옴, 결과: $result");
+
     if (result != null) {
       setState(() {
         _measured = true;
         _resultConfirmed = false; // 재측정 시 결과 확인 리셋
-        stepLength = result.toDouble(); // 통일된 변수명
+        step_length_cm = result.toDouble(); // 백엔드와 동일한 변수명
       });
 
       // 측정 완료 후 상세 음성 안내
@@ -119,13 +125,13 @@ class _StepScreenState extends State<StepScreen> {
 
   // 온보딩 플로우: 다음 단계(VoiceScreen)로
   void _goNext() async {
-    if (stepLength != null) {
-      final stepLengthCm = stepLength!.toInt();
+    if (step_length_cm != null) {
+      final stepLengthCm = step_length_cm!.toInt();
 
       // 데이터베이스에 보폭 저장 (온보딩 플로우)
       try {
         debugPrint('📏 온보딩 보폭 저장 시도: ${stepLengthCm}cm');
-        await ApiService().saveStepLength(stepLengthCm);
+        await ApiService().saveStepLength(stepLengthCm.toDouble());
         debugPrint('✅ 온보딩 보폭 저장 성공');
       } catch (e) {
         debugPrint('❌ 온보딩 보폭 저장 실패: $e');
@@ -143,13 +149,13 @@ class _StepScreenState extends State<StepScreen> {
 
   // 설정에서 진입: 변경사항 저장 후 값 반환
   void _saveAndPop() async {
-    if (stepLength != null) {
-      final stepLengthCm = stepLength!.toInt();
+    if (step_length_cm != null) {
+      final stepLengthCm = step_length_cm!.toInt();
 
       // 데이터베이스에 보폭 저장
       try {
         debugPrint('📏 보폭 설정 저장 시도: ${stepLengthCm}cm');
-        await ApiService().saveStepLength(stepLengthCm);
+        await ApiService().saveStepLength(stepLengthCm.toDouble());
         debugPrint('✅ 보폭 설정 저장 성공');
       } catch (e) {
         debugPrint('❌ 보폭 설정 저장 실패: $e');
@@ -167,7 +173,7 @@ class _StepScreenState extends State<StepScreen> {
     if (_hasChangedFromSettings) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('변경사항이 저장되지 않았습니다.')));
+      ).showSnackBar(const SnackBar(content: AccessibleText('변경사항이 저장되지 않았습니다.')));
     }
     Navigator.pop(context); // 결과 없이 Pop → 저장 안 됨
   }
@@ -192,8 +198,8 @@ class _StepScreenState extends State<StepScreen> {
     // 설정 진입 시: 변경되었는지 여부 판단
     final bool hasChangedFromSettings =
         widget.fromSettings
-            ? (stepLength != null &&
-                stepLength!.toInt() != widget.initialStepLengthCm)
+            ? (step_length_cm != null &&
+                step_length_cm!.toInt() != widget.initialStepLengthCm)
             : false;
 
     return Scaffold(
@@ -282,7 +288,7 @@ class _StepScreenState extends State<StepScreen> {
                       child: AccessibleDescription(
                         widget.fromSettings
                             ? '보폭을 다시 측정해 저장할 수 있습니다.'
-                            : 'A아이 앱에 오신 것을 환영합니다. 먼저 보폭을 측정해주세요.',
+                            : 'A아이 앱에 오신 것을 환영합니다. 먼저 보폭측정을 시작해주세요.',
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 16,
@@ -353,7 +359,7 @@ class _StepScreenState extends State<StepScreen> {
                               fontWeight: FontWeight.w900,
                             ),
                           ),
-                          child: const Text('보폭 측정 시작'),
+                          child: const AccessibleText('보폭 측정 시작'),
                         ),
                       ),
                     ),
@@ -363,12 +369,12 @@ class _StepScreenState extends State<StepScreen> {
                       children: [
                         AccessibleText(
                           widget.fromSettings
-                              ? (stepLength == null
+                              ? (step_length_cm == null
                                   ? '현재 설정된 보폭: ${widget.initialStepLengthCm ?? '-'} cm'
-                                  : '새 보폭: ${stepLength!.toInt()} cm')
+                                  : '새 보폭: ${step_length_cm!.toInt()} cm')
                               : _measured
-                              ? '측정된 보폭: ${stepLength!.toInt()} cm'
-                              : '카메라를 발 위에서 내려다보며 평소처럼 자연스럽게 10걸음을 걸어주세요',
+                              ? '측정된 보폭: ${step_length_cm!.toInt()} cm'
+                              : '평소처럼 자연스럽게 걸으며 걸음 수를 세어주세요',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: hint,

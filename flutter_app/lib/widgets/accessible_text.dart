@@ -121,7 +121,7 @@ class AccessibleText extends StatelessWidget {
 /// 제목용 접근성 텍스트
 class AccessibleTitle extends AccessibleText {
   const AccessibleTitle(
-    String text, {
+    super.text, {
     super.key,
     super.style,
     super.textAlign,
@@ -132,13 +132,13 @@ class AccessibleTitle extends AccessibleText {
     super.semanticsLabel,
     super.enableVoiceOutput = true,
     super.customSpeed,
-  }) : super(text);
+  });
 }
 
 /// 설명용 접근성 텍스트 (조금 느린 속도)
 class AccessibleDescription extends AccessibleText {
   const AccessibleDescription(
-    String text, {
+    super.text, {
     super.key,
     super.style,
     super.textAlign,
@@ -150,7 +150,6 @@ class AccessibleDescription extends AccessibleText {
     super.enableVoiceOutput = true,
     double? customSpeed,
   }) : super(
-    text,
     customSpeed: customSpeed ?? 0.8, // 설명은 기본적으로 조금 더 느리게
   );
 }

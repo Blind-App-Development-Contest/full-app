@@ -58,10 +58,10 @@ class _VoiceScreenState extends State<VoiceScreen> {
     // 음성 설정 저장 (온보딩 플로우)
     try {
       debugPrint('🎙️ 온보딩 음성 설정 저장 시도: ${_gender == 'F' ? 'female' : 'male'}, ${_speed}x');
-      await ApiService().saveVoiceSettings(
-        gender: _gender == 'F' ? 'female' : 'male',
-        speed: _speed,
-      );
+      await ApiService().saveVoiceSettings({
+        'gender': _gender == 'F' ? 'female' : 'male',
+        'speed': _speed,
+      });
       debugPrint('✅ 온보딩 음성 설정 저장 성공');
     } catch (e) {
       debugPrint('❌ 온보딩 음성 설정 저장 실패: $e');
@@ -87,10 +87,10 @@ class _VoiceScreenState extends State<VoiceScreen> {
       // 음성 설정 저장 (설정 화면에서 진입)
       try {
         debugPrint('🎙️ 설정 음성 변경 저장 시도: ${_gender == 'F' ? 'female' : 'male'}, ${_speed}x');
-        await ApiService().saveVoiceSettings(
-          gender: _gender == 'F' ? 'female' : 'male',
-          speed: _speed,
-        );
+        await ApiService().saveVoiceSettings({
+          'gender': _gender == 'F' ? 'female' : 'male',
+          'speed': _speed,
+        });
         debugPrint('✅ 설정 음성 변경 저장 성공');
       } catch (e) {
         debugPrint('❌ 설정 음성 변경 저장 실패: $e');

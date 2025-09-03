@@ -253,47 +253,28 @@ class StepMeasurementBase:
             logger.error(f"[보폭검증] 오류: {e}")
             return False, f"검증 중 오류 발생: {str(e)}"
     
-    def get_confidence_level_description(self, confidence: float) -> str:
-        """신뢰도를 한국어 설명으로 변환"""
-        try:
-            if confidence >= self.config.excellent_confidence:
-                return "매우 신뢰할 수 있음"
-            elif confidence >= self.config.good_confidence:
-                return "신뢰할 수 있음"
-            elif confidence >= self.config.acceptable_confidence:
-                return "보통"
-            elif confidence >= self.config.poor_confidence:
-                return "낮음"
-            else:
-                return "매우 낮음"
-        except:
-            return "알 수 없음"
+    # get_confidence_level_description 메서드는 사용되지 않으므로 제거됨
     
-    def update_walking_pattern_stability(self, new_stability: float):
-        """걸음 패턴 안정성 업데이트 (지수 이동 평균)"""
-        try:
-            alpha = 0.3  # 이동 평균 계수
-            self.walking_pattern_stability = (
-                alpha * new_stability + 
-                (1 - alpha) * self.walking_pattern_stability
-            )
-            logger.debug(f"[걸음패턴] 안정성 업데이트: {self.walking_pattern_stability:.3f}")
-        except Exception as e:
-            logger.error(f"[걸음패턴] 업데이트 오류: {e}")
+    # update_walking_pattern_stability 메서드는 사용되지 않으므로 제거됨
     
     def create_fallback_step_result(
         self, 
         reason: str = "vision_processing_failed",
         estimated_distance_cm: Optional[float] = None,
-        estimated_step_count: Optional[int] = None
+        estimated_step_count: Optional[int] = None,
+        user_counted_steps: Optional[int] = None,
+        standard_distance_cm: float = 1000.0  # 10m 표준 거리
     ) -> 'StepCalculationResult':
         """
         시각장애인을 위한 보폭 측정 실패 시 대체 결과 생성
+        개선: 10m 표준 거리 + 사용자 음성 입력 걸음수로 정확한 보폭 계산
         
         Args:
             reason: 실패 사유
-            estimated_distance_cm: 추정 거리 (cm)
-            estimated_step_count: 추정 걸음 수
+            estimated_distance_cm: 추정 거리 (cm) - 레거시 지원
+            estimated_step_count: 추정 걸음 수 - 레거시 지원
+            user_counted_steps: 사용자가 음성으로 입력한 실제 걸음 수
+            standard_distance_cm: 표준 측정 거리 (기본값: 10m = 1000cm)
             
         Returns:
             StepCalculationResult: 대체 측정 결과
@@ -301,52 +282,80 @@ class StepMeasurementBase:
         try:
             from models.step_models import StepCalculationResult, StepMeasurementMethod, AccuracyLevel, StepTrackingQuality
             
-            # 평균 보폭이 있으면 사용, 없으면 성인 표준 보폭 사용
-            fallback_step_length = self.get_average_step_length()
-            if fallback_step_length <= 0:
-                fallback_step_length = self.config.typical_step_length_cm
-            
-            # 거리와 걸음 수가 제공된 경우 단순 계산 시도
-            if estimated_distance_cm and estimated_step_count and estimated_step_count > 0:
-                calculated_step_length = estimated_distance_cm / estimated_step_count
+            # 우선순위 1: 사용자가 직접 센 걸음수 + 10m 표준거리 (가장 정확)
+            if user_counted_steps and user_counted_steps > 0:
+                calculated_step_length = standard_distance_cm / user_counted_steps
                 
-                # 계산 결과가 합리적인 범위면 사용
+                # 10m/걸음수 계산 결과가 합리적인 범위인지 확인
                 if self.config.min_step_length_cm <= calculated_step_length <= self.config.max_step_length_cm:
                     fallback_step_length = calculated_step_length
-                    fallback_confidence = 0.6  # 거리 기반 계산이므로 중간 신뢰도
+                    fallback_confidence = 0.85  # 사용자 직접 계수 + 표준거리 = 높은 신뢰도
                     method = StepMeasurementMethod.DISTANCE_BASED
-                    accuracy_level = AccuracyLevel.MEDIUM
-                    tracking_quality = StepTrackingQuality.FAIR
+                    accuracy_level = AccuracyLevel.HIGH
+                    tracking_quality = StepTrackingQuality.GOOD
                     source_info = {
-                        "fallback_type": "distance_based_calculation",
+                        "fallback_type": "user_counted_10m_measurement",
                         "original_failure_reason": reason,
-                        "estimated_distance_cm": estimated_distance_cm,
-                        "estimated_step_count": estimated_step_count,
-                        "calculated_step_length_cm": calculated_step_length
+                        "standard_distance_cm": standard_distance_cm,
+                        "user_counted_steps": user_counted_steps,
+                        "calculated_step_length_cm": calculated_step_length,
+                        "measurement_method": "10m_standard_distance_with_user_count"
                     }
+                    logger.info(f"[개선측정] 10m 표준거리 + 사용자 걸음수({user_counted_steps}) = {calculated_step_length:.1f}cm")
                 else:
-                    # 계산 결과가 비합리적이면 평균/표준 사용
-                    fallback_confidence = 0.4
+                    # 사용자가 센 걸음수로 계산했지만 결과가 비현실적
+                    logger.warning(f"[개선측정] 사용자 걸음수({user_counted_steps})로 계산한 보폭({calculated_step_length:.1f}cm)이 비현실적")
+                    # 다음 우선순위로 진행
+                    user_counted_steps = None
+            
+            if user_counted_steps is None:
+                # 우선순위 2: 레거시 거리/걸음 추정값
+                if estimated_distance_cm and estimated_step_count and estimated_step_count > 0:
+                    calculated_step_length = estimated_distance_cm / estimated_step_count
+                    
+                    # 계산 결과가 합리적인 범위면 사용
+                    if self.config.min_step_length_cm <= calculated_step_length <= self.config.max_step_length_cm:
+                        fallback_step_length = calculated_step_length
+                        fallback_confidence = 0.6  # 추정 기반이므로 중간 신뢰도
+                        method = StepMeasurementMethod.DISTANCE_BASED
+                        accuracy_level = AccuracyLevel.MEDIUM
+                        tracking_quality = StepTrackingQuality.FAIR
+                        source_info = {
+                            "fallback_type": "estimated_distance_calculation",
+                            "original_failure_reason": reason,
+                            "estimated_distance_cm": estimated_distance_cm,
+                            "estimated_step_count": estimated_step_count,
+                            "calculated_step_length_cm": calculated_step_length
+                        }
+                    else:
+                        # 계산 결과가 비합리적이면 평균/표준 사용
+                        fallback_step_length = self.get_average_step_length()
+                        if fallback_step_length <= 0:
+                            fallback_step_length = self.config.typical_step_length_cm
+                        fallback_confidence = 0.4
+                        method = StepMeasurementMethod.MANUAL_INPUT
+                        accuracy_level = AccuracyLevel.LOW
+                        tracking_quality = StepTrackingQuality.POOR
+                        source_info = {
+                            "fallback_type": "average_or_standard",
+                            "original_failure_reason": reason,
+                            "unreliable_calculation": calculated_step_length,
+                            "used_average_step_length": self.get_average_step_length() > 0
+                        }
+                else:
+                    # 우선순위 3: 평균 또는 표준값 사용
+                    fallback_step_length = self.get_average_step_length()
+                    if fallback_step_length <= 0:
+                        fallback_step_length = self.config.typical_step_length_cm
+                    fallback_confidence = 0.45 if self.get_average_step_length() > 0 else 0.35
                     method = StepMeasurementMethod.MANUAL_INPUT
                     accuracy_level = AccuracyLevel.LOW
                     tracking_quality = StepTrackingQuality.POOR
                     source_info = {
                         "fallback_type": "average_or_standard",
                         "original_failure_reason": reason,
-                        "unreliable_calculation": calculated_step_length,
                         "used_average_step_length": self.get_average_step_length() > 0
                     }
-            else:
-                # 거리/걸음 정보가 없으면 평균 또는 표준값 사용
-                fallback_confidence = 0.45 if self.get_average_step_length() > 0 else 0.35
-                method = StepMeasurementMethod.MANUAL_INPUT
-                accuracy_level = AccuracyLevel.LOW
-                tracking_quality = StepTrackingQuality.POOR
-                source_info = {
-                    "fallback_type": "average_or_standard",
-                    "original_failure_reason": reason,
-                    "used_average_step_length": self.get_average_step_length() > 0
-                }
             
             # 시각장애인 특화 보정 적용
             if fallback_confidence >= self.config.acceptable_confidence:
@@ -400,34 +409,7 @@ class StepMeasurementBase:
         """신뢰도를 0.0-1.0 범위로 제한"""
         return max(0.0, min(1.0, confidence))
 
-    def get_measurement_statistics(self) -> Dict[str, Any]:
-        """측정 통계 정보 반환"""
-        try:
-            total = self.measurement_stats['total_measurements']
-            success_rate = (
-                self.measurement_stats['successful_measurements'] / max(1, total)
-            )
-            
-            current_average = self.get_average_step_length()
-            
-            return {
-                "total_measurements": total,
-                "successful_measurements": self.measurement_stats['successful_measurements'],
-                "success_rate": round(success_rate, 3),
-                "average_confidence": round(self.measurement_stats['average_confidence'], 3),
-                "current_average_step_length_cm": round(current_average, 1) if current_average > 0 else None,
-                "recent_measurements_count": len(self.recent_steps),
-                "walking_pattern_stability": round(self.walking_pattern_stability, 3),
-                "sensor_fusion_quality": round(self.sensor_fusion_quality, 3),
-                "config": {
-                    "confidence_threshold": self.config.base_confidence_threshold,
-                    "visual_impairment_boost": self.config.visual_impairment_confidence_boost,
-                    "walking_pattern_bonus": self.config.walking_pattern_bonus
-                }
-            }
-        except Exception as e:
-            logger.error(f"[통계] 조회 오류: {e}")
-            return {"error": str(e)}
+    # get_measurement_statistics 메서드는 사용되지 않으므로 제거됨
     
     def reset_statistics(self):
         """통계 초기화"""
@@ -451,26 +433,7 @@ class StepMeasurementUtils:
         """보폭을 안전한 범위로 제한"""
         return max(min_cm, min(max_cm, step_length_cm))
     
-    @staticmethod
-    def calculate_3d_distance(pos1: Tuple[float, float, float], pos2: Tuple[float, float, float]) -> float:
-        """3D 점 간의 거리 계산"""
-        try:
-            dx = pos1[0] - pos2[0]
-            dy = pos1[1] - pos2[1] 
-            dz = pos1[2] - pos2[2]
-            return float(math.sqrt(dx**2 + dy**2 + dz**2))
-        except:
-            return 0.0
-    
-    @staticmethod
-    def safe_divide(numerator: float, denominator: float, default: float = 0.0) -> float:
-        """안전한 나눗셈 (0으로 나누기 방지)"""
-        try:
-            if denominator == 0:
-                return default
-            return float(numerator / denominator)
-        except:
-            return default
+    # calculate_3d_distance와 safe_divide 메서드는 사용되지 않으므로 제거됨
 
 # 전역 유틸리티 함수들 (하위 호환성)
 def create_measurement_base(config: Optional[StepMeasurementConfig] = None) -> StepMeasurementBase:

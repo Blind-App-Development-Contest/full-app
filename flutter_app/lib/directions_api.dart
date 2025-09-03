@@ -171,7 +171,7 @@ class DirectionsApi {
               headers: {'Content-Type': 'application/json'},
               body: body,
             )
-            .timeout(const Duration(seconds: 45));
+            .timeout(const Duration(seconds: 15));
 
         debugPrint('Route response: ${r.statusCode} (attempt $attempt)');
 
@@ -187,7 +187,7 @@ class DirectionsApi {
           // 5xx 에러는 재시도 가능
           lastError = Exception(errorMsg);
           if (attempt < 3) {
-            await Future.delayed(Duration(seconds: attempt * 2));
+            await Future.delayed(Duration(seconds: attempt)); // 재시도 간격 단축
             continue;
           }
           throw lastError;
@@ -205,8 +205,8 @@ class DirectionsApi {
                 errorStr.contains('TimeoutException') ||
                 errorStr.contains('SocketException')) &&
             attempt < 3) {
-          debugPrint('Retrying in ${attempt * 2} seconds...');
-          await Future.delayed(Duration(seconds: attempt * 2));
+          debugPrint('Retrying in $attempt seconds...');
+          await Future.delayed(Duration(seconds: attempt)); // 재시도 간격 단축
           continue;
         }
 
