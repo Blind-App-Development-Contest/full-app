@@ -25,10 +25,7 @@ const String kUuidKey = 'app_uuid';
 const bool kUseBackendStatusCheck = true;
 
 /// 기본 상태 조회 엔드포인트 (dotenv 가 있으면 그걸 우선)
-/// 측정 상태 엔드포인트 기본 URL (환경변수로 설정됨)
-/// const String kStatusEndpointBaseDefault = 'http://localhost:8000/api/users/measurement/';
-/// 이제 AppConfig.measurementEndpoint를 사용합니다.
-
+const String kStatusEndpointBaseDefault = 'http://localhost:8000/api/users/measurement/';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
