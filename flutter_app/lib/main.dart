@@ -23,8 +23,8 @@ const String kUuidKey = 'app_uuid';
 const bool kUseBackendStatusCheck = true;
 
 /// 기본 상태 조회 엔드포인트 (dotenv 가 있으면 그걸 우선)
-/// const String kStatusEndpointBaseDefault = 'http://localhost:8000/api/users/measurement/';
-const String kStatusEndpointBaseDefault = 'http://192.168.45.74:8000/api/users/measurement/';
+const String kStatusEndpointBaseDefault = 'http://localhost:8000/api/users/measurement/';
+/// const String kStatusEndpointBaseDefault = 'http://192.168.45.74:8000/api/users/measurement/';
 
 
 Future<void> main() async {

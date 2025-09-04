@@ -40,7 +40,7 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
     if (kIsWeb) {
       // 웹 전용 코드
       try {
-        ui_web.platformViewRegistry.registerViewFactory(_viewId, (int viewId) {
+        Object Function(int) factory = (int viewId) {
           _videoElement = VideoElement()
             ..id = _viewId
             ..autoplay = true
@@ -71,7 +71,9 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
           });
 
           return _videoElement;
-        });
+        };
+
+        ui_web.platformViewRegistry.registerViewFactory(_viewId, factory);
       } catch (e) {
         debugPrint('웹 카메라 초기화 실패: $e');
         if (!_cameraReadyCompleter.isCompleted) {
@@ -217,10 +219,10 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
-                    _buildBottomButton(icon: Icons.text_fields, label: '주변 안내', onPressed: () {}),
-                    _buildBottomButton(icon: Icons.navigation, label: '길찾기', onPressed: () {}),
-                    _buildBottomButton(icon: Icons.phone, label: '보호자호출', onPressed: () {}),
-                    _buildBottomButton(icon: Icons.settings, label: '설정', onPressed: () {}),
+                    Expanded(child: _buildBottomButton(icon: Icons.text_fields, label: '주변 안내', onPressed: () {})),
+                    Expanded(child: _buildBottomButton(icon: Icons.navigation, label: '길찾기', onPressed: () {})),
+                    Expanded(child: _buildBottomButton(icon: Icons.phone, label: '보호자호출', onPressed: () {})),
+                    Expanded(child: _buildBottomButton(icon: Icons.settings, label: '설정', onPressed: () {})),
                   ],
                 ),
               ),

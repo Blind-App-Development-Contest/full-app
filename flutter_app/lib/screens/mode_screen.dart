@@ -5,7 +5,7 @@ import '../widgets/aeye_card.dart';
 import '../widgets/accessible_text.dart';
 import 'setting_screen.dart';
 import 'map_screen.dart';
-import 'object_detection_screen.dart';
+import 'camera_mode_screen.dart';
 
 enum AppPreferredMode { camera, navigation }
 
@@ -81,7 +81,7 @@ class _ModeScreenState extends State<ModeScreen> {
       await Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => const ObjectDetectionScreen(),
+          builder: (_) => const CameraModeScreen(),
         ),
       );
     }
