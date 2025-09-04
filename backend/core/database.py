@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker, Session
 import os
 from dotenv import load_dotenv
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import AsyncGenerator, Generator
 
 load_dotenv()
@@ -55,6 +55,21 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     except Exception as e:
         logger.error(f"Database session error: {e}")
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@contextmanager
+def get_sync_session() -> Generator[Session, None, None]:
+    """Synchronous DB session context manager (for non-dependency usage)"""
+    db = SessionLocal()
+    try:
+        yield db
+        db.commit()
+    except Exception as e:
+        logger.error(f"Database sync session error: {e}")
         db.rollback()
         raise
     finally:
