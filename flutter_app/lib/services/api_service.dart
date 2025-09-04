@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
@@ -9,11 +10,75 @@ class ApiService {
   factory ApiService() => _instance;
   ApiService._internal();
 
-  final String baseUrl = 'http://192.168.45.74:8000';
+  String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'http://localhost:8000';
   final http.Client _httpClient = http.Client();
   
   /// 사용자 UUID 키
   static const String _userUuidKey = 'app_uuid';
+  
+  /// 서버 연결 상태 캐시
+  bool _serverConnected = false;
+  DateTime? _lastConnectionCheck;
+  
+  /// 사용자 설정 로컬 캐시
+  Map<String, dynamic>? _cachedUserSettings;
+  DateTime? _lastSettingsUpdate;
+
+  /// 안정적인 HTTP 요청 (재시도 로직 포함)
+  Future<http.Response?> _safeHttpRequest(
+    Future<http.Response> Function() requestFunction, {
+    int maxRetries = 5, // 재시도 횟수 증가
+    Duration retryDelay = const Duration(seconds: 3), // 재시도 간격 증가
+  }) async {
+    for (int attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        debugPrint('🌐 HTTP 요청 시도 $attempt/$maxRetries');
+        final response = await requestFunction();
+        
+        // 성공 시 연결 상태 업데이트
+        if (response.statusCode < 500) {
+          _serverConnected = true;
+          _lastConnectionCheck = DateTime.now();
+          debugPrint('✅ HTTP 요청 성공 (시도 $attempt/$maxRetries): ${response.statusCode}');
+        }
+        
+        return response;
+      } catch (e) {
+        final errorMsg = e.toString();
+        debugPrint('❌ HTTP 요청 실패 (시도 $attempt/$maxRetries): $errorMsg');
+        
+        // 특정 오류는 재시도하지 않음
+        if (errorMsg.contains('FormatException') || 
+            errorMsg.contains('Invalid argument')) {
+          debugPrint('🚫 재시도 불가능한 오류 - 즉시 중단');
+          return null;
+        }
+        
+        if (attempt == maxRetries) {
+          _serverConnected = false;
+          _lastConnectionCheck = DateTime.now();
+          debugPrint('❌ 모든 재시도 실패 ($maxRetries회) - 오프라인 모드');
+          return null;
+        }
+        
+        // 점진적 재시도 간격 (exponential backoff)
+        final currentDelay = Duration(seconds: retryDelay.inSeconds * attempt);
+        debugPrint('⏳ ${currentDelay.inSeconds}초 후 재시도...');
+        await Future.delayed(currentDelay);
+      }
+    }
+    return null;
+  }
+
+  /// 서버 연결 상태 확인
+  bool get isServerConnected {
+    final now = DateTime.now();
+    if (_lastConnectionCheck != null && 
+        now.difference(_lastConnectionCheck!).inMinutes < 5) {
+      return _serverConnected;
+    }
+    return false;
+  }
 
   /// 사용자 초기화 (UUID 생성/로드)
   Future<void> initializeUser() async {
@@ -41,29 +106,25 @@ class ApiService {
 
   /// 서버에 사용자 등록/확인
   Future<void> _registerUser(String uuid) async {
-    try {
-      final response = await _httpClient.post(
+    final response = await _safeHttpRequest(
+      () => _httpClient.post(
         Uri.parse('$baseUrl/api/users/register'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'app_uuid': uuid}),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30)),
+    );
 
+    if (response != null) {
       if (response.statusCode == 200 || response.statusCode == 201) {
         debugPrint('✅ 사용자 등록/확인 성공');
       } else if (response.statusCode == 422) {
         debugPrint('⚠️ 사용자가 이미 존재함 (422) - 정상 상황');
-        // 422는 이미 존재하는 사용자라는 의미이므로 정상
       } else {
         debugPrint('❌ 사용자 등록/확인 실패: ${response.statusCode}');
         debugPrint('서버 응답: ${response.body}');
       }
-    } catch (e) {
-      if (e.toString().contains('Connection refused') || e.toString().contains('SocketException')) {
-        debugPrint('⚠️ 서버 연결 실패 - 오프라인 모드로 진행: $e');
-      } else {
-        debugPrint('❌ 사용자 등록/확인 오류: $e');
-      }
-      // 사용자 등록 실패는 앱 사용을 막지 않음 (오프라인 모드 지원)
+    } else {
+      debugPrint('⚠️ 서버 연결 실패 - 오프라인 모드로 진행');
     }
   }
 
@@ -105,7 +166,7 @@ class ApiService {
           'user_id': uuid,
           'measurement_data': result,
         }),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30));
 
       return response.statusCode == 200;
     } catch (e) {
@@ -127,7 +188,7 @@ class ApiService {
           'user_id': uuid,
           'step_length_cm': step_length_cm.toInt(),
         }),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30));
 
       return response.statusCode == 200;
     } catch (e) {
@@ -156,7 +217,7 @@ class ApiService {
           'gender': settings['gender'] ?? 'F',
           'speed': settings['speed'] ?? 1.0,
         }),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30));
 
       return response.statusCode == 200;
     } catch (e) {
@@ -191,7 +252,7 @@ class ApiService {
         Uri.parse('$baseUrl/api/users/onboarding/complete'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(payload), // 수정된 payload를 전송
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200) {
         debugPrint('✅ 온보딩 완료 데이터 전송 성공');
@@ -222,15 +283,20 @@ class ApiService {
 
   /// 사용자 설정 불러오기
   Future<Map<String, dynamic>?> getUserSettings() async {
-    try {
-      final uuid = await getCurrentUserUuid();
-      if (uuid == null) return null;
+    final uuid = await getCurrentUserUuid();
+    if (uuid == null) {
+      debugPrint('❌ 사용자 UUID가 없어 설정을 로드할 수 없습니다');
+      return null;
+    }
 
-      final response = await _httpClient.get(
+    final response = await _safeHttpRequest(
+      () => _httpClient.get(
         Uri.parse('$baseUrl/api/users/settings/$uuid'),
         headers: {'Accept': 'application/json'},
-      ).timeout(const Duration(seconds: 7));
+      ).timeout(const Duration(seconds: 30)),
+    );
 
+    if (response != null) {
       if (response.statusCode == 200) {
         final settings = jsonDecode(utf8.decode(response.bodyBytes));
         debugPrint('✅ 사용자 설정 로드 성공: $settings');
@@ -240,18 +306,49 @@ class ApiService {
         // 사용자 설정이 없으면 기본 설정 생성
         final created = await _createDefaultUserSettings(uuid);
         if (created) {
-          // 생성 후 다시 조회
-          return await getUserSettings();
+          // 생성 후 다시 조회 (재귀 호출 방지를 위해 한 번만)
+          debugPrint('🔄 기본 설정 생성 후 재조회 시도');
+          return await _safeGetUserSettingsRetry(uuid);
         }
         return null;
       } else {
         debugPrint('❌ 사용자 설정 로드 실패: ${response.statusCode}');
         return null;
       }
-    } catch (e) {
-      debugPrint('사용자 설정 로드 오류: $e');
+    } else {
+      debugPrint('❌ 서버 연결 완전 실패 - 설정을 가져올 수 없음');
+      // 기본 설정을 반환하지 않고 null을 반환하여 호출자가 적절히 처리하도록 함
       return null;
     }
+  }
+
+  /// 재귀 호출 방지를 위한 재시도 메소드
+  Future<Map<String, dynamic>?> _safeGetUserSettingsRetry(String uuid) async {
+    final response = await _safeHttpRequest(
+      () => _httpClient.get(
+        Uri.parse('$baseUrl/api/users/settings/$uuid'),
+        headers: {'Accept': 'application/json'},
+      ).timeout(const Duration(seconds: 30)),
+      maxRetries: 1, // 재시도는 1번만
+    );
+
+    if (response?.statusCode == 200) {
+      final settings = jsonDecode(utf8.decode(response!.bodyBytes));
+      debugPrint('✅ 재시도 후 사용자 설정 로드 성공: $settings');
+      return settings;
+    }
+    return null;
+  }
+
+  /// 로컬 기본 설정 반환
+  Map<String, dynamic> _getDefaultSettings() {
+    return {
+      'step_length': 70.0,
+      'voice_speed': 0.9,
+      'voice_gender': 'female',
+      'caregiver_name': null,
+      'caregiver_phone': null,
+    };
   }
 
   /// 기본 사용자 설정 생성
@@ -262,7 +359,7 @@ class ApiService {
       final response = await _httpClient.post(
         Uri.parse('$baseUrl/api/users/settings/initialize/$uuid'),
         headers: {'Content-Type': 'application/json'},
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         debugPrint('✅ 기본 사용자 설정 생성 성공');
@@ -299,7 +396,7 @@ class ApiService {
           'caregivers_name': caregivers_name,
           'phone_number': phoneNumber,
         }),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         final result = jsonDecode(utf8.decode(response.bodyBytes));
@@ -347,7 +444,7 @@ class ApiService {
         Uri.parse('$baseUrl/api/users/caregiver/$uuid'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(updateData),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200) {
         final result = jsonDecode(utf8.decode(response.bodyBytes));
@@ -375,7 +472,7 @@ class ApiService {
         body: jsonEncode({
           'user_id': uuid,
         }),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200) {
         final result = jsonDecode(utf8.decode(response.bodyBytes));

@@ -137,9 +137,9 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: AppColors.bg,
       appBar: AppBar(
-        backgroundColor: Colors.black.withValues(alpha: 0.7),
+        backgroundColor: AppColors.bg.withValues(alpha: 0.7),
         elevation: 0,
         leading: IconButton(
           icon: const Icon(

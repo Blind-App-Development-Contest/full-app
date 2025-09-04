@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../constants/config.dart';
 import '../widgets/aeye_card.dart';
 import '../widgets/next_button.dart';
 import '../widgets/accessible_text.dart';
@@ -84,7 +85,7 @@ class _NameScreenState extends State<NameScreen> {
       //    - Android 에뮬레이터면 http://10.0.2.2:8000/users/register 사용
       //    - 실기기는 PC의 LAN IP 사용
       // final uri = Uri.parse('http://localhost:8000/users/register'); // 로컬 테스트
-      final uri = Uri.parse('http://192.168.45.74:8000/api/users/register');
+      final uri = Uri.parse(AppConfig.userRegisterEndpoint);
       final resp = await http.post(
         uri,
         headers: {

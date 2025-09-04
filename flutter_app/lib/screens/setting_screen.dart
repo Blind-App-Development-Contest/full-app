@@ -138,14 +138,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
           debugPrint('⚠️ 서버에서 null인 필드들: ${nullFields.join(', ')} - 기본값 유지');
         }
       } else {
-        // 서버 연결 실패 시 로컬 기본값 사용
-        debugPrint('⚠️ 서버 연결 실패 - 로컬 기본값 사용');
-        _loadLocalDefaultSettings();
+        // 서버 연결 실패 시 현재 설정값 유지 (기본값으로 덮어쓰지 않음)
+        debugPrint('⚠️ 서버 연결 실패 - 현재 설정값 유지');
+        debugPrint('📋 현재 설정: 보폭=${step_length_cm}cm, 음성=${voiceGender} ${voiceSpeed}x, 보호자=$guardians명');
       }
     } catch (e) {
       debugPrint('❌ 사용자 설정 불러오기 실패: $e');
-      // 오류 발생 시 로컬 기본값으로 대체
-      _loadLocalDefaultSettings();
+      // 오류 발생 시에도 현재 설정값 유지 (첫 실행시에만 기본값 사용)
+      if (step_length_cm == 0.0 && voiceSpeed == 0.0) {
+        debugPrint('🔧 첫 실행 - 기본값 설정');
+        _loadLocalDefaultSettings();
+      } else {
+        debugPrint('📋 설정 로드 실패 - 기존 값 유지');
+      }
     } finally {
       _isLoadingSettings = false;
     }
