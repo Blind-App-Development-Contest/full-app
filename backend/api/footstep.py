@@ -190,6 +190,20 @@ async def update_footstep(
             await session.commit()
             await session.refresh(footstep)
         
+        # user_settings 테이블도 자동 업데이트
+        from sqlalchemy import text
+        await session.execute(
+            text("""
+                INSERT INTO user_settings (user_id, step_id)
+                VALUES (:user_id, :step_id)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    step_id = EXCLUDED.step_id,
+                    setting_updated_at = NOW()
+            """),
+            {"user_id": request.user_id, "step_id": footstep.step_id}
+        )
+        await session.commit()
+        
         return FootstepResponse(
             user_id=getattr(footstep, "user_id"),
             step_length_cm=getattr(footstep, "step_length"),

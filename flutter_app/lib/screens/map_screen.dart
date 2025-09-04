@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import '../directions_api.dart';
 import '../services/voice_service.dart';
 import 'package:html/parser.dart' show parse;
+import '../constants/app_colors.dart';
 
 
 class MapScreen extends StatefulWidget {
@@ -963,19 +964,12 @@ class _MapScreenState extends State<MapScreen> {
 
   PreferredSizeWidget _buildAppBar() {
     return AppBar(
-      title: const Text('Naver Map • 길찾기'),
-      actions: [
-        IconButton(onPressed: _ping, icon: const Icon(Icons.wifi)),
-        IconButton(
-          onPressed: _centerToMyLocation,
-          icon: const Icon(Icons.my_location),
-        ),
-        IconButton(
-          onPressed: _routeFromMyLocation,
-          icon: const Icon(Icons.directions_walk),
-          tooltip: '입력한 목적지로 길찾기',
-        ),
-      ],
+      backgroundColor: AppColors.bg,
+      leading: IconButton(
+        icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white),
+        onPressed: () => Navigator.of(context).pop(),
+        tooltip: '뒤로가기',
+      ),
     );
   }
 
@@ -994,6 +988,7 @@ class _MapScreenState extends State<MapScreen> {
     }
 
     return Scaffold(
+      backgroundColor: AppColors.bg,
       appBar: _buildAppBar(),
       body: Stack(
         children: [
@@ -1003,45 +998,13 @@ class _MapScreenState extends State<MapScreen> {
             right: 16,
             bottom: 16,
             child: Card(
+              color: AppColors.panel,
               child: Padding(
                 padding: const EdgeInsets.all(12),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Backend: ${widget.backendBaseUrl}',
-                      style: const TextStyle(fontSize: 13),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      'Status: $_status',
-                      style: const TextStyle(
-                        fontSize: 13,
-                        color: Colors.blueGrey,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        ElevatedButton.icon(
-                          onPressed: _centerToMyLocation,
-                          icon: const Icon(Icons.my_location),
-                          label: const Text('내 위치로 이동'),
-                        ),
-                        if (_isNavigating) ...[
-                          const SizedBox(width: 8),
-                          ElevatedButton.icon(
-                            onPressed: _stopVoiceGuidance,
-                            icon: const Icon(Icons.cancel),
-                            label: const Text('안내 중지'),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.red,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
                     const SizedBox(height: 12),
                     Column(
                       children: [
@@ -1105,6 +1068,29 @@ class _MapScreenState extends State<MapScreen> {
             ),
           ),
           if (_showInstructions) _buildInstructionsPanel(),
+          
+          // 하단 버튼 바
+          Positioned(
+            bottom: 90,
+            left: 20,
+            right: 20,
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 15.0, horizontal: 10.0),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.7),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  _buildBottomButton(icon: Icons.text_fields, label: '주변 안내', onPressed: () {}),
+                  _buildBottomButton(icon: Icons.camera, label: '카메라', onPressed: () {}),
+                  _buildBottomButton(icon: Icons.phone, label: '보호자호출', onPressed: () {}),
+                  _buildBottomButton(icon: Icons.settings, label: '설정', onPressed: () {}),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -1410,6 +1396,23 @@ class _MapScreenState extends State<MapScreen> {
                 );
               },
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBottomButton({required IconData icon, required String label, required VoidCallback onPressed}) {
+    return GestureDetector(
+      onTap: onPressed,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: Colors.white, size: 30),
+          const SizedBox(height: 8),
+          Text(
+            label,
+            style: const TextStyle(color: Colors.white, fontSize: 12),
           ),
         ],
       ),

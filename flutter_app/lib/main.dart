@@ -13,6 +13,8 @@ import 'screens/mode_screen.dart';
 import 'screens/camera_measurement_screen.dart'; // 필요 없으면 제거
 import 'services/api_service.dart';
 import 'services/voice_service.dart';
+import 'services/onboarding_service.dart';
+import 'constants/config.dart';
 import 'package:flutter_naver_map/flutter_naver_map.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -24,8 +26,6 @@ const bool kUseBackendStatusCheck = true;
 
 /// 기본 상태 조회 엔드포인트 (dotenv 가 있으면 그걸 우선)
 const String kStatusEndpointBaseDefault = 'http://localhost:8000/api/users/measurement/';
-/// const String kStatusEndpointBaseDefault = 'http://192.168.45.74:8000/api/users/measurement/';
-
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -90,13 +90,11 @@ Future<void> main() async {
     debugPrint("   3. 인터넷 연결 상태");
   }
 
-  // 병렬로 초기화 작업 수행 (성능 최적화)
-  await Future.wait([
-    // 사용자 UUID 생성/로드
-    _initializeApiService(),
-    // 카메라 권한 미리 확인 (카메라 화면 진입 속도 향상)
-    _preCheckCameraPermission(),
-  ]);
+  // 앱을 먼저 시작하고 백그라운드에서 초기화 (iPhone 최적화)
+  runApp(const MyApp());
+  
+  // 백그라운드에서 초기화 작업 수행 (UI 차단하지 않음)
+  _initializeInBackground();
 }
 
 /// ApiService 초기화
@@ -109,16 +107,25 @@ Future<void> _initializeApiService() async {
   }
 }
 
+/// 백그라운드 초기화 (UI 차단하지 않음)
+Future<void> _initializeInBackground() async {
+  // 병렬로 초기화 작업 수행
+  await Future.wait([
+    // 사용자 UUID 생성/로드
+    _initializeApiService(),
+    // 카메라 권한 미리 확인 (카메라 화면 진입 속도 향상)
+    _preCheckCameraPermission(),
+  ]);
+}
+
 /// 카메라 권한 미리 확인
 Future<void> _preCheckCameraPermission() async {
   try {
     final cameras = await availableCameras();
-    debugPrint("📷 앱 시작 시 카메라 권한 확인 완료 - 카메라 ${cameras.length}개 발견");
+    debugPrint("📷 백그라운드 카메라 권한 확인 완료 - 카메라 ${cameras.length}개 발견");
   } catch (e) {
-    debugPrint("⚠️ 카메라 권한 확인 실패: $e");
+    debugPrint("⚠️ 백그라운드 카메라 권한 확인 실패: $e");
   }
-
-  runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
@@ -127,7 +134,8 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => VoiceService()),
+        ChangeNotifierProvider(create: (_) => VoiceService(), lazy: true),
+        ChangeNotifierProvider(create: (_) => OnboardingService(), lazy: true),
       ],
       child: MaterialApp(
         navigatorKey: navigatorKey,
@@ -165,7 +173,7 @@ class _StartupRouterState extends State<_StartupRouter> {
 
     // .env 우선, 없으면 기본값
     final statusBase =
-        dotenv.env['STATUS_ENDPOINT_BASE'] ?? kStatusEndpointBaseDefault;
+        dotenv.env['STATUS_ENDPOINT_BASE'] ?? AppConfig.measurementEndpoint;
 
     // 기본 기준: 이름 저장돼 있으면 ModeScreen, 아니면 NameScreen
     Widget fallback = const ModeScreen();
@@ -256,7 +264,7 @@ class _AlternativeStartupState extends State<_AlternativeStartup> {
     // ===== 2) (옵션) 백엔드로 현재 상태 확인 =====
     if (kUseBackendStatusCheck) {
       try {
-        final uri = Uri.parse('${kStatusEndpointBaseDefault}?uuid=$uuid');
+        final uri = Uri.parse('${AppConfig.measurementEndpoint}?uuid=$uuid');
         final resp = await http.get(uri, headers: {'Accept': 'application/json'});
         if (resp.statusCode == 200) {
           final json = jsonDecode(resp.body) as Map<String, dynamic>;
@@ -316,3 +324,4 @@ class _AlternativeStartupState extends State<_AlternativeStartup> {
     );
   }
 }
+

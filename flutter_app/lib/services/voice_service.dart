@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
@@ -25,7 +26,7 @@ class VoiceService with ChangeNotifier {
   final http.Client _httpClient = http.Client();
 
   // === 서버 설정 ===
-  static const String baseUrl = 'http://192.168.45.74:8000';
+  String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'http://localhost:8000';
 
   // === 상태 관리 ===
   VoiceState _currentState = VoiceState.idle;
@@ -770,7 +771,7 @@ class VoiceService with ChangeNotifier {
               'step_length': step_length_cm,
             }),
           )
-          .timeout(const Duration(seconds: 10));
+          .timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200) {
         _addDebugLog('✅ 개선된 보폭 측정 결과 전송 성공 (기존 API 사용)');
@@ -1237,9 +1238,22 @@ class VoiceService with ChangeNotifier {
         // 오디오 플레이어 안전한 사용
         try {
           final player = _audioPlayer; // getter를 통해 안전하게 접근
+          
+          // 플레이어 상태 초기화
           await player.stop();
+          
+          // 볼륨 설정 (최대 볼륨으로 설정)
+          await player.setVolume(1.0);
+          
+          // 오디오 소스 설정
           await player.setAudioSource(AudioSource.file(audioFile.path));
+          
+          _addDebugLog("🔊 오디오 파일 재생 시작: ${audioFile.path}");
+          
+          // 재생 시작
           await player.play();
+          
+          _addDebugLog("✅ 오디오 재생 명령 성공적으로 실행됨");
 
           // 재생이 완료될 때까지 대기 후 파일 삭제
           _ttsSubscription = player.processingStateStream
@@ -1258,19 +1272,50 @@ class VoiceService with ChangeNotifier {
           _isSpeaking = false; // 오류 시에도 플래그 해제
           _addDebugLog("❌ AudioPlayer 사용 오류: $playerError");
           
-          // AudioPlayer 오류가 발생해도 음성 안내는 성공으로 처리 (접근성 확보)
+          // AudioPlayer 재시도 로직
           if (playerError.toString().contains('Platform player already exists') || 
-              playerError.toString().contains('AudioPlayer 초기화')) {
-            _addDebugLog("ℹ️ AudioPlayer 오류이지만 TTS 요청은 성공으로 간주");
+              playerError.toString().contains('AudioPlayer')) {
+            _addDebugLog("🔄 AudioPlayer 재시도 시작");
+            
+            try {
+              // 새로운 AudioPlayer로 재시도
+              final newPlayer = AudioPlayer();
+              await newPlayer.setVolume(1.0);
+              await newPlayer.setAudioSource(AudioSource.file(audioFile.path));
+              await newPlayer.play();
+              
+              _addDebugLog("✅ AudioPlayer 재시도 성공!");
+              _isSpeaking = true; // 재시도 성공 시 플래그 다시 설정
+              
+              // 재생 완료 대기
+              newPlayer.processingStateStream
+                  .where((state) => state == ProcessingState.completed)
+                  .take(1)
+                  .listen((_) {
+                    _isSpeaking = false;
+                    newPlayer.dispose();
+                    Future.delayed(const Duration(milliseconds: 500)).then((_) {
+                      if (audioFile.existsSync()) {
+                        audioFile.deleteSync();
+                        _addDebugLog("🔊 재시도 후 임시 TTS 파일 삭제됨");
+                      }
+                    });
+                  });
+              
+              return; // 재시도 성공 시 함수 종료
+              
+            } catch (retryError) {
+              _addDebugLog("❌ AudioPlayer 재시도 실패: $retryError");
+            }
           }
           
-          // AudioPlayer 오류 시에도 파일 삭제
+          // 재시도 실패 시 파일만 삭제
           Future.delayed(const Duration(milliseconds: 500)).then((_) {
             if (audioFile.existsSync()) {
               audioFile.deleteSync();
+              _addDebugLog("🔊 오류 후 임시 TTS 파일 삭제됨");
             }
           });
-          rethrow;
         }
       } else {
         _addDebugLog("❌ TTS 실패: ${response.statusCode}");
@@ -1330,33 +1375,22 @@ class _AudioPlayerManager {
   }
   
   void _initializePlayer() {
-    if (_isInitializing) return;
+    if (_isInitializing || _player != null) return;
     
     _isInitializing = true;
     try {
+      // AudioPlayer를 고유 ID와 함께 생성
       _player = AudioPlayer();
       debugPrint('✅ AudioPlayer 초기화 성공');
     } catch (e) {
       debugPrint('❌ AudioPlayer 초기화 오류: $e');
-      if (e.toString().contains('Platform player already exists')) {
-        debugPrint('ℹ️ Platform player already exists - 새 플레이어 생성하지 않음');
-        // 이미 존재하는 플레이어를 찾아서 사용하거나 기본 플레이어 생성
-        try {
-          _player = AudioPlayer();
-          debugPrint('✅ 기존 플레이어 재연결 성공');
-        } catch (e2) {
-          debugPrint('❌ 플레이어 재연결 실패: $e2');
-          _player = null; // 완전히 실패한 경우만 null 설정
-        }
-      } else {
-        // 다른 오류의 경우 재시도
-        try {
-          _player = AudioPlayer();
-          debugPrint('✅ AudioPlayer 재시도 성공');
-        } catch (e2) {
-          debugPrint('❌ AudioPlayer 재시도 실패: $e2');
-          _player = null;
-        }
+      // 오류가 발생해도 계속 시도
+      try {
+        _player = AudioPlayer();
+        debugPrint('✅ AudioPlayer 재시도 생성 성공');
+      } catch (e2) {
+        debugPrint('❌ AudioPlayer 완전 실패: $e2');
+        _player = null;
       }
     } finally {
       _isInitializing = false;

@@ -7,6 +7,7 @@ import 'package:flutter/services.dart'; // HapticFeedback을 위해 추가
 import 'package:camera/camera.dart';
 import 'package:provider/provider.dart';
 import 'package:http/http.dart' as http;
+import '../constants/config.dart';
 import '../services/voice_service.dart';
 import '../services/api_service.dart';
 import '../models/step_measurement_result.dart';
@@ -64,11 +65,62 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // 병렬 초기화로 성능 향상
-    _initializeServicesInParallel();
+    
+    // 🚀 즉시 긍정적인 메시지 표시
+    _statusMessage = "보폭 측정 준비 완료! 시작합니다...";
+    
+    // 즉시 초기화 시작 (PostFrameCallback 제거로 더 빠른 시작)
+    Future.microtask(() {
+      _initializeServicesSequentially();
+    });
   }
 
-  /// VoiceService와 카메라를 병렬로 초기화 (성능 최적화)
+  /// 사용자 경험 최적화를 위한 순차적 초기화
+  Future<void> _initializeServicesSequentially() async {
+    try {
+      // 🚀 즉시 음성 안내 시작 (초기화 기다리지 않음)
+      _quickAnnounceMeasurementStart();
+      
+      // 1단계: VoiceService 먼저 초기화 (빠름 + 즉시 음성 피드백 가능)
+      await _initializeVoiceService();
+      
+      // 2단계: 카메라 초기화를 병렬로 시작하되 즉시 UI 업데이트
+      _initializeCameraInBackground();
+      
+      debugPrint('✅ 빠른 초기화 완료 - 카메라는 백그라운드에서 준비 중');
+    } catch (e) {
+      debugPrint('❌ 서비스 초기화 중 실패: $e');
+      // 초기화 실패 시에도 앱 사용 가능하도록 처리
+      if (mounted) {
+        setState(() {
+          _statusMessage = "초기화 오류 발생 - 다시 시도해주세요";
+        });
+      }
+    }
+  }
+
+  /// 즉시 측정 시작 안내 (초기화 기다리지 않음)
+  void _quickAnnounceMeasurementStart() {
+    if (mounted) {
+      setState(() {
+        _statusMessage = "보폭 측정을 시작합니다...";
+      });
+    }
+    
+    // VoiceService가 없어도 일단 시도 (나중에 실제로 실행됨)
+    Future.delayed(const Duration(milliseconds: 200), () {
+      _voiceService?.speak("보폭 측정을 시작합니다. 잠시 기다려주세요.", speed: 1.0);
+    });
+  }
+
+  /// 백그라운드에서 카메라 초기화
+  void _initializeCameraInBackground() {
+    Future.microtask(() async {
+      await _initializeCamera();
+    });
+  }
+
+  /// VoiceService와 카메라를 병렬로 초기화 (기존 메소드 - 사용 안 함)
   Future<void> _initializeServicesInParallel() async {
     try {
       // 병렬로 초기화 수행
@@ -104,10 +156,10 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
       );
       debugPrint("✅ VoiceService 초기화 성공");
       
-      // 카메라 초기화 후 즉시 진입 안내 시작
-      Future.delayed(const Duration(milliseconds: 500), () {
-        if (mounted) _announceCameraMeasurementEntry();
-      });
+      // 🚀 즉시 상세 안내 시작 (딜레이 제거)
+      if (mounted) {
+        _announceCameraMeasurementEntry();
+      }
     } catch (e) {
       debugPrint("❌ VoiceService 초기화 실패: $e");
       if (mounted) {
@@ -115,7 +167,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
           _statusMessage = "VoiceService 초기화 실패";
         });
       }
-      rethrow; // 병렬 처리에서 오류 감지를 위해
+      // 에러가 있어도 계속 진행 (rethrow 제거)
     }
   }
 
@@ -124,26 +176,18 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
     if (_voiceService == null) return;
     
     try {
-      await Future.delayed(const Duration(milliseconds: 800));
+      // 🚀 딜레이 최소화하고 핵심 메시지만 전달
+      await Future.delayed(const Duration(milliseconds: 300));
       
       await _voiceService!.speak(
-        "거리 측정 모드에 진입했습니다. 카메라를 사용하여 정확한 거리를 측정해드리겠습니다.", 
-        speed: 0.9
+        "보폭 측정을 시작합니다. 직선으로 자연스럽게 걸어주세요.", 
+        speed: 1.0
       );
       
-      await Future.delayed(const Duration(milliseconds: 1000));
+      await Future.delayed(const Duration(milliseconds: 600));
       
       await _voiceService!.speak(
-        "측정을 위해 평평한 바닥에서 직선으로 걸어주세요. "
-        "10미터까지 걸으시면 자동으로 측정이 완료됩니다.", 
-        speed: 0.9
-      );
-      
-      await Future.delayed(const Duration(milliseconds: 800));
-      
-      await _voiceService!.speak(
-        "측정이 완료되면 걸음 수를 음성으로 말씀해 주세요. "
-        "정확한 보폭 계산을 위해 필요합니다.", 
+        "10미터 거리를 걸으면 자동으로 측정이 완료되고, 걸음 수를 물어보겠습니다.", 
         speed: 0.9
       );
       
@@ -250,7 +294,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
   
   /// 걸음 수 음성 입력 결과 처리
   void _onStepCountReceived(int stepCount) {
-    debugPrint('🎤 걸음 수 음성 입력 결과: ${stepCount}걸음');
+    debugPrint('🎤 걸음 수 음성 입력 결과: $stepCount걸음');
     
     if (mounted && waitingForStepCount) {
       setState(() {
@@ -283,7 +327,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
     
     try {
       await _voiceService!.speak(
-        "${stepCount}걸음으로 확인되었습니다.", 
+        "$stepCount걸음으로 확인되었습니다.", 
         speed: 0.9
       );
       
@@ -328,7 +372,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
     final calculatedStepLength = (distanceMeters * 100) / stepCount; // cm 단위
     
     debugPrint('📏 거리 측정 완료: ${distanceMeters.toStringAsFixed(1)}m');
-    debugPrint('📏 사용자 입력 걸음수: ${stepCount}걸음');
+    debugPrint('📏 사용자 입력 걸음수: $stepCount걸음');
     debugPrint('📏 계산된 보폭: ${calculatedStepLength.toStringAsFixed(1)}cm');
     
     // 계산된 보폭을 stepLengthCm 변수에 저장 (StepMeasurementResult 모델과 동일)
@@ -340,22 +384,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
     // 백엔드 측정 세션 중지 API 호출
     await _stopMeasurementSession();
     
-    // 결과 저장 및 다음 화면 이동
-    Future.delayed(const Duration(seconds: 2), () {
-      if (widget.isFromSettings) {
-        // 설정에서 온 경우 - 계산된 보폭 반환 (StepMeasurementResult 형식)
-        Navigator.of(context).pop(stepLengthCm.round());
-      } else {
-        // 온보딩에서 온 경우 - 음성 설정 화면으로 이동
-        if (mounted) {
-          Navigator.of(context).pushReplacement(
-            MaterialPageRoute(
-              builder: (context) => const VoiceScreen(fromSettings: false),
-            ),
-          );
-        }
-      }
-    });
+    // 음성 안내가 완료된 후 화면 전환은 _announceCalculatedStepLength에서 처리
   }
 
   /// 백엔드 측정 세션 중지
@@ -364,7 +393,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
       debugPrint('🛑 백엔드 측정 세션 중지 요청');
       
       final response = await http.post(
-        Uri.parse('http://192.168.45.74:8000/api/users/measurement/session/stop'),
+        Uri.parse(AppConfig.measurementSessionStopEndpoint),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'user_id': 'current_user'}),
       ).timeout(const Duration(seconds: 5));
@@ -406,6 +435,23 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
         "측정된 보폭은 ${stepLength.toStringAsFixed(0)}센티미터입니다.", 
         speed: 0.9
       );
+      
+      // 음성 안내 완료 후 즉시 화면 전환
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      if (mounted) {
+        if (widget.isFromSettings) {
+          // 설정에서 온 경우 - 계산된 보폭 반환 (StepMeasurementResult 형식)
+          Navigator.of(context).pop(stepLengthCm.round());
+        } else {
+          // 온보딩에서 온 경우 - 음성 설정 화면으로 이동
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(
+              builder: (context) => const VoiceScreen(fromSettings: false),
+            ),
+          );
+        }
+      }
       
     } catch (e) {
       debugPrint('❌ 보폭 계산 결과 안내 실패: $e');
@@ -509,13 +555,24 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
   Future<void> _initializeCamera() async {
     try {
       debugPrint("📱 카메라 초기화 시작");
+      
+      // 상태 업데이트를 더 자주 하여 사용자에게 진행 상황 알림
       if (mounted) {
         setState(() {
           _statusMessage = "카메라 권한 확인 중...";
         });
       }
+      
+      // 짧은 대기로 UI 업데이트 보장
+      await Future.delayed(const Duration(milliseconds: 100));
 
       debugPrint("📷 사용 가능한 카메라 확인 중...");
+      if (mounted) {
+        setState(() {
+          _statusMessage = "카메라 감지 중...";
+        });
+      }
+      
       _cameras = await availableCameras();
       debugPrint("📷 발견된 카메라 수: ${_cameras.length}");
       
@@ -537,9 +594,12 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
       debugPrint("🎥 후면 카메라 선택: ${camera.name}");
       if (mounted) {
         setState(() {
-          _statusMessage = "카메라 초기화 중...";
+          _statusMessage = "카메라 준비 중...";
         });
       }
+      
+      // UI 업데이트 대기
+      await Future.delayed(const Duration(milliseconds: 100));
 
       debugPrint("🎥 CameraController 생성 중...");
       _cameraController = CameraController(
@@ -549,11 +609,23 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
         imageFormatGroup: ImageFormatGroup.jpeg, // 안정적인 JPEG 포맷
       );
 
+      if (mounted) {
+        setState(() {
+          _statusMessage = "카메라 활성화 중...";
+        });
+      }
+
       debugPrint("🎥 카메라 컨트롤러 초기화 중...");
       await _cameraController!.initialize();
       debugPrint("✅ 카메라 컨트롤러 초기화 완료");
 
       // 필수 카메라 설정만 먼저 수행 (빠른 초기화)
+      if (mounted) {
+        setState(() {
+          _statusMessage = "카메라 설정 중...";
+        });
+      }
+      
       await _cameraController!.setFocusMode(FocusMode.auto);
       await _cameraController!.setExposureMode(ExposureMode.auto);
       debugPrint('✅ 카메라 기본 설정 완료');
@@ -637,7 +709,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
       // 백엔드 측정 세션 시작 API 호출
       final response = await http
           .post(
-            Uri.parse('http://192.168.45.74:8000/api/users/measurement/session/start'),
+            Uri.parse(AppConfig.measurementSessionStartEndpoint),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'user_id': 'current_user'}),
           )
@@ -793,7 +865,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
       // 백엔드 /api/users/measurement/frame 엔드포인트 호출
       var request = http.MultipartRequest(
         'POST', 
-        Uri.parse('http://192.168.45.74:8000/api/users/measurement/frame')
+        Uri.parse(AppConfig.measurementFrameEndpoint)
       );
       
       // 이미지 파일 추가
@@ -817,7 +889,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
       
       debugPrint('🚀 백엔드 거리 측정 API 호출 - 프레임: $frameCount, 현재거리: ${distanceMeters}m');
       
-      final streamedResponse = await request.send().timeout(const Duration(seconds: 10));
+      final streamedResponse = await request.send().timeout(const Duration(seconds: 30));
       final response = await http.Response.fromStream(streamedResponse);
       
       if (response.statusCode == 200) {
@@ -943,6 +1015,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
                           child: CameraPreview(_cameraController!),
                         ),
                         _buildMeasurementOverlay(),
+                        _buildTestButton(),
                       ],
                     )
                     : Center(
@@ -1089,6 +1162,69 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
 
       // 줌 변경 시 햅틱 피드백
       HapticFeedback.lightImpact();
+    }
+  }
+
+  /// 테스트용 버튼 (개발자 전용)
+  Widget _buildTestButton() {
+    return Positioned(
+      bottom: 100,
+      right: 20,
+      child: FloatingActionButton(
+        onPressed: _triggerTestMeasurementComplete,
+        backgroundColor: Colors.orange.withValues(alpha: 0.8),
+        child: const Icon(
+          Icons.play_arrow,
+          color: Colors.white,
+          size: 28,
+        ),
+      ),
+    );
+  }
+
+  /// 테스트용 측정 완료 트리거
+  void _triggerTestMeasurementComplete() async {
+    debugPrint('🧪 테스트: 측정 완료 시뮬레이션 시작');
+    
+    // 스트리밍 중지
+    _stopStreaming();
+    
+    // 측정 값 설정 (시뮬레이션)
+    setState(() {
+      measurementActive = false;
+      measurementCompleted = true;
+      distanceMeters = 10.0; // 10미터로 설정
+      stepCount = 15; // 테스트용 걸음 수
+      stepLengthCm = 66.7; // 테스트용 기본 보폭 (10m / 15걸음)
+      _progressAnnouncementTimer?.cancel();
+    });
+    
+    // 🆕 실제 데이터베이스에 보폭 저장 (409 에러 방지)
+    await _saveTestFootstepToDatabase();
+    
+    debugPrint('🧪 테스트: 거리 측정 완료 음성 안내 시작');
+    
+    // 거리 측정 완료 음성 안내
+    await _announceDistanceMeasurementComplete();
+  }
+
+  /// 테스트 버튼용 보폭 데이터베이스 저장
+  Future<void> _saveTestFootstepToDatabase() async {
+    try {
+      debugPrint('💾 테스트용 보폭 데이터베이스 저장 시도: ${stepLengthCm.toStringAsFixed(1)}cm');
+      
+      await ApiService().saveMeasurementResult({
+        'stepLengthCm': stepLengthCm.round(),
+        'measurementType': 'test_measurement', // 테스트로 구분
+        'frameCount': frameCount,
+        'distance': distanceMeters,
+        'stepCount': stepCount,
+      });
+      
+      debugPrint('✅ 테스트용 보폭 데이터베이스 저장 성공');
+    } catch (e) {
+      debugPrint('❌ 테스트용 보폭 데이터베이스 저장 실패: $e');
+      // 에러가 발생해도 계속 진행 (테스트 목적)
     }
   }
 }

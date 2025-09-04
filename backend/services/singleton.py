@@ -9,7 +9,7 @@ from services.speech_service import SpeechService
 class ServiceManager:
     """서비스 인스턴스를 싱글톤으로 관리"""
     _instance = None
-    _command_executor = None
+    _command_executors = {}  # 사용자별 CommandExecutor 관리
     _speech_analyzer = None
     _speech_service = None
     
@@ -18,12 +18,16 @@ class ServiceManager:
             cls._instance = super(ServiceManager, cls).__new__(cls)
         return cls._instance
     
-    def get_command_executor(self) -> CommandExecutor:
-        """CommandExecutor 싱글톤 인스턴스 반환"""
-        if self._command_executor is None:
-            self._command_executor = CommandExecutor()
-            print("[DEBUG] CommandExecutor 새 인스턴스 생성")
-        return self._command_executor
+    def get_command_executor(self, user_id: str = None) -> CommandExecutor:
+        """사용자별 CommandExecutor 인스턴스 반환"""
+        if user_id is None:
+            user_id = "default"
+        
+        if user_id not in self._command_executors:
+            self._command_executors[user_id] = CommandExecutor(user_id=user_id)
+            print(f"[DEBUG] CommandExecutor 새 인스턴스 생성 (user_id: {user_id})")
+        
+        return self._command_executors[user_id]
     
     def get_speech_analyzer(self) -> SpeechAnalyzer:
         """SpeechAnalyzer 싱글톤 인스턴스 반환"""

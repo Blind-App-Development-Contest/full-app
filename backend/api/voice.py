@@ -88,18 +88,34 @@ async def synthesize_and_save(req: TTSRequest, request: Request):
 
     try:
         async with pool.acquire() as conn:
-            await conn.execute(
+            # voice 테이블 업데이트
+            voice_result = await conn.fetchrow(
                 """
                 INSERT INTO voice (user_id, gender, speed)
                 VALUES ($1, $2, $3)
                 ON CONFLICT (user_id) DO UPDATE SET
                     gender = EXCLUDED.gender,
                     speed  = EXCLUDED.speed,
-                    voice_updated_at = NOW();
+                    voice_updated_at = NOW()
+                RETURNING voice_id;
                 """,
                 req.user_id,  # asyncpg는 UUID 객체를 그대로 처리 가능
                 gender_char,
                 speed_int,
+            )
+            voice_id = voice_result['voice_id']
+            
+            # user_settings 테이블도 자동 업데이트
+            await conn.execute(
+                """
+                INSERT INTO user_settings (user_id, voice_id)
+                VALUES ($1, $2)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    voice_id = EXCLUDED.voice_id,
+                    setting_updated_at = NOW();
+                """,
+                req.user_id,
+                voice_id
             )
     except pg_exc.ForeignKeyViolationError:
         raise HTTPException(status_code=400, detail="Foreign key violation: user_id not found in users")

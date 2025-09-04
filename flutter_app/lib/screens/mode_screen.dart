@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../constants/config.dart';
 import '../widgets/aeye_card.dart';
 import '../widgets/accessible_text.dart';
 import 'setting_screen.dart';
@@ -101,8 +102,8 @@ class _ModeScreenState extends State<ModeScreen> {
       await Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => const MapScreen(
-            backendBaseUrl: 'http://192.168.45.74:8000',
+          builder: (_) => MapScreen(
+            backendBaseUrl: AppConfig.backendBaseUrl,
           ),
         ),
       );
