@@ -90,10 +90,26 @@ async def create_caregiver(req: CaregiverCreate, session: AsyncSession = Depends
             {"user_id": user_id_str, "name": req.caregivers_name, "phone": req.phone_number}
         )
         row = result.fetchone()
-        await session.commit()
 
         if not row:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create caregiver")
+        
+        caregiver_id = row.caregiver_id
+        
+        # user_settings 테이블도 자동 업데이트
+        settings_query = text("""
+            INSERT INTO user_settings (user_id, caregiver_id)
+            VALUES (:user_id, :caregiver_id)
+            ON CONFLICT (user_id) DO UPDATE SET
+                caregiver_id = EXCLUDED.caregiver_id,
+                setting_updated_at = NOW()
+        """)
+        await session.execute(settings_query, {
+            "user_id": user_id_str,
+            "caregiver_id": caregiver_id
+        })
+        
+        await session.commit()
 
         return CaregiverResponse.model_validate(row, from_attributes=True)
 

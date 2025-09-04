@@ -86,6 +86,8 @@ class UserSetting(Base):
     caregiver_id = Column(Integer, ForeignKey('caregivers.caregiver_id', ondelete='SET NULL'), unique=True)
     step_id = Column(Integer, ForeignKey('footstep.step_id', ondelete='SET NULL'), unique=True)
     voice_id = Column(Integer, ForeignKey('voice.voice_id', ondelete='SET NULL'), unique=True)
+    
+    
     setting_created_at = Column(TIMESTAMP, nullable=False, default=func.now())
     setting_updated_at = Column(TIMESTAMP, nullable=False, default=func.now())
     
@@ -94,6 +96,7 @@ class UserSetting(Base):
     caregiver = relationship("Caregiver", back_populates="user_setting")
     footstep = relationship("Footstep", back_populates="user_setting")
     voice = relationship("Voice", back_populates="user_setting")
+
 
 
 class DashboardLog(Base):

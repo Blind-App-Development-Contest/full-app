@@ -12,6 +12,8 @@ from models.common_models import (
     AppMode, ExecutionStatus, MeasurementStatus,
     RealTimeMeasurementStatus, TrackingQuality, SchemaConverter
 )
+from models.database_models import User, UserSetting
+from core.database import get_sync_session
 from models.step_models import (
     StepCalculationResult as StepResult, 
     StepMeasurementMethod, 
@@ -57,11 +59,16 @@ class CommandExecutionResult:
 class CommandExecutor:
     """음성 명령 실행 엔진"""
     
-    def __init__(self):
+    def __init__(self, user_id: str = None):
+        self.user_id = user_id
         self.is_listening = True
         self.current_mode = AppMode.SETUP
         self.current_setup_step = SetupStep.START
         self.execution_history = []
+        
+        # 상태 영속화 초기화
+        if user_id:
+            self._load_user_state(user_id)
 
         # 사용자 설정 정보 
         self.user_settings = {
@@ -83,6 +90,93 @@ class CommandExecutor:
         self.imu_processor = None  # 새로운 IMU 융합 프로세서
         self.fastdepth_processor = None  # 새로운 FastDepth 프로세서
         self.session_id = None # 측정 세션 ID
+
+    def _load_user_state(self, user_id: str):
+        """데이터베이스에서 사용자 설정을 조회하여 상태를 판단"""
+        try:
+            with get_sync_session() as session:
+                # 사용자 정보 조회
+                user = session.query(User).filter(User.user_id == user_id).first()
+                if not user:
+                    print(f"[DEBUG] 새 사용자 - 기본 상태로 초기화")
+                    return
+                
+                # 관련 설정 조회 - 직접 각 테이블에서 확인 (더 안전한 방법)
+                user_setting = session.query(UserSetting).filter(UserSetting.user_id == user_id).first()
+                
+                # 각 테이블에서 직접 데이터 존재 확인
+                from models.database_models import Voice, Caregiver, Footstep
+                voice_exists = session.query(Voice).filter(Voice.user_id == user_id).first() is not None
+                caregiver_exists = session.query(Caregiver).filter(Caregiver.user_id == user_id).first() is not None
+                footstep_exists = session.query(Footstep).filter(Footstep.user_id == user_id).first() is not None
+                
+                # 온보딩 완료 여부 판단 (user_settings 외래키 방식과 직접 확인 방식 모두 체크)
+                has_voice_setting = voice_exists or (user_setting and user_setting.voice_id is not None)
+                has_caregiver_info = caregiver_exists or (user_setting and user_setting.caregiver_id is not None)  
+                has_footstep_info = footstep_exists or (user_setting and user_setting.step_id is not None)
+                has_user_name = user.user_name is not None and len(user.user_name.strip()) > 0
+                
+                # 디버깅 로그 추가
+                print(f"[DEBUG] 온보딩 상태 체크 - user_id: {user_id}")
+                print(f"  - user_setting 존재: {user_setting is not None}")
+                if user_setting:
+                    print(f"  - user_settings.voice_id: {user_setting.voice_id}")
+                    print(f"  - user_settings.caregiver_id: {user_setting.caregiver_id}")
+                    print(f"  - user_settings.step_id: {user_setting.step_id}")
+                print(f"  - voice 테이블에 데이터 존재: {voice_exists}")
+                print(f"  - caregiver 테이블에 데이터 존재: {caregiver_exists}")
+                print(f"  - footstep 테이블에 데이터 존재: {footstep_exists}")
+                print(f"  - user_name: '{user.user_name}'")
+                print(f"  - has_voice_setting: {has_voice_setting}")
+                print(f"  - has_caregiver_info: {has_caregiver_info}")
+                print(f"  - has_footstep_info: {has_footstep_info}")
+                print(f"  - has_user_name: {has_user_name}")
+                
+                # 모든 설정이 완료되면 온보딩 완료로 판단
+                onboarding_complete = all([has_voice_setting, has_caregiver_info, has_footstep_info, has_user_name])
+                
+                if onboarding_complete:
+                    # 온보딩 완료 - 일반 모드로 설정
+                    self.current_mode = AppMode.NORMAL
+                    self.current_setup_step = SetupStep.COMPLETE
+                    print(f"[DEBUG] 온보딩 완료된 사용자 - 일반 모드로 설정")
+                else:
+                    # 온보딩 미완료 - SETUP 모드로 설정하고 해당 단계부터 시작
+                    self.current_mode = AppMode.SETUP
+                    if not has_user_name:
+                        self.current_setup_step = SetupStep.START
+                    elif not has_footstep_info:
+                        self.current_setup_step = SetupStep.STEP_LENGTH
+                    elif not has_voice_setting:
+                        self.current_setup_step = SetupStep.VOICE_GENDER
+                    elif not has_caregiver_info:
+                        self.current_setup_step = SetupStep.CAREGIVER_INFO
+                    else:
+                        self.current_setup_step = SetupStep.MODE_SELECTION
+                    
+                    print(f"[DEBUG] 온보딩 미완료 - SETUP 모드, 단계: {self.current_setup_step.value}")
+                    
+        except Exception as e:
+            print(f"[ERROR] 사용자 상태 로드 실패: {e}")
+            # 오류 발생 시 기본 상태 유지
+
+    def _save_user_state(self):
+        """사용자 기본 정보 생성 (상태는 코드로 관리)"""
+        if not self.user_id:
+            return
+            
+        try:
+            with get_sync_session() as session:
+                # 사용자가 존재하지 않으면 생성
+                user = session.query(User).filter(User.user_id == self.user_id).first()
+                if not user:
+                    user = User(user_id=self.user_id)
+                    session.add(user)
+                    session.commit()
+                    print(f"[DEBUG] 새 사용자 생성 완료 - user_id: {self.user_id}")
+                
+        except Exception as e:
+            print(f"[ERROR] 사용자 생성 실패: {e}")
         
         # 보폭 계산을 위한 데이터 수집
         self.processed_frames = []  # For UnifiedStepCalculator
@@ -1018,6 +1112,10 @@ class CommandExecutor:
 
     async def _setup_complete(self) -> CommandExecutionResult:
         """설정 완료"""
+        # 온보딩 완료 - 모드 변경
+        self.current_mode = AppMode.NORMAL
+        self.current_setup_step = SetupStep.COMPLETE
+        
         return CommandExecutionResult(
             status=ExecutionStatus.SUCCESS,
             message="모든 설정이 완료되었습니다!",
@@ -1332,9 +1430,9 @@ class CommandExecutor:
             self.execution_history = self.execution_history[-100:]
     
     def get_current_status(self) -> Dict[str, Any]:
-        """현재 상태 반환"""
-        # 설정 완료 조건: 모드가 SETUP이 아니거나 설정 단계가 COMPLETE인 경우
-        setup_complete = (self.current_mode != AppMode.SETUP) or (self.current_setup_step == SetupStep.COMPLETE)
+        """현재 상태 반환 - 데이터베이스 기반 온보딩 완료 판단"""
+        # 데이터베이스에서 실제 설정 완료 여부를 확인
+        setup_complete = self._check_onboarding_complete()
         
         print(f"[DEBUG] 상태 확인 - 모드: {self.current_mode.value}, 단계: {self.current_setup_step.value}, 완료: {setup_complete}")
         
@@ -1349,6 +1447,33 @@ class CommandExecutor:
             "measurement_active": self.measurement_active,
             "measurement_progress": self.get_measurement_progress()
         }
+    
+    def _check_onboarding_complete(self) -> bool:
+        """데이터베이스를 확인하여 온보딩 완료 여부 판단"""
+        if not self.user_id:
+            return False
+            
+        try:
+            with get_sync_session() as session:
+                # 사용자 정보 조회
+                user = session.query(User).filter(User.user_id == self.user_id).first()
+                if not user:
+                    return False
+                
+                # 관련 설정 조회
+                user_setting = session.query(UserSetting).filter(UserSetting.user_id == self.user_id).first()
+                
+                # 온보딩 완료 여부를 데이터 존재 여부로 판단
+                has_voice_setting = user_setting and user_setting.voice_id is not None
+                has_caregiver_info = user_setting and user_setting.caregiver_id is not None  
+                has_footstep_info = user_setting and user_setting.step_id is not None
+                has_user_name = user.user_name is not None and len(user.user_name.strip()) > 0
+                
+                return all([has_voice_setting, has_caregiver_info, has_footstep_info, has_user_name])
+                
+        except Exception as e:
+            print(f"[ERROR] 온보딩 상태 확인 실패: {e}")
+            return False
     
     def get_execution_history(self, limit: int = 10) -> List[Dict[str, Any]]:
         """실행 기록 반환"""
