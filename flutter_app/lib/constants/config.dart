@@ -4,7 +4,8 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 class AppConfig {
   /// 백엔드 서버 기본 URL
   static String get backendBaseUrl => 
-      dotenv.env['BACKEND_BASE_URL'] ?? 'http://localhost:8000';
+      // dotenv.env['BACKEND_BASE_URL'] ?? 'http://localhost:8000';
+dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onrender.com';
   
   /// 측정 관련 엔드포인트 URL
   static String get measurementEndpoint => 

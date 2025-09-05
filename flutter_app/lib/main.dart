@@ -25,7 +25,8 @@ const String kUuidKey = 'app_uuid';
 const bool kUseBackendStatusCheck = true;
 
 /// 기본 상태 조회 엔드포인트 (dotenv 가 있으면 그걸 우선)
-const String kStatusEndpointBaseDefault = 'http://localhost:8000/api/users/measurement/';
+// const String kStatusEndpointBaseDefault = 'http://localhost:8000/api/users/measurement/';
+const String kStatusEndpointBaseDefault = 'https://aeye-gvu9.onrender.com/api/users/measurement/';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
