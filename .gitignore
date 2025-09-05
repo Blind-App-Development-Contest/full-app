@@ -119,3 +119,9 @@ temp_repo/
 
 # 에러 코드 분석(재혁이양)
 error.txt
+
+# supabase
+.env.supabase
+supabase/.supabase/
+supabase/migrations/
+supabase/functions/*/node_modules/
