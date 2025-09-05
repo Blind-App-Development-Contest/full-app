@@ -147,6 +147,7 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen>
             color: Colors.white,
           ),
           onPressed: () => Navigator.pop(context),
+          tooltip: '뒤로가기',
         ),
         title: const AccessibleTitle(
           '객체 인식',
