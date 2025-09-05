@@ -84,3 +84,4 @@ filterpy==1.4.5                          # 📐 고급 칼만 필터 구현 (확
 solapi
 
 PyJWT>=2.10.1
+psycopg2-binary # 데이터베이스 연결 드라이버
