@@ -17,7 +17,7 @@ import 'api_service.dart';
 enum VoiceState { idle, listening, processing }
 
 class VoiceService with ChangeNotifier {
-  final Record _audioRecorder = Record();
+  final AudioRecorder _audioRecorder = AudioRecorder();
   // AudioPlayer 싱글톤 관리 클래스
   static final _AudioPlayerManager _playerManager = _AudioPlayerManager();
   AudioPlayer get _audioPlayer => _playerManager.player;
@@ -191,7 +191,7 @@ class VoiceService with ChangeNotifier {
       _addDebugLog("녹음 설정: AAC-LC, 128kbps, 44.1kHz");
 
       // 녹음 시작
-      await _audioRecorder.start(path: _currentRecordingPath!);
+      await _audioRecorder.start(const RecordConfig(), path: _currentRecordingPath!);
 
       _setState(VoiceState.listening);
       _setStatus("녹음 중... (최대 20초)");

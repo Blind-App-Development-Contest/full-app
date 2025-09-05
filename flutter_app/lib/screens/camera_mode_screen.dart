@@ -1,13 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math'; // min 함수 사용을 위해 추가
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
-
-// 조건부 import
-import 'dart:html' if (dart.library.html) 'dart:html' hide VoidCallback;
-import 'dart:ui_web' as ui_web if (dart.library.html) 'dart:ui_web';
+import 'package:camera/camera.dart';
+import 'package:image/image.dart' as img;
+import 'package:blind/services/api_service.dart';
 
 class CameraModeScreen extends StatefulWidget {
   const CameraModeScreen({super.key});
@@ -17,79 +15,67 @@ class CameraModeScreen extends StatefulWidget {
 }
 
 class _CameraModeScreenState extends State<CameraModeScreen> {
-  late final String _viewId;
-  dynamic _videoElement; // 웹에서는 VideoElement, 다른 플랫폼에서는 null
   final Completer<void> _cameraReadyCompleter = Completer<void>();
-
   WebSocketChannel? _channel;
-  Timer? _frameSender;
   List<dynamic> _detectedObjects = [];
   String? _error;
+  String? _userId;
 
-  final String _userId = "3fa85f64-5717-4562-b3fc-2c963f66afa6"; // Modified to use specific UUID
+  CameraController? _mobileController;
+  bool _isProcessingFrame = false;
 
   @override
   void initState() {
     super.initState();
-    // 웹페이지에서 viewId가 중복되지 않도록 고유 ID 생성
-    _viewId = 'web-camera-view-${DateTime.now().millisecondsSinceEpoch}';
-    _registerViewFactory();
+    _initializeMobileCamera();
   }
 
-  void _registerViewFactory() {
-    if (kIsWeb) {
-      // 웹 전용 코드
-      try {
-        Object Function(int) factory = (int viewId) {
-          _videoElement = VideoElement()
-            ..id = _viewId
-            ..autoplay = true
-            ..style.width = '100%'
-            ..style.height = '100%'
-            ..style.objectFit = 'cover';
+  Future<void> _initializeMobileCamera() async {
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) throw Exception('사용 가능한 카메라가 없습니다.');
+      final backCamera = cameras.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.back,
+        orElse: () => cameras.first,
+      );
 
-          window.navigator.mediaDevices
-              ?.getUserMedia({'video': true, 'audio': false})
-          .then((stream) {
-            _videoElement.srcObject = stream;
-            // 비디오 데이터가 로드되면 Completer를 완료하여 FutureBuilder에 신호를 보냄
-            _videoElement.onLoadedData.listen((event) {
-              _initializeWebSocket();
-              _startFrameSending();
-              if (!_cameraReadyCompleter.isCompleted) {
-                _cameraReadyCompleter.complete();
-              }
-            });
-          })
-          .catchError((error) {
-            if (!_cameraReadyCompleter.isCompleted) {
-              setState(() {
-                _error = "카메라 접근 오류: ${error.toString()}";
-              });
-              _cameraReadyCompleter.completeError(error);
-            }
-          });
+      _mobileController = CameraController(
+        backCamera,
+        ResolutionPreset.high,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.yuv420,
+      );
 
-          return _videoElement;
-        };
-
-        ui_web.platformViewRegistry.registerViewFactory(_viewId, factory);
-      } catch (e) {
-        debugPrint('웹 카메라 초기화 실패: $e');
-        if (!_cameraReadyCompleter.isCompleted) {
-          _cameraReadyCompleter.completeError(e);
-        }
+      await _mobileController!.initialize();
+      _userId = await ApiService().getCurrentUserUuid();
+      if (_userId == null) {
+        throw Exception('사용자 UUID를 가져올 수 없습니다.');
       }
-    } else {
-      // 웹이 아닌 플랫폼에서는 카메라를 사용할 수 없음을 알림
+      _initializeWebSocket();
+      _startMobileFrameSending();
+
+      if (!_cameraReadyCompleter.isCompleted) _cameraReadyCompleter.complete();
+    } catch (e) {
+      _handleInitError(e);
+    }
+  }
+
+  void _handleInitError(dynamic e) {
+    debugPrint('카메라 초기화 실패: $e');
+    if (mounted) {
+      setState(() => _error = "카메라 초기화 실패: ${e.toString()}");
       if (!_cameraReadyCompleter.isCompleted) {
-        _cameraReadyCompleter.completeError('웹 플랫폼에서만 지원됩니다');
+        _cameraReadyCompleter.completeError(e);
       }
     }
   }
 
   void _initializeWebSocket() {
-    final wsUrl = Uri.parse('ws://localhost:8000/api/camera/stream/$_userId');
+    if (_userId == null) {
+      debugPrint('웹소켓 초기화 실패: 사용자 UUID가 없습니다.');
+      return;
+    }
+    final wsUrl = Uri.parse('ws://10.0.2.2:8000/api/camera/stream/$_userId');
     _channel = WebSocketChannel.connect(wsUrl);
 
     _channel!.stream.listen(
@@ -97,7 +83,9 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
         if (mounted) {
           final decoded = json.decode(data);
           setState(() {
-            if (decoded is Map && decoded.containsKey('objects') && decoded['objects'] is List) {
+            if (decoded is Map &&
+                decoded.containsKey('objects') &&
+                decoded['objects'] is List) {
               _detectedObjects = decoded['objects'];
             }
           });
@@ -108,38 +96,42 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
     );
   }
 
-  void _startFrameSending() {
-    if (!kIsWeb) return; // 웹이 아니면 프레임 전송 불가
-    
-    _frameSender = Timer.periodic(const Duration(milliseconds: 100), (timer) {
-      if (_channel == null || _videoElement == null || _videoElement.readyState < 2) return;
+  void _startMobileFrameSending() {
+    _mobileController!.startImageStream((CameraImage cameraImage) {
+      if (_isProcessingFrame || !mounted) return;
+      _isProcessingFrame = true;
 
-      try {
-        final canvas = CanvasElement(
-          width: _videoElement.videoWidth,
-          height: _videoElement.videoHeight,
-        );
-        canvas.context2D.drawImage(_videoElement, 0, 0);
-        final dataUrl = canvas.toDataUrl('image/jpeg', 0.75);
-        final base64String = dataUrl.split(',')[1];
+      Future(() {
+        try {
+          final image = img.Image.fromBytes(
+            width: cameraImage.width,
+            height: cameraImage.height,
+            bytes: cameraImage.planes[0].bytes.buffer,
+            format: img.Format.uint8,
+            numChannels: 1,
+          );
 
-        final data = json.encode({
-          'frame': base64String,
-          'timestamp': DateTime.now().toIso8601String(),
-        });
+          final List<int> jpeg = img.encodeJpg(image, quality: 75);
+          final String base64String = base64Encode(jpeg);
 
-        _channel!.sink.add(data);
-      } catch (e) {
-        debugPrint('프레임 전송 오류: $e');
-      }
+          _channel?.sink.add(json.encode({
+            'frame': base64String,
+            'timestamp': DateTime.now().toIso8601String(),
+          }));
+        } catch (e) {
+          debugPrint('모바일 프레임 처리 오류: $e');
+        } finally {
+          _isProcessingFrame = false;
+        }
+      });
     });
   }
 
   @override
   void dispose() {
-    _frameSender?.cancel();
+    _mobileController?.stopImageStream();
+    _mobileController?.dispose();
     _channel?.sink.close();
-    _videoElement.srcObject?.getTracks().forEach((track) => track.stop());
     super.dispose();
   }
 
@@ -151,78 +143,96 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // HtmlElementView를 항상 빌드하여 뷰 팩토리가 호출되도록 함
-            HtmlElementView(viewType: _viewId),
-
-            // FutureBuilder를 사용하여 카메라 준비 상태에 따라 UI를 분기
             FutureBuilder<void>(
               future: _cameraReadyCompleter.future,
               builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.done) {
-                  if (snapshot.hasError) {
-                    // 에러가 발생하면 중앙에 에러 메시지 표시
-                    return Center(
-                      child: Container(
-                        padding: const EdgeInsets.all(20),
-                        color: Colors.black.withValues(alpha: 0.7),
-                        child: Text(
-                          _error ?? snapshot.error.toString(),
-                          style: const TextStyle(color: Colors.red, fontSize: 16),
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-                    );
-                  }
-                  // 카메라가 준비되면 객체 탐지 오버레이를 그림
+                if (snapshot.connectionState == ConnectionState.done &&
+                    !snapshot.hasError) {
+                  return CameraPreview(_mobileController!);
+                }
+                return Container();
+              },
+            ),
+            FutureBuilder<void>(
+              future: _cameraReadyCompleter.future,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.done &&
+                    !snapshot.hasError) {
+                  final previewSize = _mobileController!.value.previewSize;
+                  final videoSize = Size(previewSize!.height, previewSize.width);
                   return CustomPaint(
                     painter: ObjectPainter(
-                      objects: _detectedObjects,
-                      videoSize: Size(
-                        _videoElement.videoWidth.toDouble(),
-                        _videoElement.videoHeight.toDouble(),
+                        objects: _detectedObjects, videoSize: videoSize),
+                  );
+                }
+                return Container();
+              },
+            ),
+            FutureBuilder<void>(
+              future: _cameraReadyCompleter.future,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Container(
+                      padding: const EdgeInsets.all(20),
+                      color: Colors.black.withOpacity(0.7),
+                      child: Text(
+                        _error ?? snapshot.error.toString(),
+                        style: const TextStyle(color: Colors.red, fontSize: 16),
+                        textAlign: TextAlign.center,
                       ),
                     ),
                   );
-                } else {
-                  // 카메라 준비 중에는 로딩 인디케이터 표시
-                  return const Center(child: CircularProgressIndicator());
                 }
+                return Container();
               },
             ),
-
-            // 상단 '카메라 모드' 텍스트 (항상 표시)
             const Positioned(
               top: 20,
               left: 20,
-              child: Text(
-                '카메라 모드',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  shadows: [Shadow(blurRadius: 5.0, color: Colors.black)],
-                ),
-              ),
+              child: Text('카메라 모드',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      shadows: [Shadow(blurRadius: 5.0, color: Colors.black)])),
             ),
-
-            // 하단 버튼 바 (항상 표시)
             Positioned(
               bottom: 20,
               left: 20,
               right: 20,
               child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 15.0, horizontal: 10.0),
+                padding: const EdgeInsets.symmetric(
+                    vertical: 15.0, horizontal: 10.0),
                 decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.7),
-                  borderRadius: BorderRadius.circular(20),
-                ),
+                    color: Colors.black.withOpacity(0.7),
+                    borderRadius: BorderRadius.circular(20)),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
-                    Expanded(child: _buildBottomButton(icon: Icons.text_fields, label: '주변 안내', onPressed: () {})),
-                    Expanded(child: _buildBottomButton(icon: Icons.navigation, label: '길찾기', onPressed: () {})),
-                    Expanded(child: _buildBottomButton(icon: Icons.phone, label: '보호자호출', onPressed: () {})),
-                    Expanded(child: _buildBottomButton(icon: Icons.settings, label: '설정', onPressed: () {})),
+                    Expanded(
+                        child: _buildBottomButton(
+                            icon: Icons.text_fields,
+                            label: '주변 안내',
+                            onPressed: () {})),
+                    Expanded(
+                        child: _buildBottomButton(
+                            icon: Icons.navigation,
+                            label: '길찾기',
+                            onPressed: () {})),
+                    Expanded(
+                        child: _buildBottomButton(
+                            icon: Icons.phone,
+                            label: '보호자호출',
+                            onPressed: () {})),
+                    Expanded(
+                        child: _buildBottomButton(
+                            icon: Icons.settings,
+                            label: '설정',
+                            onPressed: () {})),
                   ],
                 ),
               ),
@@ -233,7 +243,8 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
     );
   }
 
-  Widget _buildBottomButton({required IconData icon, required String label, required VoidCallback onPressed}) {
+  Widget _buildBottomButton(
+      {required IconData icon, required String label, required VoidCallback onPressed}) {
     return GestureDetector(
       onTap: onPressed,
       child: Column(
@@ -241,10 +252,7 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
         children: [
           Icon(icon, color: Colors.white, size: 30),
           const SizedBox(height: 8),
-          Text(
-            label,
-            style: const TextStyle(color: Colors.white, fontSize: 12),
-          ),
+          Text(label, style: const TextStyle(color: Colors.white, fontSize: 12)),
         ],
       ),
     );
@@ -263,7 +271,6 @@ class ObjectPainter extends CustomPainter {
 
     final double scaleX = size.width / videoSize.width;
     final double scaleY = size.height / videoSize.height;
-    // 화면과 비디오의 가로세로 비율 중 더 작은 스케일을 사용하여 비율을 유지 (object-fit: cover 와 유사)
     final double scale = min(scaleX, scaleY);
 
     final double offsetX = (size.width - videoSize.width * scale) / 2;
@@ -275,13 +282,11 @@ class ObjectPainter extends CustomPainter {
       ..color = Colors.red;
 
     final textStyle = const TextStyle(
-      color: Colors.white,
-      fontSize: 14.0,
-      backgroundColor: Colors.black54,
-    );
+        color: Colors.white, fontSize: 14.0, backgroundColor: Colors.black54);
 
     for (var obj in objects) {
-      if (obj is! Map || obj['box'] is! List || obj['box'].length != 4) continue;
+      if (obj is! Map || obj['box'] is! List || obj['box'].length != 4)
+        continue;
 
       final double xCenter = obj['box'][0];
       final double yCenter = obj['box'][1];
@@ -294,7 +299,6 @@ class ObjectPainter extends CustomPainter {
         height: h * videoSize.height,
       );
 
-      // 화면에 맞게 스케일 및 오프셋 적용
       final Rect screenRect = Rect.fromLTRB(
         videoRect.left * scale + offsetX,
         videoRect.top * scale + offsetY,
@@ -305,14 +309,13 @@ class ObjectPainter extends CustomPainter {
       canvas.drawRect(screenRect, paint);
 
       final textSpan = TextSpan(text: obj['name'], style: textStyle);
-      final textPainter = TextPainter(text: textSpan, textAlign: TextAlign.left, textDirection: TextDirection.ltr);
+      final textPainter =
+          TextPainter(text: textSpan, textAlign: TextAlign.left, textDirection: TextDirection.ltr);
       textPainter.layout();
       textPainter.paint(canvas, screenRect.topLeft + const Offset(4, 4));
     }
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) {
-    return true;
-  }
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }

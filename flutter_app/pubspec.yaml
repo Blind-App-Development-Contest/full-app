@@ -32,9 +32,9 @@ dependencies:
     sdk: flutter
 
   # 카메라
-  camera: ^0.10.5+9
+  camera: ^0.11.0
   # 음성 녹음
-  record: ^4.4.4
+  record: ^6.0.0
   # 파일 경로 관리
   path_provider: ^2.1.2
   # 로컬 저장소
