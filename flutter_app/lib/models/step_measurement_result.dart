@@ -1,5 +1,6 @@
 class StepMeasurementResult {
   // === 통일된 변수명 (시각장애인 접근성 고려) ===
+  // ignore: non_constant_identifier_names
   final double step_length_cm;  // 보폭 (cm) - 백엔드와 동일한 변수명
   final int stepCount;          // 걸음 수 - 모든 곳에서 이 이름 사용  
   final double? distanceMeters; // 총 이동거리 (m) - 모든 곳에서 이 이름 사용
@@ -19,6 +20,7 @@ class StepMeasurementResult {
   static const int defaultMeasurementSteps = 10;
 
   const StepMeasurementResult({
+    // ignore: non_constant_identifier_names
     required this.step_length_cm,
     required this.confidence,
     required this.stepCount,

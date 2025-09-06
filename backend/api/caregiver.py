@@ -14,6 +14,7 @@ from .users import get_session  # users.py의 세션 생성기 재사용
 from solapi import SolapiMessageService
 from solapi.model import RequestMessage
 from starlette.concurrency import run_in_threadpool
+from config.settings import get_settings
 
 # (개발환경 편의를 위해 .env 로드; 프로덕션은 런타임 시크릿 주입 권장)
 try:
@@ -23,6 +24,7 @@ except Exception:
     pass
 
 logger = logging.getLogger("uvicorn.error")
+settings = get_settings()
 
 router = APIRouter(prefix="/api/users", tags=["caregiver"])
 
@@ -119,11 +121,17 @@ async def create_caregiver(req: CaregiverCreate, session: AsyncSession = Depends
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"User with id '{user_id_str}' not found")
         if "violates unique constraint" in str(e.orig):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Caregiver already exists for this user")
-        logger.exception("DB integrity error during caregiver creation")
+        if settings.DEBUG:
+            logger.exception("DB integrity error during caregiver creation")
+        else:
+            logger.error("DB integrity error during caregiver creation")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database integrity error")
     except Exception as e:
         await session.rollback()
-        logger.exception("DB error during caregiver creation")
+        if settings.DEBUG:
+            logger.exception("DB error during caregiver creation")
+        else:
+            logger.error(f"DB error during caregiver creation: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred: {e}")
 
 # ─────────────────────────────────────────────────────────────
@@ -163,7 +171,10 @@ async def update_caregiver(user_id: UUID, req: CaregiverUpdate, session: AsyncSe
         return CaregiverResponse.model_validate(row, from_attributes=True)
     except Exception as e:
         await session.rollback()
-        logger.exception("DB error during caregiver update")
+        if settings.DEBUG:
+            logger.exception("DB error during caregiver update")
+        else:
+            logger.error(f"DB error during caregiver update: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred: {e}")
 
 # ─────────────────────────────────────────────────────────────
@@ -232,5 +243,8 @@ async def send_caregiver_alert(req: AlertRequest, session: AsyncSession = Depend
         raise
     except Exception as e:
         await session.rollback()
-        logger.exception("Error sending caregiver alert")
+        if settings.DEBUG:
+            logger.exception("Error sending caregiver alert")
+        else:
+            logger.error(f"Error sending caregiver alert: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred: {e}")

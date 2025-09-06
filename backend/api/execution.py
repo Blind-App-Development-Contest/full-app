@@ -11,7 +11,6 @@ from services.singleton import service_manager
 command_executor = service_manager.get_command_executor()
 
 @router.get("", response_model=SystemStatusResponse)
-@router.get("/", response_model=SystemStatusResponse)
 def get_execution_status():
     """
     현재 시스템 실행 상태 조회 - StatusService 통합
@@ -90,7 +89,7 @@ def get_commands_history(limit: int = 10):
         print(f"[오류] 기록 조회 중 오류: {e}")
         raise HTTPException(status_code=500, detail=f"기록 조회 오류: {str(e)}")
 
-@router.get("/setup", tags=["Setup Management"])
+@router.get("/setup", tags=["Command Execution"])
 def get_setup_configuration():
     """
     설정 진행 상황 조회
@@ -113,7 +112,7 @@ def get_setup_configuration():
         print(f"[오류] 설정 상태 조회 중 오류: {e}")
         raise HTTPException(status_code=500, detail=f"상태 조회 오류: {str(e)}")
 
-@router.delete("/setup", tags=["Setup Management"])
+@router.delete("/setup", tags=["Command Execution"])
 def delete_setup_configuration():
     """
     설정 초기화 (재설정)
