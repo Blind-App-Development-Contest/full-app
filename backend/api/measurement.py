@@ -5,7 +5,7 @@ import asyncio
 import logging
 # 중앙화된 데이터베이스 연결 사용
 from core.database import get_async_db
-from models.database_models import User, Footstep, DashboardLog
+from models.database_models import User, Footstep, DashboardLog, Voice
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from uuid import UUID
@@ -113,20 +113,100 @@ async def static_detection_test(
         }
 
 @router.get("")
-async def measurement_status():
-    """측정 서비스 상태 확인"""
-    return {
-        "service": "Measurement System",
-        "status": "active",
-        "endpoints": {
-            "commands/enhanced": "POST /commands/enhanced - 향상된 명령 처리",
-            "fastdepth/frame": "POST /fastdepth/frame - FastDepth 프레임 처리",
-            "frame": "POST /frame - 측정용 프레임 처리",
-            "reset": "POST /reset - 측정 리셋",
-            "session/start": "POST /session/start - 측정 세션 시작",
-            "session/stop": "POST /session/stop - 측정 세션 중지"
+async def measurement_status(
+    uuid: Optional[str] = None,
+    session: AsyncSession = Depends(get_async_db)
+):
+    """
+    측정 서비스 상태 확인 및 사용자 온보딩 상태 체크
+    
+    Args:
+        uuid: 사용자 UUID (옵션)
+        session: 데이터베이스 세션
+        
+    Returns:
+        - uuid가 없으면: 서비스 상태만 반환
+        - uuid가 있으면: 사용자 온보딩 완료 상태 포함하여 반환
+    """
+    # UUID가 없으면 기본 서비스 상태만 반환
+    if not uuid:
+        return {
+            "service": "Measurement System",
+            "status": "active",
+            "endpoints": {
+                "commands/enhanced": "POST /commands/enhanced - 향상된 명령 처리",
+                "fastdepth/frame": "POST /fastdepth/frame - FastDepth 프레임 처리",
+                "frame": "POST /frame - 측정용 프레임 처리",
+                "reset": "POST /reset - 측정 리셋",
+                "session/start": "POST /session/start - 측정 세션 시작",
+                "session/stop": "POST /session/stop - 측정 세션 중지"
+            }
         }
-    }
+    
+    # UUID가 있으면 사용자 온보딩 상태 확인
+    try:
+        # UUID 유효성 검사
+        from uuid import UUID as UUIDValidator
+        try:
+            user_uuid = UUIDValidator(uuid)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="유효하지 않은 UUID 형식입니다")
+        
+        # 사용자 존재 여부 확인
+        user_result = await session.execute(
+            select(User).where(User.user_id == user_uuid)
+        )
+        user = user_result.scalar_one_or_none()
+        
+        if not user:
+            return {
+                "service": "Measurement System",
+                "status": "active",
+                "setup_complete": False,
+                "reason": "user_not_found",
+                "message": "사용자를 찾을 수 없습니다. 새로운 온보딩이 필요합니다."
+            }
+        
+        # 사용자 이름 확인
+        has_name = user.user_name and user.user_name.strip()
+        
+        # 보폭 설정 확인
+        footstep_result = await session.execute(
+            select(Footstep).where(Footstep.user_id == user_uuid)
+        )
+        footstep = footstep_result.scalar_one_or_none()
+        has_footstep = footstep is not None and footstep.step_length > 0
+        
+        # 음성 설정 확인
+        voice_result = await session.execute(
+            select(Voice).where(Voice.user_id == user_uuid)
+        )
+        voice = voice_result.scalar_one_or_none()
+        has_voice = voice is not None
+        
+        # 온보딩 완료 여부 결정 (이름과 보폭 모두 설정되어야 완료)
+        setup_complete = bool(has_name and has_footstep)
+        
+        return {
+            "service": "Measurement System",
+            "status": "active",
+            "setup_complete": setup_complete,
+            "user_id": str(user_uuid),
+            "user_name": user.user_name,
+            "onboarding_status": {
+                "has_name": bool(has_name),
+                "has_footstep": bool(has_footstep),
+                "has_voice": bool(has_voice),
+                "step_length_cm": footstep.step_length if footstep else None
+            },
+            "message": "온보딩이 완료되었습니다!" if setup_complete else "온보딩을 완료해주세요."
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"사용자 상태 확인 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"사용자 상태 확인 중 오류가 발생했습니다: {str(e)}")
 
 # 싱글톤 서비스 인스턴스 사용
 from services.singleton import service_manager
