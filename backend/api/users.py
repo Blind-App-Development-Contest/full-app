@@ -55,7 +55,7 @@ def root():
 async def get_users(session: AsyncSession = Depends(get_session)):
     """사용자 목록 조회"""
     try:
-        result = await session.execute(text("SELECT app_uuid, user_name FROM users ORDER BY created_at DESC LIMIT 100"))
+        result = await session.execute(text("SELECT user_id, user_name FROM users ORDER BY created_at DESC LIMIT 100"))
         users = [{"app_uuid": str(row[0]), "user_name": row[1]} for row in result.fetchall()]
         return {"users": users, "count": len(users)}
     except Exception as e:
