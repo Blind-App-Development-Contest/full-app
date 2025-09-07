@@ -4,7 +4,7 @@ import requests
 
 UUID_FILE = Path.home() / ".my_app_uuid.txt"
 NAME_FILE = Path.home() / ".my_app_user_name.txt"
-SERVER_URL = "http://127.0.0.1:8000/users/register"  # 맥/시뮬레이터
+SERVER_URL = "https://aeye-backend-app-jp.azurewebsites.net"
 
 def get_or_create_uuid() -> str:
     if UUID_FILE.exists():

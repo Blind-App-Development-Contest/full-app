@@ -11,7 +11,7 @@ class ApiService {
   ApiService._internal();
 
   // String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'http://localhost:8000';
-String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onrender.com';
+String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-app-jp.azurewebsites.net';
   final http.Client _httpClient = http.Client();
   
   /// 사용자 UUID 키
