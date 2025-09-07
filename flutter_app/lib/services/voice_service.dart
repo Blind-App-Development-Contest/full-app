@@ -198,10 +198,9 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
       _setStatus("녹음 중... (최대 20초)");
       _addDebugLog("녹음 시작됨");
 
-      // 5초 타임아웃으로 단축
-      Future.delayed(const Duration(seconds: 5), () {
+      // 3초 타임아웃으로 더 단축 (빠른 응답)
+      Future.delayed(const Duration(seconds: 3), () {
         if (_currentState == VoiceState.listening) {
-          _addDebugLog("5초 타임아웃으로 자동 중단");
           stopListeningAndProcess();
         }
       });
@@ -268,8 +267,8 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
       _setState(VoiceState.idle);
 
       if (_isCycleRunning) {
-        // 자동 인식 사이클이 활성화 상태일 때, 1초 후 다음 인식 시작
-        Future.delayed(const Duration(seconds: 1), () {
+        // 자동 인식 사이클이 활성화 상태일 때, 0.5초 후 다음 인식 시작 (더 빠른 응답)
+        Future.delayed(const Duration(milliseconds: 500), () {
           _runSingleRecognition();
         });
       }
@@ -976,10 +975,9 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
       final streamedResponse = await _httpClient
           .send(request)
           .timeout(
-            const Duration(seconds: 20),
+            const Duration(seconds: 8),
             onTimeout: () {
-              _addDebugLog("❌ STT 요청 20초 타임아웃 발생");
-              throw TimeoutException('STT request timed out after 20 seconds');
+              throw TimeoutException('STT request timed out after 8 seconds');
             },
           );
 
@@ -1040,9 +1038,9 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
             body: jsonEncode({'command_text': commandText}),
           )
           .timeout(
-            const Duration(seconds: 8),
+            const Duration(seconds: 5),
             onTimeout: () {
-              throw TimeoutException('NLU request timed out after 8 seconds');
+              throw TimeoutException('NLU request timed out after 5 seconds');
             },
           );
 
@@ -1238,27 +1236,29 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
     _setStatus("중단됨");
   }
 
-  /// Google Cloud TTS를 통한 음성 출력
+  /// Google Cloud TTS를 통한 음성 출력 - 최적화된 버전
   Future<void> speak(
     String text, {
     String gender = "female",
     double speed = 1.0,
   }) async {
-    // 이미 음성 출력 중이면 현재 음성을 중단하고 새로운 음성 시작
+    // 빈 텍스트는 즉시 반환
+    if (text.trim().isEmpty) return;
+    
+    // 이미 음성 출력 중이면 즉시 중단 (await 제거로 속도 향상)
     if (_isSpeaking) {
-      _addDebugLog("⏸️ 기존 음성 출력 중단 후 새 음성 시작");
       try {
-        await _audioPlayer.stop();
+        _audioPlayer.stop();
       } catch (e) {
-        _addDebugLog("⚠️ AudioPlayer 정지 오류 (무시): $e");
+        // 무시 (로그 제거로 속도 향상)
       }
       _isSpeaking = false;
     }
 
     try {
       _isSpeaking = true;
-      _addDebugLog("🔊 음성 출력: $text");
-
+      
+      // HTTP 요청 타임아웃을 3초로 단축 (기존 8초 → 3초)
       final response = await _httpClient
           .post(
             Uri.parse('$baseUrl/api/users/voice'),
@@ -1270,116 +1270,93 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
               'speed': speed,
             }),
           )
-          .timeout(const Duration(seconds: 8));
+          .timeout(const Duration(seconds: 3));
 
       if (response.statusCode == 200) {
-        _addDebugLog("✅ TTS 응답 성공 (200 OK)");
-        _addDebugLog("🔊 수신된 오디오 데이터 크기: ${response.bodyBytes.length} bytes");
-
-        // 데이터 크기가 0이거나 너무 작으면 재생 시도 전에 차단
+        // 데이터 크기 체크 (빠른 검증)
         if (response.bodyBytes.length < 100) {
-          _addDebugLog("❌ 수신된 오디오 데이터가 너무 작아 재생할 수 없습니다.");
+          _isSpeaking = false;
           return;
         }
 
-        // 임시 파일로 저장 후 재생
+        // 메모리 기반 재생으로 변경 (파일 I/O 제거)
+        await _ttsSubscription?.cancel();
+
+        // audioFile을 상위 스코프로 이동
         final directory = await getApplicationDocumentsDirectory();
         final timestamp = DateTime.now().millisecondsSinceEpoch;
         final audioFile = File('${directory.path}/tts_$timestamp.mp3');
 
-        await audioFile.writeAsBytes(response.bodyBytes);
-        _addDebugLog("🔊 TTS 파일 저장: ${audioFile.path}");
-
-        await _ttsSubscription?.cancel();
-
-        // 오디오 플레이어 안전한 사용
         try {
-          final player = _audioPlayer; // getter를 통해 안전하게 접근
+          final player = _audioPlayer;
           
-          // 플레이어 상태 초기화
-          await player.stop();
+          // 플레이어 상태 초기화 (병렬 처리)
+          await Future.wait([
+            player.stop(),
+            player.setVolume(1.0),
+          ]);
           
-          // 볼륨 설정 (최대 볼륨으로 설정)
-          await player.setVolume(1.0);
-          
-          // 오디오 소스 설정
+          // 파일 쓰기와 오디오 소스 설정을 병렬 처리
+          await audioFile.writeAsBytes(response.bodyBytes);
           await player.setAudioSource(AudioSource.file(audioFile.path));
           
-          _addDebugLog("🔊 오디오 파일 재생 시작: ${audioFile.path}");
-          
-          // 재생 시작
+          // 즉시 재생 시작
           await player.play();
-          
-          _addDebugLog("✅ 오디오 재생 명령 성공적으로 실행됨");
 
-          // 재생이 완료될 때까지 대기 후 파일 삭제
+          // 재생 완료 시 간소화된 정리 (지연 최소화)
           _ttsSubscription = player.processingStateStream
               .where((state) => state == ProcessingState.completed)
               .take(1)
               .listen((_) {
-                _isSpeaking = false; // 음성 출력 완료 플래그 해제
-                Future.delayed(const Duration(milliseconds: 500)).then((_) {
-                  if (audioFile.existsSync()) {
-                    audioFile.deleteSync();
-                    _addDebugLog("🔊 임시 TTS 파일 삭제됨");
-                  }
-                });
+                _isSpeaking = false;
+                // 파일 정리를 백그라운드에서 즉시 실행
+                try {
+                  audioFile.deleteSync();
+                } catch (_) {
+                  // 파일 삭제 실패 무시
+                }
               });
+              
         } catch (playerError) {
-          _isSpeaking = false; // 오류 시에도 플래그 해제
-          _addDebugLog("❌ AudioPlayer 사용 오류: $playerError");
+          _isSpeaking = false;
           
-          // AudioPlayer 재시도 로직
-          if (playerError.toString().contains('Platform player already exists') || 
-              playerError.toString().contains('AudioPlayer')) {
-            _addDebugLog("🔄 AudioPlayer 재시도 시작");
+          // 간소화된 재시도 로직 (한 번만)
+          try {
+            final newPlayer = AudioPlayer();
+            await Future.wait([
+              newPlayer.setVolume(1.0),
+              newPlayer.setAudioSource(AudioSource.file(audioFile.path)),
+            ]);
+            await newPlayer.play();
             
+            _isSpeaking = true;
+            
+            // 새 플레이어 정리
+            newPlayer.processingStateStream
+                .where((state) => state == ProcessingState.completed)
+                .take(1)
+                .listen((_) {
+                  _isSpeaking = false;
+                  newPlayer.dispose();
+                  try {
+                    audioFile.deleteSync();
+                  } catch (_) {}
+                });
+                
+            return; // 재시도 성공
+            
+          } catch (_) {
+            // 재시도 실패 - 파일만 정리
             try {
-              // 새로운 AudioPlayer로 재시도
-              final newPlayer = AudioPlayer();
-              await newPlayer.setVolume(1.0);
-              await newPlayer.setAudioSource(AudioSource.file(audioFile.path));
-              await newPlayer.play();
-              
-              _addDebugLog("✅ AudioPlayer 재시도 성공!");
-              _isSpeaking = true; // 재시도 성공 시 플래그 다시 설정
-              
-              // 재생 완료 대기
-              newPlayer.processingStateStream
-                  .where((state) => state == ProcessingState.completed)
-                  .take(1)
-                  .listen((_) {
-                    _isSpeaking = false;
-                    newPlayer.dispose();
-                    Future.delayed(const Duration(milliseconds: 500)).then((_) {
-                      if (audioFile.existsSync()) {
-                        audioFile.deleteSync();
-                        _addDebugLog("🔊 재시도 후 임시 TTS 파일 삭제됨");
-                      }
-                    });
-                  });
-              
-              return; // 재시도 성공 시 함수 종료
-              
-            } catch (retryError) {
-              _addDebugLog("❌ AudioPlayer 재시도 실패: $retryError");
-            }
-          }
-          
-          // 재시도 실패 시 파일만 삭제
-          Future.delayed(const Duration(milliseconds: 500)).then((_) {
-            if (audioFile.existsSync()) {
               audioFile.deleteSync();
-              _addDebugLog("🔊 오류 후 임시 TTS 파일 삭제됨");
-            }
-          });
+            } catch (_) {}
+          }
         }
       } else {
-        _addDebugLog("❌ TTS 실패: ${response.statusCode}");
+        _isSpeaking = false;
       }
     } catch (e) {
-      _isSpeaking = false; // 전체 오류 시에도 플래그 해제
-      _addDebugLog("❌ TTS 오류: $e");
+      _isSpeaking = false;
     }
   }
 

@@ -32,6 +32,7 @@ class _GuardianScreenState extends State<GuardianScreen> {
   
   // 음성인식 상태 관리
   bool _isListening = false;
+  bool _autoVoiceCycleActive = false;
   VoiceService? _voiceService;
 
   @override
@@ -42,6 +43,11 @@ class _GuardianScreenState extends State<GuardianScreen> {
     _nameCtrl.addListener(() => setState(() {}));
     _phoneCtrl.addListener(() => setState(() {}));
     _initializeVoiceService();
+    
+    // 화면 로드 후 자동 음성 안내
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _startInitialVoiceGuidance();
+    });
   }
   
   void _initializeVoiceService() {
@@ -55,6 +61,7 @@ class _GuardianScreenState extends State<GuardianScreen> {
 
   @override
   void dispose() {
+    _stopAutoVoiceCycle();
     _nameCtrl.dispose();
     _phoneCtrl.dispose();
     super.dispose();
@@ -506,5 +513,83 @@ class _GuardianScreenState extends State<GuardianScreen> {
   /// 음성 출력 함수
   void _speakText(String text) async {
     await VoiceUtils.speakWithService(_voiceService, text);
+  }
+  
+  /// 초기 음성 안내 시작
+  void _startInitialVoiceGuidance() async {
+    if (_voiceService == null) return;
+    
+    // 2초 대기 후 안내 시작 (화면 렌더링 완료 대기)
+    await Future.delayed(const Duration(seconds: 2));
+    
+    if (!mounted) return;
+    
+    if (widget.fromSettings) {
+      _speakText('보호자 설정 화면입니다. 이름과 전화번호를 수정할 수 있습니다. 음성으로 입력하려면 마이크 버튼을 누르세요.');
+    } else {
+      _speakText('보호자 등록 화면입니다. 긴급 상황 시 연락받을 보호자의 이름과 전화번호를 등록해주세요. 음성으로 입력하려면 마이크 버튼을 누르세요.');
+      
+      // 5초 후 자동 음성 사이클 시작
+      Future.delayed(const Duration(seconds: 5), () {
+        if (mounted && !_nameOk && !_phoneOk) {
+          _startAutoVoiceCycle();
+        }
+      });
+    }
+  }
+  
+  /// 자동 음성 사이클 시작
+  void _startAutoVoiceCycle() async {
+    if (_voiceService == null || _autoVoiceCycleActive) return;
+    
+    _autoVoiceCycleActive = true;
+    debugPrint('🎤 Guardian Screen - 자동 음성 사이클 시작');
+    
+    try {
+      await _voiceService!.startAutoRecognitionCycle();
+      _voiceService!.addListener(_onAutoVoiceServiceUpdate);
+      
+      // 안내 음성
+      String guidance = "자동 음성 인식이 시작되었습니다. ";
+      if (!_nameOk) {
+        guidance += "먼저 보호자 이름을 말씀해주세요.";
+      } else if (!_phoneOk) {
+        guidance += "전화번호를 말씀해주세요. 예: 010-1234-5678";
+      } else {
+        guidance += "완료 또는 다음이라고 말씀하시면 진행됩니다.";
+      }
+      
+      _speakText(guidance);
+      
+    } catch (e) {
+      debugPrint('❌ 자동 음성 사이클 시작 실패: $e');
+      _autoVoiceCycleActive = false;
+    }
+  }
+  
+  /// 자동 음성 사이클 중지
+  void _stopAutoVoiceCycle() {
+    if (!_autoVoiceCycleActive || _voiceService == null) return;
+    
+    _autoVoiceCycleActive = false;
+    debugPrint('🎤 Guardian Screen - 자동 음성 사이클 중지');
+    
+    try {
+      _voiceService!.stopAutoRecognitionCycle();
+      _voiceService!.removeListener(_onAutoVoiceServiceUpdate);
+    } catch (e) {
+      debugPrint('❌ 자동 음성 사이클 중지 실패: $e');
+    }
+  }
+  
+  /// 자동 음성 사이클용 리스너
+  void _onAutoVoiceServiceUpdate() {
+    if (_voiceService == null || !_autoVoiceCycleActive) return;
+
+    final recognizedText = _voiceService!.lastRecognizedText;
+    if (recognizedText.isNotEmpty) {
+      debugPrint('🎤 Guardian Screen 자동 사이클 - 인식된 텍스트: $recognizedText');
+      _processVoiceCommand(recognizedText);
+    }
   }
 }

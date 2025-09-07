@@ -33,6 +33,10 @@ class _NameScreenState extends State<NameScreen> {
   // 음성인식 상태 관리
   bool _isListening = false;
   VoiceService? _voiceService;
+  
+  // 자동 음성 사이클 상태 관리
+  bool _autoVoiceCycleActive = false;
+  bool _hasInitialVoiceGuidance = false;
 
   @override
   void initState() {
@@ -42,8 +46,18 @@ class _NameScreenState extends State<NameScreen> {
     _nameCtrl.addListener(() {
       final ok = _nameCtrl.text.trim().isNotEmpty;
       if (ok != _canNext) setState(() => _canNext = ok);
+      
+      // 사용자가 직접 입력을 시작하면 자동 음성 사이클 중지
+      if (ok && _autoVoiceCycleActive) {
+        _stopAutoVoiceCycle();
+      }
     });
     _initializeVoiceService();
+    
+    // 화면 로드 후 자동 음성 안내 시작
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _startInitialVoiceGuidance();
+    });
   }
   
   void _initializeVoiceService() {
@@ -58,6 +72,7 @@ class _NameScreenState extends State<NameScreen> {
   @override
   void dispose() {
     _nameCtrl.dispose();
+    _stopAutoVoiceCycle();
     super.dispose();
   }
 
@@ -298,6 +313,99 @@ class _NameScreenState extends State<NameScreen> {
       }
     }
   }
+  
+  /// 초기 음성 안내 시작
+  void _startInitialVoiceGuidance() async {
+    if (_hasInitialVoiceGuidance || _voiceService == null) return;
+    
+    _hasInitialVoiceGuidance = true;
+    await Future.delayed(const Duration(milliseconds: 500));
+    
+    _speakText('이름 입력 화면입니다. 이름을 음성으로 입력하시거나 직접 입력하실 수 있습니다. 음성 입력을 원하시면 마이크 버튼을 눌러주세요.');
+    
+    // 5초 후 자동 음성 사이클 시작
+    await Future.delayed(const Duration(seconds: 5));
+    if (mounted && !_isListening && _nameCtrl.text.trim().isEmpty) {
+      _startAutoVoiceCycle();
+    }
+  }
+  
+  /// 자동 음성 사이클 시작
+  void _startAutoVoiceCycle() async {
+    if (_autoVoiceCycleActive || _voiceService == null || !mounted) return;
+    
+    debugPrint('🔄 이름 화면 자동 음성 사이클 시작');
+    setState(() => _autoVoiceCycleActive = true);
+    
+    _speakText('자동 음성 인식을 시작합니다. 이름을 말씀해주세요.');
+    
+    while (_autoVoiceCycleActive && mounted) {
+      try {
+        await Future.delayed(const Duration(seconds: 2));
+        if (!_autoVoiceCycleActive || !mounted) break;
+        
+        debugPrint('🎤 자동 STT 시작 - 이름 입력');
+        setState(() => _isListening = true);
+        
+        await _voiceService!.startListening();
+        _voiceService!.addListener(_onAutoVoiceServiceUpdate);
+        
+        // STT 대기 (8초)
+        await Future.delayed(const Duration(seconds: 8));
+        
+        if (_autoVoiceCycleActive && mounted) {
+          await _voiceService!.stopListeningAndProcess();
+          _voiceService!.removeListener(_onAutoVoiceServiceUpdate);
+          setState(() => _isListening = false);
+          
+          // 처리 대기
+          await Future.delayed(const Duration(milliseconds: 500));
+        }
+        
+        // 사이클 간 대기
+        if (_autoVoiceCycleActive && mounted && _nameCtrl.text.trim().isEmpty) {
+          await Future.delayed(const Duration(seconds: 3));
+          if (_autoVoiceCycleActive && mounted) {
+            _speakText('다시 이름을 말씀해주세요.');
+          }
+        }
+        
+      } catch (e) {
+        debugPrint('❌ 자동 음성 사이클 오류: $e');
+        setState(() => _isListening = false);
+        await Future.delayed(const Duration(seconds: 2));
+      }
+    }
+  }
+  
+  /// 자동 음성 사이클 중지
+  void _stopAutoVoiceCycle() {
+    if (!_autoVoiceCycleActive) return;
+    
+    debugPrint('⏹️ 이름 화면 자동 음성 사이클 중지');
+    setState(() {
+      _autoVoiceCycleActive = false;
+      _isListening = false;
+    });
+    
+    if (_voiceService != null) {
+      _voiceService!.removeListener(_onAutoVoiceServiceUpdate);
+      _voiceService!.stopListeningAndProcess();
+    }
+  }
+  
+  /// 자동 음성 사이클용 VoiceService 상태 변경 리스너
+  void _onAutoVoiceServiceUpdate() {
+    if (_voiceService == null || !_autoVoiceCycleActive) return;
+
+    final recognizedText = _voiceService!.lastRecognizedText;
+    if (recognizedText.isNotEmpty) {
+      debugPrint('🎤 자동 사이클에서 인식된 텍스트: $recognizedText');
+      
+      _stopAutoVoiceCycle();
+      _processVoiceCommand(recognizedText);
+    }
+  }
 
   /// VoiceService 상태 변경 리스너
   void _onVoiceServiceUpdate() {
@@ -315,7 +423,7 @@ class _NameScreenState extends State<NameScreen> {
   }
 
   /// 음성 명령 처리
-  void _processVoiceCommand(String command) {
+  void _processVoiceCommand(String command) async {
     final trimmedCommand = command.trim();
     debugPrint('🎯 이름 화면 음성 명령 처리: $trimmedCommand');
 
@@ -326,6 +434,11 @@ class _NameScreenState extends State<NameScreen> {
         _goNext();
       } else {
         _speakText('이름을 먼저 입력해주세요.');
+        // 자동 사이클 재시작
+        await Future.delayed(const Duration(seconds: 2));
+        if (mounted && _nameCtrl.text.trim().isEmpty) {
+          _startAutoVoiceCycle();
+        }
       }
       return;
     }
@@ -338,8 +451,18 @@ class _NameScreenState extends State<NameScreen> {
       _speakText('이름이 $trimmedCommand 로 입력되었습니다. 다음이라고 말씀하시면 계속 진행됩니다.');
     } else if (trimmedCommand.length > 20) {
       _speakText('이름이 너무 깁니다. 다시 말씀해주세요.');
+      // 자동 사이클 재시작
+      await Future.delayed(const Duration(seconds: 2));
+      if (mounted) {
+        _startAutoVoiceCycle();
+      }
     } else {
       _speakText('이름을 다시 말씀해주세요.');
+      // 자동 사이클 재시작
+      await Future.delayed(const Duration(seconds: 2));
+      if (mounted) {
+        _startAutoVoiceCycle();
+      }
     }
   }
 
