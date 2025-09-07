@@ -11,6 +11,7 @@ class OnboardingService with ChangeNotifier {
   String _userName = '';
   String _voiceGender = 'F'; // F or M
   int _voiceSpeed = 10; // 1-20 (10이 기본)
+  // ignore: non_constant_identifier_names
   int step_length_cm = 0; // 백엔드와 동일한 변수명
   String _caregiverName = '';
   String _caregiverPhone = '';

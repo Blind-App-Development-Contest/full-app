@@ -6,6 +6,7 @@ import '../widgets/set_button.dart'; // ✅ 추가
 import '../widgets/accessible_text.dart';
 import '../services/api_service.dart';
 import '../services/voice_service.dart';
+import '../utils/voice_utils.dart';
 import 'guardian_screen.dart';
 
 class VoiceScreen extends StatefulWidget {
@@ -27,6 +28,10 @@ class VoiceScreen extends StatefulWidget {
 class _VoiceScreenState extends State<VoiceScreen> {
   late String _gender; // 'F' or 'M'
   late double _speed;  // 0.5 ~ 2.0
+  
+  // 음성인식 상태 관리
+  bool _isListening = false;
+  VoiceService? _voiceService;
 
   @override
   void initState() {
@@ -37,8 +42,8 @@ class _VoiceScreenState extends State<VoiceScreen> {
     // VoiceService에 초기 속도 설정
     WidgetsBinding.instance.addPostFrameCallback((_) {
       try {
-        final voiceService = context.read<VoiceService>();
-        voiceService.setVoiceSpeed(_speed);
+        _voiceService = context.read<VoiceService>();
+        _voiceService!.setVoiceSpeed(_speed);
         debugPrint('🎙️ VoiceScreen 초기화: 음성 속도 ${_speed}x 설정');
       } catch (e) {
         debugPrint('❌ VoiceScreen 초기화: VoiceService 음성 속도 설정 실패: $e');
@@ -55,6 +60,9 @@ class _VoiceScreenState extends State<VoiceScreen> {
 
   // 온보딩 플로우: 다음 단계(GuardianScreen) 이동
   void _goNext() async {
+    // 클릭 음성 피드백
+    _speakText('다음');
+    
     // 음성 설정 저장 (온보딩 플로우)
     try {
       debugPrint('🎙️ 온보딩 음성 설정 저장 시도: ${_gender == 'F' ? 'female' : 'male'}, ${_speed}x');
@@ -83,6 +91,9 @@ class _VoiceScreenState extends State<VoiceScreen> {
 
   // 설정에서 진입: 값 저장 후 되돌아가기
   void _saveAndPop() async {
+    // 클릭 음성 피드백
+    _speakText('저장');
+    
     if (_hasChanged) {
       // 음성 설정 저장 (설정 화면에서 진입)
       try {
@@ -108,6 +119,9 @@ class _VoiceScreenState extends State<VoiceScreen> {
 
   // 뒤로가기(설정 경로): 저장 없이 나감
   void _backWithoutSave() {
+    // 클릭 음성 피드백
+    _speakText('뒤로가기');
+    
     if (_hasChanged) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('변경사항이 저장되지 않았습니다.')),
@@ -225,7 +239,10 @@ class _VoiceScreenState extends State<VoiceScreen> {
                           child: _ChoiceButton(
                             label: '여성 음성',
                             selected: _gender == 'F',
-                            onTap: () => setState(() => _gender = 'F'),
+                            onTap: () {
+                              _speakText('여성 음성');
+                              setState(() => _gender = 'F');
+                            },
                           ),
                         ),
                         const SizedBox(width: 16),
@@ -233,7 +250,10 @@ class _VoiceScreenState extends State<VoiceScreen> {
                           child: _ChoiceButton(
                             label: '남성 음성',
                             selected: _gender == 'M',
-                            onTap: () => setState(() => _gender = 'M'),
+                            onTap: () {
+                              _speakText('남성 음성');
+                              setState(() => _gender = 'M');
+                            },
                           ),
                         ),
                       ],
@@ -303,7 +323,112 @@ class _VoiceScreenState extends State<VoiceScreen> {
           ),
         ),
       ),
+      floatingActionButton: Container(
+        decoration: BoxDecoration(
+          color: _isListening ? Colors.red : Colors.blue,
+          shape: BoxShape.circle,
+        ),
+        child: FloatingActionButton(
+          onPressed: _toggleVoiceRecognition,
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          child: Icon(
+            _isListening ? Icons.mic : Icons.mic_none,
+            color: Colors.white,
+          ),
+        ),
+      ),
     );
+  }
+  
+  /// 음성인식 토글 함수 - 실제 STT 연결
+  void _toggleVoiceRecognition() async {
+    if (_voiceService == null) return;
+
+    setState(() {
+      _isListening = !_isListening;
+    });
+
+    if (_isListening) {
+      _speakText('음성인식을 시작합니다. 여성, 남성, 빠르게, 느리게, 또는 다음을 말씀해주세요.');
+      // STT 시작
+      try {
+        await _voiceService!.startListening();
+        _voiceService!.addListener(_onVoiceServiceUpdate);
+      } catch (e) {
+        debugPrint('❌ STT 시작 실패: $e');
+        setState(() => _isListening = false);
+      }
+    } else {
+      _speakText('음성인식을 중지합니다.');
+      // STT 중지
+      try {
+        await _voiceService!.stopListeningAndProcess();
+        _voiceService!.removeListener(_onVoiceServiceUpdate);
+      } catch (e) {
+        debugPrint('❌ STT 중지 실패: $e');
+      }
+    }
+  }
+
+  /// VoiceService 상태 변경 리스너
+  void _onVoiceServiceUpdate() {
+    if (_voiceService == null) return;
+
+    final recognizedText = _voiceService!.lastRecognizedText;
+    if (recognizedText.isNotEmpty && _isListening) {
+      debugPrint('🎤 음성 설정 화면에서 인식된 텍스트: $recognizedText');
+      
+      setState(() => _isListening = false);
+      _voiceService!.removeListener(_onVoiceServiceUpdate);
+      
+      _processVoiceCommand(recognizedText);
+    }
+  }
+
+  /// 음성 명령 처리
+  void _processVoiceCommand(String command) {
+    final lowerCommand = command.toLowerCase().trim();
+    debugPrint('🎯 음성 설정 화면 음성 명령 처리: $lowerCommand');
+
+    if (lowerCommand.contains('여성') || lowerCommand.contains('여자')) {
+      setState(() => _gender = 'F');
+      _voiceService?.setVoiceSpeed(_speed);
+      _speakText('여성 음성으로 설정되었습니다.');
+    } else if (lowerCommand.contains('남성') || lowerCommand.contains('남자')) {
+      setState(() => _gender = 'M');
+      _voiceService?.setVoiceSpeed(_speed);
+      _speakText('남성 음성으로 설정되었습니다.');
+    } else if (lowerCommand.contains('빠르게') || lowerCommand.contains('빨리')) {
+      setState(() => _speed = (_speed + 0.2).clamp(0.5, 2.0));
+      _voiceService?.setVoiceSpeed(_speed);
+      _speakText('음성 속도가 ${_speed.toStringAsFixed(1)}배로 설정되었습니다.');
+    } else if (lowerCommand.contains('느리게') || lowerCommand.contains('천천히')) {
+      setState(() => _speed = (_speed - 0.2).clamp(0.5, 2.0));
+      _voiceService?.setVoiceSpeed(_speed);
+      _speakText('음성 속도가 ${_speed.toStringAsFixed(1)}배로 설정되었습니다.');
+    } else if (lowerCommand.contains('다음') || lowerCommand.contains('완료') || lowerCommand.contains('저장')) {
+      _speakText('음성 설정을 저장하고 다음 단계로 진행합니다.');
+      if (widget.fromSettings) {
+        _saveAndPop();
+      } else {
+        _goNext();
+      }
+    } else if (lowerCommand.contains('뒤로') || lowerCommand.contains('취소')) {
+      _speakText('이전 화면으로 돌아갑니다.');
+      if (widget.fromSettings) {
+        _backWithoutSave();
+      } else {
+        Navigator.pop(context);
+      }
+    } else {
+      _speakText('현재 설정은 ${_gender == 'F' ? '여성' : '남성'} 음성, ${_speed.toStringAsFixed(1)}배속입니다. 여성, 남성, 빠르게, 느리게, 다음 중 하나를 말씀해주세요.');
+    }
+  }
+
+  /// 음성 출력 함수
+  void _speakText(String text) async {
+    await VoiceUtils.speakWithService(_voiceService, text);
   }
 }
 

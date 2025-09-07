@@ -3,11 +3,14 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:provider/provider.dart';
 
 import '../constants/config.dart';
 import '../widgets/aeye_card.dart';
 import '../widgets/next_button.dart';
 import '../widgets/accessible_text.dart';
+import '../services/voice_service.dart';
+import '../utils/voice_utils.dart';
 import 'step_screen.dart';
 
 class NameScreen extends StatefulWidget {
@@ -26,6 +29,10 @@ class _NameScreenState extends State<NameScreen> {
   late final TextEditingController _nameCtrl;
   bool _canNext = false;
   bool _loading = false;
+  
+  // 음성인식 상태 관리
+  bool _isListening = false;
+  VoiceService? _voiceService;
 
   @override
   void initState() {
@@ -36,6 +43,16 @@ class _NameScreenState extends State<NameScreen> {
       final ok = _nameCtrl.text.trim().isNotEmpty;
       if (ok != _canNext) setState(() => _canNext = ok);
     });
+    _initializeVoiceService();
+  }
+  
+  void _initializeVoiceService() {
+    try {
+      _voiceService = Provider.of<VoiceService>(context, listen: false);
+      debugPrint('✅ NameScreen VoiceService 초기화 성공');
+    } catch (e) {
+      debugPrint('❌ NameScreen VoiceService 초기화 실패: $e');
+    }
   }
 
   @override
@@ -72,6 +89,9 @@ class _NameScreenState extends State<NameScreen> {
   Future<void> _goNext() async {
     final name = _nameCtrl.text.trim();
     if (name.isEmpty || _loading) return;
+
+    // 클릭 음성 피드백
+    _speakText('다음');
 
     setState(() => _loading = true);
 
@@ -231,6 +251,100 @@ class _NameScreenState extends State<NameScreen> {
           ),
         ),
       ),
+      floatingActionButton: Container(
+        decoration: BoxDecoration(
+          color: _isListening ? Colors.red : Colors.blue,
+          shape: BoxShape.circle,
+        ),
+        child: FloatingActionButton(
+          onPressed: _toggleVoiceRecognition,
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          child: Icon(
+            _isListening ? Icons.mic : Icons.mic_none,
+            color: Colors.white,
+          ),
+        ),
+      ),
     );
+  }
+  
+  /// 음성인식 토글 함수 - 실제 STT 연결
+  void _toggleVoiceRecognition() async {
+    if (_voiceService == null) return;
+
+    setState(() {
+      _isListening = !_isListening;
+    });
+
+    if (_isListening) {
+      _speakText('음성인식을 시작합니다. 이름을 말씀해주세요.');
+      // STT 시작
+      try {
+        await _voiceService!.startListening();
+        _voiceService!.addListener(_onVoiceServiceUpdate);
+      } catch (e) {
+        debugPrint('❌ STT 시작 실패: $e');
+        setState(() => _isListening = false);
+      }
+    } else {
+      _speakText('음성인식을 중지합니다.');
+      // STT 중지
+      try {
+        await _voiceService!.stopListeningAndProcess();
+        _voiceService!.removeListener(_onVoiceServiceUpdate);
+      } catch (e) {
+        debugPrint('❌ STT 중지 실패: $e');
+      }
+    }
+  }
+
+  /// VoiceService 상태 변경 리스너
+  void _onVoiceServiceUpdate() {
+    if (_voiceService == null) return;
+
+    final recognizedText = _voiceService!.lastRecognizedText;
+    if (recognizedText.isNotEmpty && _isListening) {
+      debugPrint('🎤 이름 화면에서 인식된 텍스트: $recognizedText');
+      
+      setState(() => _isListening = false);
+      _voiceService!.removeListener(_onVoiceServiceUpdate);
+      
+      _processVoiceCommand(recognizedText);
+    }
+  }
+
+  /// 음성 명령 처리
+  void _processVoiceCommand(String command) {
+    final trimmedCommand = command.trim();
+    debugPrint('🎯 이름 화면 음성 명령 처리: $trimmedCommand');
+
+    // 특수 명령어 처리
+    if (trimmedCommand.toLowerCase().contains('다음') || trimmedCommand.toLowerCase().contains('확인')) {
+      if (_canNext) {
+        _speakText('다음 단계로 진행합니다.');
+        _goNext();
+      } else {
+        _speakText('이름을 먼저 입력해주세요.');
+      }
+      return;
+    }
+
+    // 일반 텍스트를 이름으로 처리
+    if (trimmedCommand.isNotEmpty && trimmedCommand.length <= 20) {
+      setState(() {
+        _nameCtrl.text = trimmedCommand;
+      });
+      _speakText('이름이 $trimmedCommand 로 입력되었습니다. 다음이라고 말씀하시면 계속 진행됩니다.');
+    } else if (trimmedCommand.length > 20) {
+      _speakText('이름이 너무 깁니다. 다시 말씀해주세요.');
+    } else {
+      _speakText('이름을 다시 말씀해주세요.');
+    }
+  }
+
+  /// 음성 출력 함수
+  void _speakText(String text) async {
+    await VoiceUtils.speakWithService(_voiceService, text);
   }
 }

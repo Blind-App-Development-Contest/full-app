@@ -113,7 +113,6 @@ async def static_detection_test(
         }
 
 @router.get("")
-@router.get("/")
 async def measurement_status():
     """측정 서비스 상태 확인"""
     return {
