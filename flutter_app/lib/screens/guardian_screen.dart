@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/onboarding_service.dart';
 import '../services/api_service.dart';
+import '../services/voice_service.dart';
+import '../utils/voice_utils.dart';
 import '../widgets/aeye_card.dart';
 import '../widgets/next_button.dart';
 import '../widgets/set_button.dart';
@@ -27,6 +29,10 @@ class GuardianScreen extends StatefulWidget {
 class _GuardianScreenState extends State<GuardianScreen> {
   late final TextEditingController _nameCtrl;
   late final TextEditingController _phoneCtrl;
+  
+  // 음성인식 상태 관리
+  bool _isListening = false;
+  VoiceService? _voiceService;
 
   @override
   void initState() {
@@ -35,6 +41,16 @@ class _GuardianScreenState extends State<GuardianScreen> {
     _phoneCtrl = TextEditingController(text: widget.initialPhone);
     _nameCtrl.addListener(() => setState(() {}));
     _phoneCtrl.addListener(() => setState(() {}));
+    _initializeVoiceService();
+  }
+  
+  void _initializeVoiceService() {
+    try {
+      _voiceService = Provider.of<VoiceService>(context, listen: false);
+      debugPrint('✅ GuardianScreen VoiceService 초기화 성공');
+    } catch (e) {
+      debugPrint('❌ GuardianScreen VoiceService 초기화 실패: $e');
+    }
   }
 
   @override
@@ -63,12 +79,15 @@ class _GuardianScreenState extends State<GuardianScreen> {
 
   // 온보딩 플로우: 모드 선택으로 이동 (백엔드 연동)
   void _goNext() async {
+    // 클릭 음성 피드백
+    _speakText('다음');
+    
     final name = _nameCtrl.text.trim();
     final phone = _phoneCtrl.text.trim();
 
     try {
       // 백엔드에 보호자 정보 등록
-      await ApiService().createCaregiver(caregivers_name: name, phoneNumber: phone);
+      await ApiService().createCaregiver(caregiversName: name, phoneNumber: phone);
 
       // OnboardingService에도 데이터 저장
       if (mounted) {
@@ -100,6 +119,9 @@ class _GuardianScreenState extends State<GuardianScreen> {
 
   // 설정에서 진입: 값 저장 후 이전 화면으로 반환 (백엔드 연동)
   void _saveAndPop() async {
+    // 클릭 음성 피드백
+    _speakText('완료');
+    
     final name = _nameCtrl.text.trim();
     final phone = _phoneCtrl.text.trim();
 
@@ -133,6 +155,9 @@ class _GuardianScreenState extends State<GuardianScreen> {
 
   // 뒤로가기(설정 경로): 저장 없이 나감
   Future<bool> _backWithoutSave() async {
+    // 클릭 음성 피드백
+    _speakText('뒤로가기');
+    
     if (widget.fromSettings && _changedOnly) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: AccessibleText('변경사항이 저장되지 않았습니다.')),
@@ -369,8 +394,117 @@ class _GuardianScreenState extends State<GuardianScreen> {
             ),
           ),
         ),
+        floatingActionButton: Container(
+          decoration: BoxDecoration(
+            color: _isListening ? Colors.red : Colors.blue,
+            shape: BoxShape.circle,
+          ),
+          child: FloatingActionButton(
+            onPressed: _toggleVoiceRecognition,
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            child: Icon(
+              _isListening ? Icons.mic : Icons.mic_none,
+              color: Colors.white,
+            ),
+          ),
+        ),
         ),
       ),
     );
+  }
+  
+  /// 음성인식 토글 함수 - 실제 STT 연결
+  void _toggleVoiceRecognition() async {
+    if (_voiceService == null) return;
+
+    setState(() {
+      _isListening = !_isListening;
+    });
+
+    if (_isListening) {
+      _speakText('음성인식을 시작합니다. 보호자 이름, 전화번호, 건너뛰기, 또는 완료를 말씀해주세요.');
+      // STT 시작
+      try {
+        await _voiceService!.startListening();
+        _voiceService!.addListener(_onVoiceServiceUpdate);
+      } catch (e) {
+        debugPrint('❌ STT 시작 실패: $e');
+        setState(() => _isListening = false);
+      }
+    } else {
+      _speakText('음성인식을 중지합니다.');
+      // STT 중지
+      try {
+        await _voiceService!.stopListeningAndProcess();
+        _voiceService!.removeListener(_onVoiceServiceUpdate);
+      } catch (e) {
+        debugPrint('❌ STT 중지 실패: $e');
+      }
+    }
+  }
+
+  /// VoiceService 상태 변경 리스너
+  void _onVoiceServiceUpdate() {
+    if (_voiceService == null) return;
+
+    final recognizedText = _voiceService!.lastRecognizedText;
+    if (recognizedText.isNotEmpty && _isListening) {
+      debugPrint('🎤 보호자 화면에서 인식된 텍스트: $recognizedText');
+      
+      setState(() => _isListening = false);
+      _voiceService!.removeListener(_onVoiceServiceUpdate);
+      
+      _processVoiceCommand(recognizedText);
+    }
+  }
+
+  /// 음성 명령 처리
+  void _processVoiceCommand(String command) {
+    final lowerCommand = command.toLowerCase().trim();
+    debugPrint('🎯 보호자 화면 음성 명령 처리: $lowerCommand');
+
+    // 전화번호 패턴 확인 (숫자만 또는 하이픈 포함)
+    final phonePattern = RegExp(r'^[\d\-\s]+$');
+    
+ if (lowerCommand.contains('완료') || lowerCommand.contains('저장') || lowerCommand.contains('다음')) {
+      if (_canSave) {
+        _speakText('보호자 정보를 저장하고 완료합니다.');
+        if (widget.fromSettings) {
+          _saveAndPop();
+        } else {
+          _goNext();
+        }
+      } else {
+        _speakText('보호자 이름과 전화번호를 모두 입력해주세요.');
+      }
+    } else if (lowerCommand.contains('뒤로') || lowerCommand.contains('취소')) {
+      _speakText('이전 화면으로 돌아갑니다.');
+      if (widget.fromSettings) {
+        _backWithoutSave();
+      } else {
+        Navigator.pop(context);
+      }
+    } else if (phonePattern.hasMatch(command.replaceAll(' ', ''))) {
+      // 전화번호로 인식
+      final cleanedPhone = command.replaceAll(RegExp(r'[^\d\-]'), '');
+      setState(() {
+        _phoneCtrl.text = cleanedPhone;
+      });
+      _speakText('전화번호가 $cleanedPhone 로 입력되었습니다.');
+    } else if (command.trim().isNotEmpty && command.trim().length <= 20) {
+      // 이름으로 인식
+      setState(() {
+        _nameCtrl.text = command.trim();
+      });
+      _speakText('보호자 이름이 ${command.trim()} 으로 입력되었습니다.');
+    } else {
+      _speakText('보호자 설정 화면입니다. 이름, 전화번호 또는 완료를 말씀해주세요.');
+    }
+  }
+
+  /// 음성 출력 함수
+  void _speakText(String text) async {
+    await VoiceUtils.speakWithService(_voiceService, text);
   }
 }

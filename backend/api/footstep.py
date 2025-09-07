@@ -245,8 +245,7 @@ async def get_user_footstep(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"보폭 조회 오류: {str(e)}")
 
-@router.get("", tags=["Footstep Settings"])
-@router.get("/", tags=["Footstep Settings"])
+@router.get("", tags=["Footstep Management"])
 async def get_footstep_settings():
     """
     현재 설정된 보폭 길이 조회
@@ -281,7 +280,7 @@ async def get_footstep_settings():
         print(f"[오류] 현재 보폭 조회 중 오류: {e}")
         raise HTTPException(status_code=500, detail=f"보폭 조회 실패: {str(e)}")
 
-@router.put("/", response_model=Dict[str, Any], tags=["Footstep Settings"])
+@router.put("", response_model=Dict[str, Any], tags=["Footstep Management"])
 async def update_footstep_settings(request: StepUpdateRequest):
     """
     보폭 수동 업데이트 (설정에서 재설정용)
@@ -314,7 +313,7 @@ async def update_footstep_settings(request: StepUpdateRequest):
         print(f"[오류] 보폭 업데이트 중 오류: {e}")
         raise HTTPException(status_code=500, detail=f"보폭 업데이트 실패: {str(e)}")
 
-@router.post("/measurements/validate", tags=["Footstep Validation"])
+@router.post("/measurements/validate", tags=["Footstep Management"])
 async def validate_measurement_request(distance_meters: float, step_count: int):
     """
     측정 전 데이터 유효성 검증

@@ -50,6 +50,7 @@ Future<void> main() async {
     
     if (clientId != null && clientId.isNotEmpty && clientId != 'YOUR_NAVER_MAP_CLIENT_ID_HERE') {
       // 유효한 클라이언트 ID가 있는 경우
+      // ignore: deprecated_member_use
       await NaverMapSdk.instance.initialize(
         clientId: clientId,
         onAuthFailed: (error) {
@@ -69,6 +70,7 @@ Future<void> main() async {
       debugPrint("   - iOS: Info.plist의 NMFNcpKeyId");
       debugPrint("   - Android: AndroidManifest.xml의 com.naver.maps.map.CLIENT_ID");
       
+      // ignore: deprecated_member_use
       await NaverMapSdk.instance.initialize(
         clientId: '', // 플랫폼별 설정에서 자동으로 읽어옴
         onAuthFailed: (error) {

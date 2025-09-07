@@ -27,7 +27,6 @@ settings = get_settings()
 router = APIRouter()
 
 @router.get("")
-@router.get("/")
 async def speech_status():
     """음성 처리 서비스 상태 확인"""
     return {
@@ -177,7 +176,7 @@ async def execute_unified_speech_commands(request: SpeechCommandRequest):
 
 # Legacy 엔드포인트 제거됨 - /commands 엔드포인트 사용
 
-@router.get("/intents", tags=["Speech Intents"])
+@router.get("/intents", tags=["Speech Processing"])
 def get_speech_intents():
     """
     지원하는 의도 목록 반환 (칼만 필터 의도 포함)

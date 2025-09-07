@@ -217,8 +217,8 @@ app.include_router(footstep_router, prefix="/api/users/footstep", tags=["Footste
 app.include_router(speech_router, prefix="/api/users/speech", tags=["Speech Processing"])
 app.include_router(measurement_router, prefix="/api/users/measurement", tags=["Measurement System"])
 app.include_router(execution_router, prefix="/api/users/action", tags=["Command Execution"])
+
 app.include_router(maps_router)   
-# 테스트용 라우터
 app.include_router(realtime_routes.router, prefix="/api/realtime", tags=["Real-time FastDepth Processing"])
 
 app.include_router(camera.router)        # /api/camera
