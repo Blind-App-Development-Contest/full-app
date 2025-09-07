@@ -82,3 +82,6 @@ timm
 mediapipe==0.10.21                       # 🦶 MediaPipe Pose - 발 키포인트 감지 (엄지발가락 기준)
 filterpy==1.4.5                          # 📐 고급 칼만 필터 구현 (확장 칼만 필터 포함)
 solapi
+
+PyJWT>=2.10.1
+psycopg2-binary # 데이터베이스 연결 드라이버

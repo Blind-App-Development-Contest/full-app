@@ -26,7 +26,8 @@ class VoiceService with ChangeNotifier {
   final http.Client _httpClient = http.Client();
 
   // === 서버 설정 ===
-  String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'http://localhost:8000';
+  // String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'http://localhost:8000';
+String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onrender.com';
 
   // === 상태 관리 ===
   VoiceState _currentState = VoiceState.idle;
