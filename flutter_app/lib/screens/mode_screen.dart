@@ -5,8 +5,11 @@ import 'package:provider/provider.dart';
 import '../constants/config.dart';
 import '../widgets/aeye_card.dart';
 import '../widgets/accessible_text.dart';
+import '../widgets/caregiver_button.dart';
+
 import '../services/voice_service.dart';
 import '../utils/voice_utils.dart';
+
 import 'setting_screen.dart';
 import 'map_screen.dart';
 import 'camera_mode_screen.dart';
@@ -77,42 +80,26 @@ class _ModeScreenState extends State<ModeScreen> {
   }
 
   Future<void> _openCameraMode(BuildContext context) async {
-    // 즉시 UI 상태 업데이트 (사용자에게 빠른 피드백)
     setState(() => _preferred = AppPreferredMode.camera);
-    
-    // 백그라운드에서 SharedPreferences 저장
     _savePreferredInBackground(AppPreferredMode.camera);
-    
-    // 먼저 네임드 라우트 시도
     final pushed = await _tryPushNamed(context, '/camera');
-    // 실패하면 직접 화면으로 이동
     if (!pushed && context.mounted) {
       await Navigator.push(
         context,
-        MaterialPageRoute(
-          builder: (_) => const CameraModeScreen(),
-        ),
+        MaterialPageRoute(builder: (_) => const CameraModeScreen()),
       );
     }
   }
 
   Future<void> _openNavigationMode(BuildContext context) async {
-    // 즉시 UI 상태 업데이트 (사용자에게 빠른 피드백)
     setState(() => _preferred = AppPreferredMode.navigation);
-    
-    // 백그라운드에서 SharedPreferences 저장
     _savePreferredInBackground(AppPreferredMode.navigation);
-    
-    // 먼저 네임드 라우트 시도
     final pushed = await _tryPushNamed(context, '/navigation');
-    // 실패하면 직접 화면으로 이동
     if (!pushed && context.mounted) {
       await Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => MapScreen(
-            backendBaseUrl: AppConfig.backendBaseUrl,
-          ),
+          builder: (_) => MapScreen(backendBaseUrl: AppConfig.backendBaseUrl),
         ),
       );
     }
@@ -122,21 +109,12 @@ class _ModeScreenState extends State<ModeScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const SettingsScreen()),
-    ).then((_) {
-      // 설정에서 이름/모드가 바뀌었을 수 있으니 복귀 시 재로딩
-      _loadUserPrefs();
-    });
+    ).then((_) => _loadUserPrefs());
   }
 
-  /// 라우트가 등록돼 있으면 pushNamed, 없으면 false 반환
   Future<bool> _tryPushNamed(BuildContext context, String routeName) async {
     try {
-      if (Navigator.of(context).canPop()) {
-        // 그냥 pushNamed만 시도 (등록 안됐으면 throw)
-        await Navigator.of(context).pushNamed(routeName);
-      } else {
-        await Navigator.of(context).pushNamed(routeName);
-      }
+      await Navigator.of(context).pushNamed(routeName);
       return true;
     } catch (_) {
       return false;
@@ -150,7 +128,6 @@ class _ModeScreenState extends State<ModeScreen> {
     const divider = Color(0xFF22304A);
     const caption = Color(0xFF9AA3B2);
 
-    // 선호 모드 뱃지 텍스트
     String? preferredBadge;
     if (_preferred == AppPreferredMode.camera) {
       preferredBadge = '최근: 카메라';
@@ -207,7 +184,7 @@ class _ModeScreenState extends State<ModeScreen> {
                     decoration: BoxDecoration(
                       color: const Color(0xFF151C2C),
                       borderRadius: BorderRadius.circular(999),
-                      border: Border.all(color: divider.withValues(alpha: 0.35)),
+                      border: Border.all(color: divider.withOpacity(0.35)),
                     ),
                     child: Text(
                       preferredBadge,
@@ -256,6 +233,22 @@ class _ModeScreenState extends State<ModeScreen> {
                 caption: caption,
                 onTap: () => _openSettings(context),
               ),
+
+              // ✅ 보호자 호출 버튼 (uuid 전송)
+              const SizedBox(height: 16),
+              CaregiverButton(
+                backendBaseUrl: AppConfig.backendBaseUrl,
+                panel: panel,
+                divider: divider,
+                caption: caption,
+                onCompleted: (ok, msg) {
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(ok ? (msg ?? '보호자에게 호출을 전송했습니다.') : (msg ?? '호출에 실패했습니다.'))),
+                  );
+                },
+              ),
+
               const SizedBox(height: 40),
             ],
           ),
@@ -358,15 +351,15 @@ class _ModeCard extends StatelessWidget {
     return InkWell(
       borderRadius: BorderRadius.circular(18),
       onTap: onTap,
-      splashColor: Colors.white.withValues(alpha: 0.1),
-      highlightColor: Colors.white.withValues(alpha: 0.05),
+      splashColor: Colors.white.withOpacity(0.1),
+      highlightColor: Colors.white.withOpacity(0.05),
       child: Container(
         height: 110,
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
           color: panel,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: divider.withValues(alpha: 0.25)),
+          border: Border.all(color: divider.withOpacity(0.25)),
         ),
         child: Row(
           children: [
@@ -376,7 +369,7 @@ class _ModeCard extends StatelessWidget {
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: divider.withValues(alpha: 0.4)),
+                border: Border.all(color: divider.withOpacity(0.4)),
               ),
               child: Icon(icon, color: Colors.white, size: 28),
             ),
