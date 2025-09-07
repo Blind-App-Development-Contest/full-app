@@ -1,24 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from uuid import UUID
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, select, insert
-from sqlalchemy.orm import sessionmaker
-import os
-from dotenv import load_dotenv
 from models.database_models import User, Voice, Caregiver, Footstep, UserSetting
+from core.database import get_async_db as get_session
+import logging
+from config.settings import get_settings
 
-load_dotenv()
-DB_URL = os.getenv("DB_URL")
-if not DB_URL:
-    raise RuntimeError("DB_URL is not set")
-
-engine = create_async_engine(DB_URL, echo=False)
-async_session = async_sessionmaker(engine, expire_on_commit=False)
-
-async def get_session():
-    async with async_session() as session:
-        yield session
+logger = logging.getLogger(__name__)
+settings = get_settings()
 
 
 # 요청 스키마
@@ -64,7 +55,7 @@ def root():
 async def get_users(session: AsyncSession = Depends(get_session)):
     """사용자 목록 조회"""
     try:
-        result = await session.execute(text("SELECT app_uuid, user_name FROM users ORDER BY created_at DESC LIMIT 100"))
+        result = await session.execute(text("SELECT user_id, user_name FROM users ORDER BY created_at DESC LIMIT 100"))
         users = [{"app_uuid": str(row[0]), "user_name": row[1]} for row in result.fetchall()]
         return {"users": users, "count": len(users)}
     except Exception as e:
@@ -112,7 +103,10 @@ async def register_user(
     
     # 디버깅
     except Exception as e:
-        import traceback; traceback.print_exc()
+        if settings.DEBUG:
+            logger.exception("register_user failed")
+        else:
+            logger.error(f"register_user failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     
 # 이름 수정
@@ -141,7 +135,10 @@ async def update_name(
     except HTTPException:
         raise
     except Exception as e:
-        import traceback; traceback.print_exc()
+        if settings.DEBUG:
+            logger.exception("update_name failed")
+        else:
+            logger.error(f"update_name failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # 온보딩 완료 - 모든 사용자 정보를 한 번에 저장
@@ -263,5 +260,8 @@ async def complete_onboarding(
         
     except Exception as e:
         await session.rollback()
-        import traceback; traceback.print_exc()
+        if settings.DEBUG:
+            logger.exception("complete_onboarding failed")
+        else:
+            logger.error(f"complete_onboarding failed: {e}")
         raise HTTPException(status_code=500, detail=f"온보딩 완료 처리 실패: {str(e)}")

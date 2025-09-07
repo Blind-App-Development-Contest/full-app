@@ -1,9 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:provider/provider.dart';
 
 import '../constants/config.dart';
 import '../widgets/aeye_card.dart';
 import '../widgets/accessible_text.dart';
+import '../widgets/caregiver_button.dart';
+
+import '../services/voice_service.dart';
+import '../utils/voice_utils.dart';
+
 import 'setting_screen.dart';
 import 'map_screen.dart';
 import 'camera_mode_screen.dart';
@@ -23,11 +29,25 @@ class _ModeScreenState extends State<ModeScreen> {
 
   String? _userName;
   AppPreferredMode? _preferred;
+  
+  // 음성인식 상태 관리
+  bool _isListening = false;
+  VoiceService? _voiceService;
 
   @override
   void initState() {
     super.initState();
     _loadUserPrefs();
+    _initializeVoiceService();
+  }
+  
+  void _initializeVoiceService() {
+    try {
+      _voiceService = Provider.of<VoiceService>(context, listen: false);
+      debugPrint('✅ ModeScreen VoiceService 초기화 성공');
+    } catch (e) {
+      debugPrint('❌ ModeScreen VoiceService 초기화 실패: $e');
+    }
   }
 
   Future<void> _loadUserPrefs() async {
@@ -47,15 +67,6 @@ class _ModeScreenState extends State<ModeScreen> {
     });
   }
 
-  Future<void> _savePreferred(AppPreferredMode mode) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      kPreferredModeKey,
-      mode == AppPreferredMode.camera ? 'camera' : 'navigation',
-    );
-    setState(() => _preferred = mode);
-  }
-
   /// 백그라운드에서 선호 모드 저장 (UI 블로킹 없음)
   void _savePreferredInBackground(AppPreferredMode mode) {
     SharedPreferences.getInstance().then((prefs) {
@@ -69,42 +80,26 @@ class _ModeScreenState extends State<ModeScreen> {
   }
 
   Future<void> _openCameraMode(BuildContext context) async {
-    // 즉시 UI 상태 업데이트 (사용자에게 빠른 피드백)
     setState(() => _preferred = AppPreferredMode.camera);
-    
-    // 백그라운드에서 SharedPreferences 저장
     _savePreferredInBackground(AppPreferredMode.camera);
-    
-    // 먼저 네임드 라우트 시도
     final pushed = await _tryPushNamed(context, '/camera');
-    // 실패하면 직접 화면으로 이동
     if (!pushed && context.mounted) {
       await Navigator.push(
         context,
-        MaterialPageRoute(
-          builder: (_) => const CameraModeScreen(),
-        ),
+        MaterialPageRoute(builder: (_) => const CameraModeScreen()),
       );
     }
   }
 
   Future<void> _openNavigationMode(BuildContext context) async {
-    // 즉시 UI 상태 업데이트 (사용자에게 빠른 피드백)
     setState(() => _preferred = AppPreferredMode.navigation);
-    
-    // 백그라운드에서 SharedPreferences 저장
     _savePreferredInBackground(AppPreferredMode.navigation);
-    
-    // 먼저 네임드 라우트 시도
     final pushed = await _tryPushNamed(context, '/navigation');
-    // 실패하면 직접 화면으로 이동
     if (!pushed && context.mounted) {
       await Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => MapScreen(
-            backendBaseUrl: AppConfig.backendBaseUrl,
-          ),
+          builder: (_) => MapScreen(backendBaseUrl: AppConfig.backendBaseUrl),
         ),
       );
     }
@@ -114,21 +109,12 @@ class _ModeScreenState extends State<ModeScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const SettingsScreen()),
-    ).then((_) {
-      // 설정에서 이름/모드가 바뀌었을 수 있으니 복귀 시 재로딩
-      _loadUserPrefs();
-    });
+    ).then((_) => _loadUserPrefs());
   }
 
-  /// 라우트가 등록돼 있으면 pushNamed, 없으면 false 반환
   Future<bool> _tryPushNamed(BuildContext context, String routeName) async {
     try {
-      if (Navigator.of(context).canPop()) {
-        // 그냥 pushNamed만 시도 (등록 안됐으면 throw)
-        await Navigator.of(context).pushNamed(routeName);
-      } else {
-        await Navigator.of(context).pushNamed(routeName);
-      }
+      await Navigator.of(context).pushNamed(routeName);
       return true;
     } catch (_) {
       return false;
@@ -142,7 +128,6 @@ class _ModeScreenState extends State<ModeScreen> {
     const divider = Color(0xFF22304A);
     const caption = Color(0xFF9AA3B2);
 
-    // 선호 모드 뱃지 텍스트
     String? preferredBadge;
     if (_preferred == AppPreferredMode.camera) {
       preferredBadge = '최근: 카메라';
@@ -158,10 +143,28 @@ class _ModeScreenState extends State<ModeScreen> {
         actions: [
           IconButton(
             tooltip: '설정',
-            onPressed: () => _openSettings(context),
+            onPressed: () {
+              _speakText('설정');
+              _openSettings(context);
+            },
             icon: const Icon(Icons.settings_outlined, color: Colors.white),
           ),
         ],
+      ),
+      floatingActionButton: Container(
+        decoration: BoxDecoration(
+          color: _isListening ? Colors.red : Colors.blue,
+          shape: BoxShape.circle,
+        ),
+        child: FloatingActionButton(
+          onPressed: _toggleVoiceRecognition,
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          child: Icon(
+            _isListening ? Icons.mic : Icons.mic_none,
+            color: Colors.white,
+          ),
+        ),
       ),
       body: SafeArea(
         child: SingleChildScrollView(
@@ -181,7 +184,7 @@ class _ModeScreenState extends State<ModeScreen> {
                     decoration: BoxDecoration(
                       color: const Color(0xFF151C2C),
                       borderRadius: BorderRadius.circular(999),
-                      border: Border.all(color: divider.withValues(alpha: 0.35)),
+                      border: Border.all(color: divider.withOpacity(0.35)),
                     ),
                     child: Text(
                       preferredBadge,
@@ -202,7 +205,10 @@ class _ModeScreenState extends State<ModeScreen> {
                 panel: panel,
                 divider: divider,
                 caption: caption,
-                onTap: () => _openCameraMode(context),
+                onTap: () {
+                  _speakText('카메라 모드');
+                  _openCameraMode(context);
+                },
               ),
               const SizedBox(height: 16),
               _ModeCard(
@@ -212,7 +218,10 @@ class _ModeScreenState extends State<ModeScreen> {
                 panel: panel,
                 divider: divider,
                 caption: caption,
-                onTap: () => _openNavigationMode(context),
+                onTap: () {
+                  _speakText('길찾기 모드');
+                  _openNavigationMode(context);
+                },
               ),
               const SizedBox(height: 16),
               _ModeCard(
@@ -224,12 +233,97 @@ class _ModeScreenState extends State<ModeScreen> {
                 caption: caption,
                 onTap: () => _openSettings(context),
               ),
+
+              // ✅ 보호자 호출 버튼 (uuid 전송)
+              const SizedBox(height: 16),
+              CaregiverButton(
+                backendBaseUrl: AppConfig.backendBaseUrl,
+                panel: panel,
+                divider: divider,
+                caption: caption,
+                onCompleted: (ok, msg) {
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(ok ? (msg ?? '보호자에게 호출을 전송했습니다.') : (msg ?? '호출에 실패했습니다.'))),
+                  );
+                },
+              ),
+
               const SizedBox(height: 40),
             ],
           ),
         ),
       ),
     );
+  }
+  
+  /// 음성인식 토글 함수 - 실제 STT 연결
+  void _toggleVoiceRecognition() async {
+    if (_voiceService == null) return;
+
+    setState(() {
+      _isListening = !_isListening;
+    });
+
+    if (_isListening) {
+      _speakText('음성인식을 시작합니다.');
+      // STT 시작
+      try {
+        await _voiceService!.startListening();
+        _voiceService!.addListener(_onVoiceServiceUpdate);
+      } catch (e) {
+        debugPrint('❌ STT 시작 실패: $e');
+        setState(() => _isListening = false);
+      }
+    } else {
+      _speakText('음성인식을 중지합니다.');
+      // STT 중지
+      try {
+        await _voiceService!.stopListeningAndProcess();
+        _voiceService!.removeListener(_onVoiceServiceUpdate);
+      } catch (e) {
+        debugPrint('❌ STT 중지 실패: $e');
+      }
+    }
+  }
+
+  /// VoiceService 상태 변경 리스너
+  void _onVoiceServiceUpdate() {
+    if (_voiceService == null) return;
+
+    final recognizedText = _voiceService!.lastRecognizedText;
+    if (recognizedText.isNotEmpty && _isListening) {
+      debugPrint('🎤 모드 화면에서 인식된 텍스트: $recognizedText');
+      
+      setState(() => _isListening = false);
+      _voiceService!.removeListener(_onVoiceServiceUpdate);
+      
+      _processVoiceCommand(recognizedText);
+    }
+  }
+
+  /// 음성 명령 처리
+  void _processVoiceCommand(String command) {
+    final lowerCommand = command.toLowerCase().trim();
+    debugPrint('🎯 모드 화면 음성 명령 처리: $lowerCommand');
+
+    if (lowerCommand.contains('카메라') || lowerCommand.contains('사진')) {
+      _speakText('카메라 모드로 이동합니다.');
+      _openCameraMode(context);
+    } else if (lowerCommand.contains('지도') || lowerCommand.contains('길찾기') || lowerCommand.contains('네비게이션')) {
+      _speakText('길찾기 모드로 이동합니다.');
+      _openNavigationMode(context);
+    } else if (lowerCommand.contains('설정')) {
+      _speakText('설정 화면으로 이동합니다.');
+      _openSettings(context);
+    } else {
+      _speakText('모드 선택 화면입니다. 카메라, 길찾기, 또는 설정을 말씀해주세요.');
+    }
+  }
+
+  /// 음성 출력 함수
+  void _speakText(String text) async {
+    await VoiceUtils.speakWithService(_voiceService, text);
   }
 }
 
@@ -241,7 +335,6 @@ class _ModeCard extends StatelessWidget {
   final Color divider;
   final Color caption;
   final VoidCallback onTap;
-  final double height;
 
   const _ModeCard({
     required this.icon,
@@ -251,7 +344,6 @@ class _ModeCard extends StatelessWidget {
     required this.divider,
     required this.caption,
     required this.onTap,
-    this.height = 110,
   });
 
   @override
@@ -259,15 +351,15 @@ class _ModeCard extends StatelessWidget {
     return InkWell(
       borderRadius: BorderRadius.circular(18),
       onTap: onTap,
-      splashColor: Colors.white.withValues(alpha: 0.1),
-      highlightColor: Colors.white.withValues(alpha: 0.05),
+      splashColor: Colors.white.withOpacity(0.1),
+      highlightColor: Colors.white.withOpacity(0.05),
       child: Container(
-        height: height,
+        height: 110,
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
           color: panel,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: divider.withValues(alpha: 0.25)),
+          border: Border.all(color: divider.withOpacity(0.25)),
         ),
         child: Row(
           children: [
@@ -277,7 +369,7 @@ class _ModeCard extends StatelessWidget {
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: divider.withValues(alpha: 0.4)),
+                border: Border.all(color: divider.withOpacity(0.4)),
               ),
               child: Icon(icon, color: Colors.white, size: 28),
             ),

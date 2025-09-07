@@ -8,6 +8,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
 import '../directions_api.dart';
 import '../services/voice_service.dart';
+import '../utils/voice_utils.dart';
 import 'package:html/parser.dart' show parse;
 import '../constants/app_colors.dart';
 
@@ -49,8 +50,6 @@ class _MapScreenState extends State<MapScreen> {
   int _currentInstructionIndex = 0;
   bool _isNavigating = false;
   
-  // 시각장애인용 상세 음성 안내 상태
-  bool _detailedVoiceMode = true; // 상세 음성 안내 모드
   Timer? _statusAnnouncementTimer; // 주기적 상태 안내 타이머
 
   @override
@@ -102,7 +101,7 @@ class _MapScreenState extends State<MapScreen> {
     try {
       await Future.delayed(const Duration(milliseconds: 500));
       
-      await _voiceService!.speak(
+      await VoiceUtils.speakWithService(_voiceService, 
         "길찾기 모드에 진입했습니다. "
         "목적지를 입력하면 음성으로 경로를 안내해드립니다.", 
         speed: 0.9
@@ -110,7 +109,7 @@ class _MapScreenState extends State<MapScreen> {
       
       await Future.delayed(const Duration(milliseconds: 800));
       
-      await _voiceService!.speak(
+      await VoiceUtils.speakWithService(_voiceService, 
         "화면 하단의 입력창에 목적지를 말하거나 입력하세요. "
         "음성인식 버튼을 사용할 수 있습니다.", 
         speed: 0.9
@@ -127,13 +126,13 @@ class _MapScreenState extends State<MapScreen> {
     
     try {
       // 1단계: 경로 안내 시작 알림
-      await _voiceService!.speak("경로 안내를 시작합니다!", speed: 1.0);
+      await VoiceUtils.speakWithService(_voiceService, "경로 안내를 시작합니다!", speed: 1.0);
       
       await Future.delayed(const Duration(milliseconds: 800));
       
       // 2단계: 전체 경로 정보 안내
       final totalSteps = _instructions.length;
-      await _voiceService!.speak(
+      await VoiceUtils.speakWithService(_voiceService, 
         "총 $totalSteps단계의 경로로 안내해드리겠습니다.", 
         speed: 0.9
       );
@@ -142,7 +141,7 @@ class _MapScreenState extends State<MapScreen> {
       
       // 3단계: 첫 번째 안내 시작
       final firstInstruction = _instructions.first['instruction_html'] as String;
-      await _voiceService!.speak("첫 번째 안내입니다. $firstInstruction", speed: 0.9);
+      await VoiceUtils.speakWithService(_voiceService, "첫 번째 안내입니다. $firstInstruction", speed: 0.9);
       
       // 4단계: 주기적 상태 안내 시작
       _startPeriodicStatusAnnouncement();
@@ -177,7 +176,7 @@ class _MapScreenState extends State<MapScreen> {
       final remainingSteps = _instructions.length - _currentInstructionIndex;
       final currentStep = _currentInstructionIndex + 1;
       
-      await _voiceService!.speak(
+      await VoiceUtils.speakWithService(_voiceService, 
         "현재 ${_instructions.length}단계 중 $currentStep단계 진행 중입니다. "
         "남은 안내는 $remainingSteps단계입니다.", 
         speed: 0.9
@@ -197,7 +196,7 @@ class _MapScreenState extends State<MapScreen> {
       final totalSteps = _instructions.length;
       
       // 단계 정보와 함께 안내
-      await _voiceService!.speak(
+      await VoiceUtils.speakWithService(_voiceService, 
         "$totalSteps단계 중 $currentStep단계입니다. $instruction", 
         speed: 0.9
       );
@@ -212,18 +211,18 @@ class _MapScreenState extends State<MapScreen> {
     if (_voiceService == null) return;
     
     try {
-      await _voiceService!.speak("목적지에 도착했습니다!", speed: 1.0);
+      await VoiceUtils.speakWithService(_voiceService, "목적지에 도착했습니다!", speed: 1.0);
       
       await Future.delayed(const Duration(milliseconds: 800));
       
-      await _voiceService!.speak(
+      await VoiceUtils.speakWithService(_voiceService, 
         "경로 안내가 완료되었습니다. 안전하게 도착하셨습니다.", 
         speed: 0.9
       );
       
       await Future.delayed(const Duration(milliseconds: 600));
       
-      await _voiceService!.speak(
+      await VoiceUtils.speakWithService(_voiceService, 
         "새로운 경로를 검색하거나 다른 모드로 이동할 수 있습니다.", 
         speed: 0.9
       );
@@ -241,7 +240,7 @@ class _MapScreenState extends State<MapScreen> {
       final String parsedString = parse(document.body?.text).documentElement!.text;
 
       if (_voiceService != null) {
-        await _voiceService!.speak(parsedString);
+        await VoiceUtils.speakWithService(_voiceService, parsedString);
       } else {
         debugPrint('🔊 음성 안내 (VoiceService 없음): $parsedString');
       }
@@ -492,59 +491,7 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
-  // ---- 서버 진단 ----
-  Future<void> _ping() async {
-    setState(() => _status = '서버 진단 중...');
-
-    try {
-      final diagnostic = await _api.pingDiagnostic();
-      final isConnected = diagnostic['isConnected'] as bool;
-      final tests = diagnostic['tests'] as List<Map<String, dynamic>>;
-
-      if (!mounted) return;
-
-      setState(() => _status = isConnected ? '서버 연결 OK' : '서버 연결 실패');
-
-      // 진단 결과 표시
-      if (isConnected) {
-        final successfulTest = tests.firstWhere(
-          (test) => test['success'] == true,
-        );
-        _toast(
-          '서버 연결 성공\n엔드포인트: ${successfulTest['endpoint']}\n응답시간: ${successfulTest['responseTime']}',
-        );
-      } else {
-        // 실패한 경우 상세 정보 표시
-        String errorMsg = '서버 연결 실패\n서버 주소: ${widget.backendBaseUrl}\n\n';
-
-        for (final test in tests) {
-          if (test['diagnosis'] != null) {
-            errorMsg += '진단: ${test['diagnosis']}\n';
-            break;
-          }
-          if (test['error'] != null) {
-            final error = test['error'] as String;
-            if (error.contains('Connection refused')) {
-              errorMsg += '진단: 서버가 다운되었거나 방화벽이 차단 중\n';
-            } else if (error.contains('TimeoutException')) {
-              errorMsg += '진단: 서버 응답 시간 초과\n';
-            } else if (error.contains('SocketException')) {
-              errorMsg += '진단: 네트워크 연결 문제\n';
-            }
-            break;
-          }
-        }
-
-        errorMsg += '\n해결 방법:\n1. 서버 상태 확인\n2. IP 주소 및 포트 확인\n3. 네트워크 연결 확인';
-        _toast(errorMsg);
-      }
-    } catch (e) {
-      debugPrint('Ping diagnostic error: $e');
-      if (!mounted) return;
-      setState(() => _status = '진단 실패');
-      _toast('서버 진단 중 오류 발생: $e');
-    }
-  }
+  
 
   // ---- 현재 위치로 시점 이동 ----
   Future<void> _centerToMyLocation() async {
@@ -910,6 +857,7 @@ class _MapScreenState extends State<MapScreen> {
                 const SizedBox(height: 16),
                 ElevatedButton.icon(
                   onPressed: () {
+                    _speakText('맵 재시도');
                     setState(() {
                       _mapAuthFailed = false;
                       _status = '맵 재시도 중...';
@@ -967,7 +915,10 @@ class _MapScreenState extends State<MapScreen> {
       backgroundColor: AppColors.bg,
       leading: IconButton(
         icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white),
-        onPressed: () => Navigator.of(context).pop(),
+        onPressed: () {
+          _speakText('뒤로가기');
+          Navigator.of(context).pop();
+        },
         tooltip: '뒤로가기',
       ),
     );
@@ -1035,7 +986,10 @@ class _MapScreenState extends State<MapScreen> {
                                 shape: BoxShape.circle,
                               ),
                               child: IconButton(
-                                onPressed: _toggleVoiceRecognition,
+                                onPressed: () {
+                                  _speakText(_isListening ? '음성인식 중지' : '음성인식 시작');
+                                  _toggleVoiceRecognition();
+                                },
                                 icon: Icon(
                                   _isListening ? Icons.mic : Icons.mic_none,
                                   color: Colors.white,
@@ -1052,7 +1006,10 @@ class _MapScreenState extends State<MapScreen> {
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(
-                        onPressed: _routeFromMyLocation,
+                        onPressed: () {
+                          _speakText('도보 경로 찾기');
+                          _routeFromMyLocation();
+                        },
                         icon: const Icon(Icons.directions_walk),
                         label: const Text('도보 경로 찾기'),
                         style: ElevatedButton.styleFrom(
@@ -1068,29 +1025,6 @@ class _MapScreenState extends State<MapScreen> {
             ),
           ),
           if (_showInstructions) _buildInstructionsPanel(),
-          
-          // 하단 버튼 바
-          Positioned(
-            bottom: 90,
-            left: 20,
-            right: 20,
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 15.0, horizontal: 10.0),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.7),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: [
-                  _buildBottomButton(icon: Icons.text_fields, label: '주변 안내', onPressed: () {}),
-                  _buildBottomButton(icon: Icons.camera, label: '카메라', onPressed: () {}),
-                  _buildBottomButton(icon: Icons.phone, label: '보호자호출', onPressed: () {}),
-                  _buildBottomButton(icon: Icons.settings, label: '설정', onPressed: () {}),
-                ],
-              ),
-            ),
-          ),
         ],
       ),
     );
@@ -1141,7 +1075,10 @@ class _MapScreenState extends State<MapScreen> {
                       ),
                     ),
                     IconButton(
-                      onPressed: _hideInstructionsPanel,
+                      onPressed: () {
+                        _speakText('닫기');
+                        _hideInstructionsPanel();
+                      },
                       icon: const Icon(Icons.close, color: Colors.white),
                     ),
                   ],
@@ -1262,7 +1199,10 @@ class _MapScreenState extends State<MapScreen> {
                     children: [
                       Expanded(
                         child: ElevatedButton.icon(
-                          onPressed: _startReadingSuggestions,
+                          onPressed: () {
+                            _speakText('읽기');
+                            _startReadingSuggestions();
+                          },
                           icon: const Icon(Icons.volume_up, size: 18),
                           label: const Text('읽기'),
                           style: ElevatedButton.styleFrom(
@@ -1275,7 +1215,10 @@ class _MapScreenState extends State<MapScreen> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: ElevatedButton.icon(
-                          onPressed: _skipReadingSuggestions,
+                          onPressed: () {
+                            _speakText('건너뛰기');
+                            _skipReadingSuggestions();
+                          },
                           icon: const Icon(Icons.skip_next, size: 18),
                           label: const Text('건너뛰기'),
                           style: ElevatedButton.styleFrom(
@@ -1309,13 +1252,19 @@ class _MapScreenState extends State<MapScreen> {
               child: Row(
                 children: [
                   IconButton(
-                    onPressed: _previousSuggestion,
+                    onPressed: () {
+                      _speakText('이전 항목');
+                      _previousSuggestion();
+                    },
                     icon: const Icon(Icons.keyboard_arrow_up),
                     tooltip: '이전 항목',
                   ),
                   Expanded(
                     child: ElevatedButton.icon(
-                      onPressed: _selectCurrentSuggestion,
+                      onPressed: () {
+                        _speakText('선택');
+                        _selectCurrentSuggestion();
+                      },
                       icon: const Icon(Icons.check, size: 18),
                       label: const Text('선택'),
                       style: ElevatedButton.styleFrom(
@@ -1325,7 +1274,10 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                   ),
                   IconButton(
-                    onPressed: _nextSuggestion,
+                    onPressed: () {
+                      _speakText('다음 항목');
+                      _nextSuggestion();
+                    },
                     icon: const Icon(Icons.keyboard_arrow_down),
                     tooltip: '다음 항목',
                   ),
@@ -1396,23 +1348,6 @@ class _MapScreenState extends State<MapScreen> {
                 );
               },
             ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildBottomButton({required IconData icon, required String label, required VoidCallback onPressed}) {
-    return GestureDetector(
-      onTap: onPressed,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: Colors.white, size: 30),
-          const SizedBox(height: 8),
-          Text(
-            label,
-            style: const TextStyle(color: Colors.white, fontSize: 12),
           ),
         ],
       ),

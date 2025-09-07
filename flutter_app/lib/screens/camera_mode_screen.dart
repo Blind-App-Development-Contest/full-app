@@ -5,7 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:camera/camera.dart';
 import 'package:image/image.dart' as img;
+import 'package:provider/provider.dart';
 import 'package:blind/services/api_service.dart';
+import '../services/voice_service.dart';
+import '../utils/voice_utils.dart';
 
 class CameraModeScreen extends StatefulWidget {
   const CameraModeScreen({super.key});
@@ -23,11 +26,25 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
 
   CameraController? _mobileController;
   bool _isProcessingFrame = false;
+  
+  // 음성인식 상태 관리
+  bool _isListening = false;
+  VoiceService? _voiceService;
 
   @override
   void initState() {
     super.initState();
     _initializeMobileCamera();
+    _initializeVoiceService();
+  }
+  
+  void _initializeVoiceService() {
+    try {
+      _voiceService = Provider.of<VoiceService>(context, listen: false);
+      debugPrint('✅ CameraModeScreen VoiceService 초기화 성공');
+    } catch (e) {
+      debugPrint('❌ CameraModeScreen VoiceService 초기화 실패: $e');
+    }
   }
 
   Future<void> _initializeMobileCamera() async {
@@ -139,6 +156,21 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black.withValues(alpha: 0.7),
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(
+            Icons.arrow_back_ios_new,
+            color: Colors.white,
+          ),
+          onPressed: () {
+            _speakText('뒤로가기');
+            Navigator.pop(context);
+          },
+          tooltip: '뒤로가기',
+        ),
+      ),
       body: SafeArea(
         child: Stack(
           fit: StackFit.expand,
@@ -178,7 +210,7 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
                   return Center(
                     child: Container(
                       padding: const EdgeInsets.all(20),
-                      color: Colors.black.withOpacity(0.7),
+                      color: Colors.black.withValues(alpha: 0.7),
                       child: Text(
                         _error ?? snapshot.error.toString(),
                         style: const TextStyle(color: Colors.red, fontSize: 16),
@@ -205,35 +237,22 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
               left: 20,
               right: 20,
               child: Container(
-                padding: const EdgeInsets.symmetric(
-                    vertical: 15.0, horizontal: 10.0),
+                padding: const EdgeInsets.all(16.0),
                 decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.7),
+                    color: Colors.black.withValues(alpha: 0.7),
                     borderRadius: BorderRadius.circular(20)),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                  children: [
-                    Expanded(
-                        child: _buildBottomButton(
-                            icon: Icons.text_fields,
-                            label: '주변 안내',
-                            onPressed: () {})),
-                    Expanded(
-                        child: _buildBottomButton(
-                            icon: Icons.navigation,
-                            label: '길찾기',
-                            onPressed: () {})),
-                    Expanded(
-                        child: _buildBottomButton(
-                            icon: Icons.phone,
-                            label: '보호자호출',
-                            onPressed: () {})),
-                    Expanded(
-                        child: _buildBottomButton(
-                            icon: Icons.settings,
-                            label: '설정',
-                            onPressed: () {})),
-                  ],
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    _speakText(_isListening ? '음성인식 중지' : '음성인식 시작');
+                    _toggleVoiceRecognition();
+                  },
+                  icon: Icon(_isListening ? Icons.mic : Icons.mic_none),
+                  label: Text(_isListening ? '음성인식 중지' : '음성인식 시작'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _isListening ? Colors.red : Colors.blue,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                  ),
                 ),
               ),
             ),
@@ -242,21 +261,82 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
       ),
     );
   }
+  
+  /// 음성인식 토글 함수 - 실제 STT 연결
+  void _toggleVoiceRecognition() async {
+    if (_voiceService == null) return;
 
-  Widget _buildBottomButton(
-      {required IconData icon, required String label, required VoidCallback onPressed}) {
-    return GestureDetector(
-      onTap: onPressed,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: Colors.white, size: 30),
-          const SizedBox(height: 8),
-          Text(label, style: const TextStyle(color: Colors.white, fontSize: 12)),
-        ],
-      ),
-    );
+    setState(() {
+      _isListening = !_isListening;
+    });
+
+    if (_isListening) {
+      _speakText('음성인식을 시작합니다. 물체 찾기, 뒤로가기 등의 명령을 말씀해주세요.');
+      // STT 시작
+      try {
+        await _voiceService!.startListening();
+        _voiceService!.addListener(_onVoiceServiceUpdate);
+      } catch (e) {
+        debugPrint('❌ STT 시작 실패: $e');
+        setState(() => _isListening = false);
+      }
+    } else {
+      _speakText('음성인식을 중지합니다.');
+      // STT 중지
+      try {
+        await _voiceService!.stopListeningAndProcess();
+        _voiceService!.removeListener(_onVoiceServiceUpdate);
+      } catch (e) {
+        debugPrint('❌ STT 중지 실패: $e');
+      }
+    }
   }
+
+  /// VoiceService 상태 변경 리스너
+  void _onVoiceServiceUpdate() {
+    if (_voiceService == null) return;
+
+    final recognizedText = _voiceService!.lastRecognizedText;
+    if (recognizedText.isNotEmpty && _isListening) {
+      debugPrint('🎤 카메라 화면에서 인식된 텍스트: $recognizedText');
+      
+      setState(() => _isListening = false);
+      _voiceService!.removeListener(_onVoiceServiceUpdate);
+      
+      _processVoiceCommand(recognizedText);
+    }
+  }
+
+  /// 음성 명령 처리
+  void _processVoiceCommand(String command) {
+    final lowerCommand = command.toLowerCase().trim();
+    debugPrint('🎯 카메라 화면 음성 명령 처리: $lowerCommand');
+
+    if (lowerCommand.contains('물체') || lowerCommand.contains('찾기') || lowerCommand.contains('탐지')) {
+      if (_detectedObjects.isNotEmpty) {
+        final objectNames = _detectedObjects.map((obj) => obj['name'] as String).join(', ');
+        _speakText('현재 화면에서 $objectNames 을(를) 발견했습니다.');
+      } else {
+        _speakText('현재 화면에서 감지된 물체가 없습니다.');
+      }
+    } else if (lowerCommand.contains('뒤로') || lowerCommand.contains('돌아가') || lowerCommand.contains('나가기')) {
+      _speakText('이전 화면으로 돌아갑니다.');
+      Navigator.pop(context);
+    } else if (lowerCommand.contains('설명') || lowerCommand.contains('화면')) {
+      final statusText = _detectedObjects.isEmpty 
+        ? '카메라 화면입니다. 현재 감지된 물체가 없습니다.' 
+        : '카메라 화면입니다. ${_detectedObjects.length}개의 물체가 감지되었습니다.';
+      _speakText(statusText);
+    } else {
+      _speakText('카메라 화면입니다. 물체 찾기, 화면 설명, 뒤로가기 등의 명령을 사용할 수 있습니다.');
+    }
+  }
+
+  /// 음성 출력 함수
+  void _speakText(String text) async {
+    await VoiceUtils.speakWithService(_voiceService, text);
+  }
+
 }
 
 class ObjectPainter extends CustomPainter {
@@ -285,8 +365,9 @@ class ObjectPainter extends CustomPainter {
         color: Colors.white, fontSize: 14.0, backgroundColor: Colors.black54);
 
     for (var obj in objects) {
-      if (obj is! Map || obj['box'] is! List || obj['box'].length != 4)
+      if (obj is! Map || obj['box'] is! List || obj['box'].length != 4) {
         continue;
+      }
 
       final double xCenter = obj['box'][0];
       final double yCenter = obj['box'][1];

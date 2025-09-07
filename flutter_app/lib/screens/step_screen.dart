@@ -6,6 +6,7 @@ import '../widgets/set_button.dart';
 import '../widgets/accessible_text.dart';
 import '../services/voice_service.dart';
 import '../services/api_service.dart';
+import '../utils/voice_utils.dart';
 import 'voice_screen.dart';
 import 'camera_measurement_screen.dart';
 
@@ -26,8 +27,12 @@ class StepScreen extends StatefulWidget {
 class _StepScreenState extends State<StepScreen> {
   bool _measured = false;
   bool _resultConfirmed = false; // 측정 결과 확인 여부
+  // ignore: non_constant_identifier_names
   double? step_length_cm; // 백엔드와 동일한 변수명 사용
   VoiceService? _voiceService;
+  
+  // 음성인식 상태 관리
+  bool _isListening = false;
 
   bool get _hasChangedFromSettings =>
       widget.fromSettings &&
@@ -61,6 +66,9 @@ class _StepScreenState extends State<StepScreen> {
   // 카메라 측정 화면으로 이동 후 결과 받기
   void _startMeasure() async {
     debugPrint("🎯 보폭 측정 시작 버튼 클릭");
+    
+    // 클릭 음성 피드백
+    _speakText('측정 시작');
 
     if (!mounted) {
       debugPrint("❌ Widget이 마운트되지 않음");
@@ -114,9 +122,20 @@ class _StepScreenState extends State<StepScreen> {
 
       await Future.delayed(const Duration(milliseconds: 200));
       if (widget.fromSettings) {
-        await _voiceService!.speak("측정 결과 확인 버튼을 눌러 설정을 완료하세요.", speed: 0.9);
+        await Future.delayed(const Duration(milliseconds: 500));
+        // 결과 확인 후 자동 완료
+        setState(() {
+          _resultConfirmed = true;
+        });
+        _saveAndPop();
       } else {
-        await _voiceService!.speak("측정 결과 확인 버튼을 눌러 다음 단계로 진행하세요.", speed: 0.9);
+        await _voiceService!.speak("다음 단계로 진행합니다.", speed: 0.9);
+        await Future.delayed(const Duration(milliseconds: 500));
+        // 결과 확인 후 자동 다음 단계 진행
+        setState(() {
+          _resultConfirmed = true;
+        });
+        _goNext();
       }
     } catch (e) {
       debugPrint('❌ 음성 안내 실패: $e');
@@ -125,6 +144,9 @@ class _StepScreenState extends State<StepScreen> {
 
   // 온보딩 플로우: 다음 단계(VoiceScreen)로
   void _goNext() async {
+    // 클릭 음성 피드백
+    _speakText('다음');
+    
     if (step_length_cm != null) {
       final stepLengthCm = step_length_cm!.toInt();
 
@@ -149,6 +171,9 @@ class _StepScreenState extends State<StepScreen> {
 
   // 설정에서 진입: 변경사항 저장 후 값 반환
   void _saveAndPop() async {
+    // 클릭 음성 피드백
+    _speakText('저장');
+    
     if (step_length_cm != null) {
       final stepLengthCm = step_length_cm!.toInt();
 
@@ -170,6 +195,8 @@ class _StepScreenState extends State<StepScreen> {
 
   // 뒤로가기(설정 경로): 저장 없이 나감
   void _backWithoutSave() {
+    // 클릭 음성 피드백
+    _speakText('뒤로가기');
     if (_hasChangedFromSettings) {
       ScaffoldMessenger.of(
         context,
@@ -418,7 +445,115 @@ class _StepScreenState extends State<StepScreen> {
           ),
         ),
       ),
+      floatingActionButton: Container(
+        decoration: BoxDecoration(
+          color: _isListening ? Colors.red : Colors.blue,
+          shape: BoxShape.circle,
+        ),
+        child: FloatingActionButton(
+          onPressed: _toggleVoiceRecognition,
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          child: Icon(
+            _isListening ? Icons.mic : Icons.mic_none,
+            color: Colors.white,
+          ),
+        ),
+      ),
     );
+  }
+  
+  /// 음성인식 토글 함수 - 실제 STT 연결
+  void _toggleVoiceRecognition() async {
+    if (_voiceService == null) return;
+
+    setState(() {
+      _isListening = !_isListening;
+    });
+
+    if (_isListening) {
+      _speakText('음성인식을 시작합니다. 측정시작이라고 말씀해주세요.');
+      // STT 시작
+      try {
+        await _voiceService!.startListening();
+        _voiceService!.addListener(_onVoiceServiceUpdate);
+      } catch (e) {
+        debugPrint('❌ STT 시작 실패: $e');
+        setState(() => _isListening = false);
+      }
+    } else {
+      _speakText('음성인식을 중지합니다.');
+      // STT 중지
+      try {
+        await _voiceService!.stopListeningAndProcess();
+        _voiceService!.removeListener(_onVoiceServiceUpdate);
+      } catch (e) {
+        debugPrint('❌ STT 중지 실패: $e');
+      }
+    }
+  }
+
+  /// VoiceService 상태 변경 리스너
+  void _onVoiceServiceUpdate() {
+    if (_voiceService == null) return;
+
+    final recognizedText = _voiceService!.lastRecognizedText;
+    if (recognizedText.isNotEmpty && _isListening) {
+      debugPrint('🎤 보폭 화면에서 인식된 텍스트: $recognizedText');
+      
+      setState(() => _isListening = false);
+      _voiceService!.removeListener(_onVoiceServiceUpdate);
+      
+      _processVoiceCommand(recognizedText);
+    }
+  }
+
+  /// 음성 명령 처리
+  void _processVoiceCommand(String command) {
+    final lowerCommand = command.toLowerCase().trim();
+    debugPrint('🎯 보폭 화면 음성 명령 처리: $lowerCommand');
+
+    if (lowerCommand.contains('측정') || lowerCommand.contains('시작')) {
+      if (!_measured) {
+        _speakText('보폭 측정을 시작합니다.');
+        _startMeasure();
+      } else {
+        _speakText('이미 측정이 완료되었습니다.');
+      }
+    } else if (lowerCommand.contains('다시') || lowerCommand.contains('재측정')) {
+      _speakText('보폭을 다시 측정합니다.');
+      _startMeasure();
+    } else if (lowerCommand.contains('다음') || lowerCommand.contains('완료') || lowerCommand.contains('저장')) {
+      if (_measured && _resultConfirmed) {
+        _speakText('보폭 설정을 저장하고 다음 단계로 진행합니다.');
+        if (widget.fromSettings) {
+          _saveAndPop();
+        } else {
+          _goNext();
+        }
+      } else if (_measured && !_resultConfirmed) {
+        _speakText('측정 결과를 먼저 확인해주세요.');
+      } else {
+        _speakText('보폭 측정을 먼저 진행해주세요.');
+      }
+    } else if (lowerCommand.contains('뒤로') || lowerCommand.contains('취소')) {
+      _speakText('이전 화면으로 돌아갑니다.');
+      if (widget.fromSettings) {
+        _backWithoutSave();
+      } else {
+        Navigator.pop(context);
+      }
+    } else {
+      final statusText = _measured 
+        ? '보폭이 측정되었습니다. 다음 단계로 진행하려면 다음이라고 말씀해주세요.'
+        : '보폭 측정 화면입니다. 측정하기라고 말씀해주세요.';
+      _speakText(statusText);
+    }
+  }
+
+  /// 음성 출력 함수
+  void _speakText(String text) async {
+    await VoiceUtils.speakWithService(_voiceService, text);
   }
 }
 

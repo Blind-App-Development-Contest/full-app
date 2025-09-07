@@ -3,7 +3,7 @@ Enhanced database connection and session management
 PostgreSQL with SQLAlchemy ORM support
 """
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import sessionmaker, Session
 import os
@@ -52,6 +52,11 @@ def get_db() -> Generator[Session, None, None]:
     """Synchronous database session dependency for FastAPI"""
     db = SessionLocal()
     try:
+        # 쿼리 타임아웃 10초 설정 (ms)
+        try:
+            db.execute(text("SET statement_timeout = 10000"))
+        except Exception as e:
+            logger.warning(f"Failed to set statement_timeout (sync): {e}")
         yield db
     except Exception as e:
         logger.error(f"Database session error: {e}")
@@ -80,6 +85,11 @@ async def get_async_db() -> AsyncGenerator[AsyncSession, None]:
     """Asynchronous database session dependency for FastAPI"""
     async with AsyncSessionLocal() as session:
         try:
+            # 쿼리 타임아웃 10초 설정 (ms)
+            try:
+                await session.execute(text("SET statement_timeout = 10000"))
+            except Exception as e:
+                logger.warning(f"Failed to set statement_timeout (async): {e}")
             yield session
         except Exception as e:
             logger.error(f"Async database session error: {e}")

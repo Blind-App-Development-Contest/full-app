@@ -120,20 +120,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
     });
   }
 
-  /// VoiceService와 카메라를 병렬로 초기화 (기존 메소드 - 사용 안 함)
-  Future<void> _initializeServicesInParallel() async {
-    try {
-      // 병렬로 초기화 수행
-      await Future.wait([
-        _initializeVoiceService(),
-        _initializeCamera(),
-      ]);
-      debugPrint('✅ 모든 서비스 병렬 초기화 완료');
-    } catch (e) {
-      debugPrint('❌ 서비스 초기화 중 일부 실패: $e');
-      // 일부 실패해도 앱 사용 가능하도록 처리
-    }
-  }
+  
 
   @override
   void dispose() {
@@ -251,7 +238,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
       await Future.delayed(const Duration(milliseconds: 600));
       
       await _voiceService!.speak(
-        "이제 걸음 수를 말씀해 주세요. 몇 걸음으로 걸으셨나요?", 
+        "이제 걸음 수를 말씀해 주세요. 예를 들어 '15걸음' 또는 '열다섯걸음'처럼 말씀하세요.", 
         speed: 0.9
       );
       
@@ -306,10 +293,112 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
       _confirmStepCount(stepCount);
     }
   }
+
+  /// 한국어 숫자 표현을 숫자로 변환하는 함수
+  int? _parseKoreanNumber(String text) {
+    final cleanText = text.toLowerCase().trim();
+    
+    // 숫자가 포함된 패턴들을 처리
+    final digitPattern = RegExp(r'\d+');
+    final digitMatch = digitPattern.firstMatch(cleanText);
+    if (digitMatch != null) {
+      return int.tryParse(digitMatch.group(0)!);
+    }
+    
+    // 한국어 숫자 변환 맵
+    final koreanNumbers = {
+      '영': 0, '공': 0, '하나': 1, '일': 1, '한': 1, '둘': 2, '이': 2,
+      '셋': 3, '삼': 3, '넷': 4, '사': 4, '다섯': 5, '오': 5,
+      '여섯': 6, '육': 6, '일곱': 7, '칠': 7, '여덟': 8, '팔': 8,
+      '아홉': 9, '구': 9, '열': 10, '십': 10, '스무': 20, '이십': 20,
+      '서른': 30, '삼십': 30, '마흔': 40, '사십': 40, '쉰': 50, '오십': 50
+    };
+    
+    // 복합 숫자 처리 (열하나, 열둘 등)
+    if (cleanText.contains('열') && cleanText.length > 1) {
+      final afterTen = cleanText.replaceFirst('열', '').trim();
+      final baseNum = koreanNumbers[afterTen];
+      if (baseNum != null && baseNum < 10) {
+        return 10 + baseNum;
+      }
+      return 10;
+    }
+    
+    // 이십, 삼십 등의 복합 처리
+    for (final entry in koreanNumbers.entries) {
+      if (cleanText.contains(entry.key)) {
+        if (entry.value >= 10) return entry.value;
+        
+        // 십의 배수 + 일의 자리 처리
+        final tens = ['이십', '삼십', '사십', '오십'].indexWhere((t) => cleanText.contains(t));
+        if (tens >= 0) {
+          final remaining = cleanText.replaceAll(['이십', '삼십', '사십', '오십'][tens], '').trim();
+          final onesValue = koreanNumbers[remaining] ?? 0;
+          return (tens + 2) * 10 + onesValue;
+        }
+        
+        return entry.value;
+      }
+    }
+    
+    return null;
+  }
+
+  /// 텍스트에서 걸음 수를 추출하는 향상된 함수
+  int? _extractStepCountFromText(String text) {
+    final cleanText = text.toLowerCase().trim();
+    debugPrint('🔍 걸음 수 추출 시도: "$cleanText"');
+    
+    // 1. 직접적인 숫자 패턴 찾기 (15걸음, 20보, 열다섯걸음 등)
+    final patterns = [
+      RegExp(r'(\d+)\s*(?:걸음|보|발자국|스텝)'),
+      RegExp(r'(\d+)\s*(?:번|개)?'),
+      RegExp(r'(?:걸음|보|발자국|스텝).*?(\d+)'),
+    ];
+    
+    for (final pattern in patterns) {
+      final match = pattern.firstMatch(cleanText);
+      if (match != null) {
+        final num = int.tryParse(match.group(1)!);
+        if (num != null && num > 0 && num <= 100) {
+          debugPrint('✅ 패턴 매칭으로 걸음 수 추출: $num');
+          return num;
+        }
+      }
+    }
+    
+    // 2. 한국어 숫자 변환 시도
+    final koreanNum = _parseKoreanNumber(cleanText);
+    if (koreanNum != null && koreanNum > 0 && koreanNum <= 100) {
+      debugPrint('✅ 한국어 숫자 변환으로 걸음 수 추출: $koreanNum');
+      return koreanNum;
+    }
+    
+    // 3. 전체 텍스트에서 숫자만 추출
+    final digitOnly = RegExp(r'\d+').allMatches(cleanText);
+    for (final match in digitOnly) {
+      final num = int.tryParse(match.group(0)!);
+      if (num != null && num > 0 && num <= 100) {
+        debugPrint('✅ 숫자 추출로 걸음 수 획득: $num');
+        return num;
+      }
+    }
+    
+    debugPrint('❌ 걸음 수 추출 실패: "$cleanText"');
+    return null;
+  }
   
   /// 걸음 수 음성 입력 오류 처리
   void _onStepCountInputError(String error) {
     debugPrint('❌ 걸음 수 음성 입력 오류: $error');
+    
+    // 오류 텍스트에서 걸음 수 추출 시도
+    final extractedStepCount = _extractStepCountFromText(error);
+    if (extractedStepCount != null) {
+      debugPrint('✅ 오류 텍스트에서 걸음 수 추출 성공: $extractedStepCount');
+      _onStepCountReceived(extractedStepCount);
+      return;
+    }
     
     if (mounted) {
       // 다시 입력 요청
@@ -317,9 +406,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
     }
   }
 
-  // 걸음 수 입력 처리는 VoiceService의 자동 인식을 통해 처리됨
-
-  // 음성에서 걸음 수 추출 기능은 VoiceService에서 처리됨
+  
 
   /// 걸음 수 확인 안내
   Future<void> _confirmStepCount(int stepCount) async {
@@ -899,27 +986,50 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
         // 백엔드에서 정교한 측정 결과 받아오기
         if (result['success'] == true && result.containsKey('measurement')) {
           final measurement = result['measurement'];
-          
-          if (mounted && measurementActive) {
+
+          // 백엔드 응답에서 거리(m) 파싱
+          double? backendDistanceMeters;
+          try {
+            if (measurement is Map) {
+              if (measurement['distance_meters'] is num) {
+                backendDistanceMeters = (measurement['distance_meters'] as num).toDouble();
+              } else if (measurement['distance_m'] is num) {
+                backendDistanceMeters = (measurement['distance_m'] as num).toDouble();
+              } else if (measurement['distance_cm'] is num) {
+                backendDistanceMeters = (measurement['distance_cm'] as num).toDouble() / 100.0;
+              } else if (measurement['distance'] is num) {
+                // 거리 단위가 m라고 가정
+                backendDistanceMeters = (measurement['distance'] as num).toDouble();
+              } else if (measurement['step_length_cm'] is num && measurement['step_count'] is num) {
+                final double stepLenCm = (measurement['step_length_cm'] as num).toDouble();
+                final double stepCnt = (measurement['step_count'] as num).toDouble();
+                backendDistanceMeters = (stepLenCm * stepCnt) / 100.0;
+              }
+            }
+          } catch (e) {
+            debugPrint('백엔드 거리 파싱 실패: $e');
+          }
+
+          if (backendDistanceMeters == null) {
+            // 파싱 실패 시 기존 백업 로직 사용
+            _fallbackToSimulatedDistance();
+          } else if (mounted && measurementActive) {
             setState(() {
-              // 백엔드에서 계산한 실제 거리 사용 (더 정확함)
-              final measurementDistance = (measurement?['step_length_cm'] ?? (distanceMeters * 100)) / 100.0;
-              
-              // 누적 거리 증가 (백엔드 측정 결과 반영)
-              distanceMeters = math.min(distanceMeters + 0.3 + (frameCount * 0.02), targetDistanceMeters);
-              
+              // 백엔드 거리 사용, 단조 증가 유지 및 상한 적용
+              final double next = math.min(
+                math.max(distanceMeters, backendDistanceMeters!),
+                targetDistanceMeters,
+              );
+              distanceMeters = next;
+
               // 10미터 달성 시 측정 완료
               if (distanceMeters >= targetDistanceMeters && !measurementCompleted) {
                 measurementCompleted = true;
                 measurementActive = false;
                 _progressAnnouncementTimer?.cancel();
-                
-                // 정확히 10미터로 설정
+
                 distanceMeters = targetDistanceMeters;
-                
                 debugPrint('🎯 백엔드 연동 10미터 달성! 측정 완료 처리 시작');
-                
-                // 측정 완료 음성 안내 (걸음 수 입력 요청 포함)
                 _announceDistanceMeasurementComplete();
               }
             });
@@ -991,16 +1101,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
         title: const AccessibleTitle('10미터 거리 측정'),
         backgroundColor: Colors.black87,
         foregroundColor: Colors.white,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            Navigator.of(context).pushReplacement(
-              MaterialPageRoute(
-                builder: (context) => const VoiceScreen(fromSettings: false)
-              )
-            );
-          },
-        ),
+        automaticallyImplyLeading: false, // 뒤로가기 버튼 제거
       ),
       body: Column(
         children: [

@@ -21,15 +21,11 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
   bool _serverConnected = false;
   DateTime? _lastConnectionCheck;
   
-  /// 사용자 설정 로컬 캐시
-  Map<String, dynamic>? _cachedUserSettings;
-  DateTime? _lastSettingsUpdate;
-
   /// 안정적인 HTTP 요청 (재시도 로직 포함)
   Future<http.Response?> _safeHttpRequest(
     Future<http.Response> Function() requestFunction, {
-    int maxRetries = 5, // 재시도 횟수 증가
-    Duration retryDelay = const Duration(seconds: 3), // 재시도 간격 증가
+    int maxRetries = 2, // 재시도 횟수 축소
+    Duration retryDelay = const Duration(seconds: 2), // 재시도 간격 축소
   }) async {
     for (int attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -112,7 +108,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
         Uri.parse('$baseUrl/api/users/register'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'app_uuid': uuid}),
-      ).timeout(const Duration(seconds: 30)),
+      ).timeout(const Duration(seconds: 10)),
     );
 
     if (response != null) {
@@ -160,14 +156,38 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
       final uuid = await getCurrentUserUuid();
       if (uuid == null) return false;
 
+      // 서버 스키마에 맞는 페이로드로 매핑
+      final dynamic stepLenAny =
+          result['step_length_cm'] ?? result['stepLengthCm'] ?? result['stepLenCm'];
+      if (stepLenAny == null) {
+        debugPrint('❌ 저장 실패: step_length_cm 값이 없습니다. result=$result');
+        return false;
+      }
+      final int stepLenCm = (stepLenAny is double)
+          ? stepLenAny.toInt()
+          : (stepLenAny is int)
+              ? stepLenAny
+              : int.tryParse(stepLenAny.toString()) ?? 0;
+      if (stepLenCm <= 0) {
+        debugPrint('❌ 저장 실패: 유효하지 않은 보폭 값 $stepLenAny');
+        return false;
+      }
+
+      final payload = {
+        'user_id': uuid,
+        'step_length_cm': stepLenCm,
+        if (result['sessionDurationSeconds'] != null)
+          'session_duration_seconds': result['sessionDurationSeconds'],
+        if (result['frameCount'] != null) 'frame_count': result['frameCount'],
+        if (result['measurementType'] != null)
+          'measurement_type': result['measurementType'],
+      };
+
       final response = await _httpClient.post(
-        Uri.parse('$baseUrl/api/users/measurement/save'),
+        Uri.parse('$baseUrl/api/users/measurement/results/save'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'user_id': uuid,
-          'measurement_data': result,
-        }),
-      ).timeout(const Duration(seconds: 30));
+        body: jsonEncode(payload),
+      ).timeout(const Duration(seconds: 10));
 
       return response.statusCode == 200;
     } catch (e) {
@@ -177,6 +197,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
   }
 
   /// 보폭 길이 저장 (백엔드와 동일한 변수명 사용)
+  // ignore: non_constant_identifier_names
   Future<bool> saveStepLength(double step_length_cm) async {
     try {
       final uuid = await getCurrentUserUuid();
@@ -189,7 +210,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
           'user_id': uuid,
           'step_length_cm': step_length_cm.toInt(),
         }),
-      ).timeout(const Duration(seconds: 30));
+      ).timeout(const Duration(seconds: 10));
 
       return response.statusCode == 200;
     } catch (e) {
@@ -218,7 +239,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
           'gender': settings['gender'] ?? 'F',
           'speed': settings['speed'] ?? 1.0,
         }),
-      ).timeout(const Duration(seconds: 30));
+      ).timeout(const Duration(seconds: 10));
 
       return response.statusCode == 200;
     } catch (e) {
@@ -238,22 +259,29 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
       final uuid = await getCurrentUserUuid();
       if (uuid == null) return false;
 
-      // 서버가 기대하는 평평한 JSON 구조를 만듭니다.
+      // 서버 스키마에 맞게 키 매핑하여 평평한 JSON 생성
+      // ignore: non_constant_identifier_names
       final payload = {
         'app_uuid': uuid,
-        ...onboardingData,
+        'user_name': onboardingData['userName'],
+        'voice_gender': onboardingData['voiceGender'],
+        'voice_speed': onboardingData['voiceSpeed'],
+        'step_length_cm': onboardingData['stepLengthCm'],
+        'caregiver_name': onboardingData['caregiverName'],
+        'caregiver_phone': onboardingData['caregiverPhone'],
       };
 
-      // step_length_cm가 double일 경우 int로 변환합니다.
-      if (payload.containsKey('step_length_cm') && payload['step_length_cm'] is double) {
-        payload['step_length_cm'] = (payload['step_length_cm'] as double).toInt();
+      // step_length_cm 타입 보정
+      final dynamic step = payload['step_length_cm'];
+      if (step is double) {
+        payload['step_length_cm'] = step.toInt();
       }
 
       final response = await _httpClient.post(
         Uri.parse('$baseUrl/api/users/onboarding/complete'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(payload), // 수정된 payload를 전송
-      ).timeout(const Duration(seconds: 30));
+      ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         debugPrint('✅ 온보딩 완료 데이터 전송 성공');
@@ -294,7 +322,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
       () => _httpClient.get(
         Uri.parse('$baseUrl/api/users/settings/$uuid'),
         headers: {'Accept': 'application/json'},
-      ).timeout(const Duration(seconds: 30)),
+      ).timeout(const Duration(seconds: 10)),
     );
 
     if (response != null) {
@@ -329,7 +357,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
       () => _httpClient.get(
         Uri.parse('$baseUrl/api/users/settings/$uuid'),
         headers: {'Accept': 'application/json'},
-      ).timeout(const Duration(seconds: 30)),
+      ).timeout(const Duration(seconds: 10)),
       maxRetries: 1, // 재시도는 1번만
     );
 
@@ -341,17 +369,6 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
     return null;
   }
 
-  /// 로컬 기본 설정 반환
-  Map<String, dynamic> _getDefaultSettings() {
-    return {
-      'step_length': 70.0,
-      'voice_speed': 0.9,
-      'voice_gender': 'female',
-      'caregiver_name': null,
-      'caregiver_phone': null,
-    };
-  }
-
   /// 기본 사용자 설정 생성
   Future<bool> _createDefaultUserSettings(String uuid) async {
     try {
@@ -360,7 +377,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
       final response = await _httpClient.post(
         Uri.parse('$baseUrl/api/users/settings/initialize/$uuid'),
         headers: {'Content-Type': 'application/json'},
-      ).timeout(const Duration(seconds: 30));
+      ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         debugPrint('✅ 기본 사용자 설정 생성 성공');
@@ -382,7 +399,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
 
   /// 보호자 정보 등록
   Future<Map<String, dynamic>?> createCaregiver({
-    required String caregivers_name,
+    required String caregiversName,
     required String phoneNumber,
   }) async {
     try {
@@ -394,14 +411,14 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'user_id': uuid,
-          'caregivers_name': caregivers_name,
+          'caregivers_name': caregiversName,
           'phone_number': phoneNumber,
         }),
-      ).timeout(const Duration(seconds: 30));
+      ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         final result = jsonDecode(utf8.decode(response.bodyBytes));
-        debugPrint('✅ 보호자 정보 등록 성공: $caregivers_name ($phoneNumber)');
+        debugPrint('✅ 보호자 정보 등록 성공: $caregiversName ($phoneNumber)');
         return result;
       } else {
         debugPrint('❌ 보호자 등록 실패: ${response.statusCode} ${response.body}');
@@ -414,7 +431,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
         return {
           'caregiver_id': -1,
           'user_id': await getCurrentUserUuid() ?? 'offline',
-          'caregivers_name': caregivers_name,
+          'caregivers_name': caregiversName,
           'phone_number': phoneNumber,
           'status': 'offline_mode'
         };
@@ -445,7 +462,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
         Uri.parse('$baseUrl/api/users/caregiver/$uuid'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(updateData),
-      ).timeout(const Duration(seconds: 30));
+      ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final result = jsonDecode(utf8.decode(response.bodyBytes));
@@ -473,7 +490,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onren
         body: jsonEncode({
           'user_id': uuid,
         }),
-      ).timeout(const Duration(seconds: 30));
+      ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final result = jsonDecode(utf8.decode(response.bodyBytes));
