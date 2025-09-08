@@ -11,7 +11,7 @@ env:
   # TODO: 본인 환경에 맞게 수정하세요.
   AZURE_WEBAPP_NAME: aeye-backend-app-jp   # Azure Web App 이름
   AZURE_REGISTRY_NAME: aeyecontainer     # Azure Container Registry(ACR) 이름
-  IMAGE_NAME: ${{ secrets.AZURE_REGISTRY_NAME }}/backend-dev:${{ github.sha }}
+  IMAGE_NAME: aeyecontainer/backend-dev:${{ github.sha }}
 
 jobs:
   build-and-push:
