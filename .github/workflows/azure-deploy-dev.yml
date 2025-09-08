@@ -11,7 +11,7 @@ env:
   # TODO: 본인 환경에 맞게 수정하세요.
   AZURE_WEBAPP_NAME: aeye-backend-app-jp   # Azure Web App 이름
   AZURE_REGISTRY_NAME: aeyecontainer     # Azure Container Registry(ACR) 이름
-  IMAGE_NAME: aeyecontainer/backend-dev:${{ github.sha }}
+  IMAGE_NAME: aeyecontainer-a4ggfnfydyhgcudx.azurecr.io/backend-dev:${{ github.sha }}
 
 jobs:
   build-and-push:
@@ -60,4 +60,3 @@ jobs:
       - name: "배포 후 ACR에서 사용하지 않는 이미지 정리 (선택 사항)"
         run: |
           az acr repository show-manifests --name $AZURE_REGISTRY_NAME --repository backend-dev --query "[?tags==null].digest" -o tsv | xargs -I% az acr repository delete --name $AZURE_REGISTRY_NAME --image backend-dev@% --yes
-
