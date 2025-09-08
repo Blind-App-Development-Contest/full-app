@@ -1,3 +1,4 @@
+import os
 from pydantic_settings import BaseSettings
 from typing import List, Optional
 from functools import lru_cache
@@ -7,7 +8,7 @@ class Settings(BaseSettings):
 
     # 서버 설정
     HOST: str = "0.0.0.0"
-    PORT: int = 8000
+    PORT: int = int(os.getenv("PORT", 8000))
     DEBUG: bool = False
 
     # CORS 설정

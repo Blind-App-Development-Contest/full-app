@@ -5,7 +5,7 @@ class AppConfig {
   /// 백엔드 서버 기본 URL
   static String get backendBaseUrl => 
       // dotenv.env['BACKEND_BASE_URL'] ?? 'http://localhost:8000';
-dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onrender.com';
+dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-app-jp.azurewebsites.net';
   
   /// 측정 관련 엔드포인트 URL
   static String get measurementEndpoint => 

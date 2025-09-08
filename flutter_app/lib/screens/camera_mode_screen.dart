@@ -92,7 +92,13 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
       debugPrint('웹소켓 초기화 실패: 사용자 UUID가 없습니다.');
       return;
     }
-    final wsUrl = Uri.parse('ws://10.0.2.2:8000/api/camera/stream/$_userId');
+    String backendBaseUrl = ApiService().baseUrl;
+    if (backendBaseUrl.startsWith('https://')) {
+      backendBaseUrl = backendBaseUrl.replaceFirst('https://', 'wss://');
+    } else if (backendBaseUrl.startsWith('http://')) {
+      backendBaseUrl = backendBaseUrl.replaceFirst('http://', 'ws://');
+    }
+    final wsUrl = Uri.parse('$backendBaseUrl/api/camera/stream/$_userId');
     _channel = WebSocketChannel.connect(wsUrl);
 
     _channel!.stream.listen(

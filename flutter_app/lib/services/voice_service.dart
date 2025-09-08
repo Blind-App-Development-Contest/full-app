@@ -27,7 +27,7 @@ class VoiceService with ChangeNotifier {
 
   // === 서버 설정 ===
   // String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'http://localhost:8000';
-String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-gvu9.onrender.com';
+String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-app-jp.azurewebsites.net';
 
   // === 상태 관리 ===
   VoiceState _currentState = VoiceState.idle;
