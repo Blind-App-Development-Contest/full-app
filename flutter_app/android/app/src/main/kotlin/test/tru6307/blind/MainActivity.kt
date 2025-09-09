@@ -1,4 +1,4 @@
-package com.example.blind
+package test.tru6307.blind
 
 import io.flutter.embedding.android.FlutterActivity
 
