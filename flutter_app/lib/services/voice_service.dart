@@ -9,7 +9,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
 import 'package:just_audio/just_audio.dart';
 import 'package:http_parser/http_parser.dart';
-import 'package:sensors_plus/sensors_plus.dart';
 import 'api_service.dart';
 
 /// 음성 인식 상태
@@ -34,6 +33,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
   String _lastRecognizedText = "";
   String _statusMessage = "초기화 중...";
   final List<String> _debugLogs = [];
+  bool _isDisposed = false; // 생명주기 상태 추적
 
   // === 녹음 관련 ===
   String? _currentRecordingPath;
@@ -45,41 +45,14 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
   StreamSubscription? _ttsSubscription;
   bool _isSpeaking = false; // 현재 음성 출력 중인지 확인
 
-  // === Measurement Callbacks ===
-  Function(Map<String, dynamic>)? onMeasurementComplete;
-  Function(Map<String, dynamic>)? onMeasurementStart;
-  
-  // === IMU 기반 거리 측정 + 걸음수 입력 ===
-  bool _isAwaitingStepCount = false;
-  int? _userCountedSteps;
-  DateTime? _measurementStartTime;
-  
-  // === 걸음 수 입력 전용 콜백 ===
-  Function(int)? onStepCountReceived;
-  Function(String)? onStepCountInputError;
 
-  // IMU 센서 데이터
-  double _totalDistance = 0.0;
-  final List<double> _accelerationHistory = [];
-  Timer? _sensorTimer;
-  
-  // 실제 IMU 센서 스트림 구독
-  StreamSubscription<AccelerometerEvent>? _accelerometerSubscription;
-  StreamSubscription<GyroscopeEvent>? _gyroscopeSubscription;
-  
-  // IMU 데이터 처리용 변수들
-  final List<double> _velocityHistory = [];
-  double _currentVelocity = 0.0;
-  DateTime? _lastSensorUpdate;
-  
-  // 걸음 감지용 변수들
-  int _detectedSteps = 0;
-  double _lastPeakTime = 0.0;
-  final double _stepThreshold = 12.0; // 걸음 감지 임계값
 
   // === 음성 속도 설정 ===
   double? _currentVoiceSpeed; // 사용자가 설정한 음성 속도
   static const double _defaultSpeed = 0.9; // 기본 속도 (사용자 설정 전)
+  
+  // === 음성 성별 설정 ===
+  String _currentVoiceGender = 'female'; // 사용자가 설정한 음성 성별
 
   // === Getters ===
   VoiceState get currentState => _currentState;
@@ -98,6 +71,26 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
     _currentVoiceSpeed = speed;
     debugPrint('🔊 음성 속도 설정됨: ${speed}x');
   }
+  
+  /// 음성 성별 설정 (사용자가 VoiceScreen에서 설정)
+  void setVoiceGender(String gender) {
+    _currentVoiceGender = gender;
+    debugPrint('🎭 음성 성별 설정됨: $gender');
+  }
+  
+  String _normalizeGender(String g) {
+    final v = g.toLowerCase().trim();
+    if (v.startsWith('m') || v.contains('남')) return 'male';
+    return 'female';
+  }
+
+  // === TTS 큐 관리 ===
+  final List<String> _ttsQueue = [];
+  bool _isProcessingTtsQueue = false;
+  
+  // === 파일 정리 관리 ===
+  final Set<String> _tempFiles = {};
+  Timer? _cleanupTimer;
 
   /// 서비스 초기화 및 환경 체크
   Future<void> _initialize() async {
@@ -108,6 +101,9 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
     
     // 사용자 설정 로드
     await _loadUserSettings();
+    
+    // 주기적 파일 정리 시작
+    _startPeriodicCleanup();
 
     _setStatus("초기화 완료 - 음성 인식 및 출력 준비됨");
     _addDebugLog("=== 초기화 완료 ===");
@@ -159,8 +155,21 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
 
   /// 자동 인식 사이클 1회를 실행하는 내부 함수
   Future<void> _runSingleRecognition() async {
+    // 서비스가 dispose된 경우 중단
+    if (_isDisposed) return;
+    
     // 사이클 실행 플래그가 꺼지면 모든 동작 중단
     if (!_isCycleRunning) return;
+
+    // 음성 출력 중이면 잠시 대기 후 재시도 (자기 음성 인식 방지)
+    if (_isSpeaking) {
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (!_isDisposed && _isCycleRunning && !_isSpeaking) {
+          _runSingleRecognition();
+        }
+      });
+      return;
+    }
 
     // 기존 녹음 시작 함수 호출(타임아웃 20초 걸어놧음)
     await startListening();
@@ -170,7 +179,16 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
 
   /// 음성 녹음 시작
   Future<void> startListening() async {
+    // 서비스가 dispose된 경우 중단
+    if (_isDisposed) return;
+    
     if (_currentState != VoiceState.idle) return;
+
+    // 음성 안내(TTS) 중에는 STT 시작 금지 (에코/루프 방지)
+    if (_isSpeaking) {
+      _addDebugLog("현재 음성 출력 중 - 인식 대기");
+      return;
+    }
 
     _addDebugLog("\n=== 음성 녹음 시작 ===");
 
@@ -213,6 +231,9 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
 
   /// 음성 녹음 중단 및 OpenAI 처리
   Future<void> stopListeningAndProcess() async {
+    // 서비스가 dispose된 경우 중단
+    if (_isDisposed) return;
+    
     if (_currentState != VoiceState.listening) return;
 
     _addDebugLog("\n=== 음성 처리 시작 ===");
@@ -244,11 +265,6 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
         "✅ STT 성공: '$transcribedText' (길이: ${transcribedText.length})",
       );
 
-      // 걸음 수 입력 모드인지 확인
-      if (_isAwaitingStepCount) {
-        _processStepCountInput(transcribedText);
-        return;
-      }
 
       // 2. NLU 서버 호출하여 의도 분석
       _setStatus("의도 분석 중...");
@@ -266,10 +282,12 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
     } finally {
       _setState(VoiceState.idle);
 
-      if (_isCycleRunning) {
+      if (!_isDisposed && _isCycleRunning) {
         // 자동 인식 사이클이 활성화 상태일 때, 0.5초 후 다음 인식 시작 (더 빠른 응답)
         Future.delayed(const Duration(milliseconds: 500), () {
-          _runSingleRecognition();
+          if (!_isDisposed && _isCycleRunning) {
+            _runSingleRecognition();
+          }
         });
       }
     }
@@ -280,151 +298,8 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
     _initialize();
   }
 
-  /// 측정 콜백 설정 메서드
-  void setMeasurementCallbacks({
-    Function(Map<String, dynamic>)? onStart,
-    Function(Map<String, dynamic>)? onComplete,
-  }) {
-    onMeasurementStart = onStart;
-    onMeasurementComplete = onComplete;
-    _addDebugLog('측정 콜백이 설정되었습니다.');
-  }
   
-  /// 걸음 수 입력 콜백 설정
-  void setStepCountCallbacks({
-    Function(int)? onStepCountReceived,
-    Function(String)? onStepCountInputError,
-  }) {
-    this.onStepCountReceived = onStepCountReceived;
-    this.onStepCountInputError = onStepCountInputError;
-    _addDebugLog('걸음 수 입력 콜백이 설정되었습니다.');
-  }
   
-  /// 걸음 수 입력 모드 시작
-  Future<void> startStepCountInput() async {
-    _isAwaitingStepCount = true;
-    _addDebugLog("🎤 걸음 수 입력 모드 시작");
-    
-    try {
-      await startListening();
-    } catch (e) {
-      _addDebugLog("❌ 걸음 수 입력 시작 실패: $e");
-      onStepCountInputError?.call("음성 인식을 시작할 수 없습니다: $e");
-      _isAwaitingStepCount = false;
-    }
-  }
-  
-  /// 걸음 수 입력 처리
-  void _processStepCountInput(String transcribedText) {
-    _addDebugLog("🎤 걸음 수 입력 처리: '$transcribedText'");
-    
-    try {
-      // 숫자 추출 시도
-      final stepCount = _extractStepCountFromSpeech(transcribedText);
-      
-      if (stepCount > 0) {
-        _addDebugLog("✅ 걸음 수 인식 성공: $stepCount걸음");
-        _userCountedSteps = stepCount;
-        _isAwaitingStepCount = false;
-        _setState(VoiceState.idle);
-        
-        // 콜백 호출
-        onStepCountReceived?.call(stepCount);
-      } else {
-        _addDebugLog("❌ 걸음 수 인식 실패: 숫자를 찾을 수 없음");
-        _setState(VoiceState.idle);
-        onStepCountInputError?.call("걸음 수를 정확히 듣지 못했습니다. 다시 말씀해 주세요.");
-      }
-    } catch (e) {
-      _addDebugLog("❌ 걸음 수 처리 오류: $e");
-      _isAwaitingStepCount = false;
-      _setState(VoiceState.idle);
-      onStepCountInputError?.call("걸음 수 처리 중 오류가 발생했습니다: $e");
-    }
-  }
-  
-  /// 음성에서 걸음 수 추출 (강화된 버전)
-  int _extractStepCountFromSpeech(String speech) {
-    final cleanText = speech.toLowerCase().trim();
-    _addDebugLog('🔍 걸음 수 추출 시도: "$cleanText"');
-    
-    // 확장된 한국어 숫자 매핑
-    final koreanNumbers = {
-      '영': 0, '공': 0, '하나': 1, '일': 1, '한': 1, '둘': 2, '이': 2,
-      '셋': 3, '삼': 3, '넷': 4, '사': 4, '다섯': 5, '오': 5,
-      '여섯': 6, '육': 6, '일곱': 7, '칠': 7, '여덟': 8, '팔': 8,
-      '아홉': 9, '구': 9, '열': 10, '십': 10, '스무': 20, '이십': 20,
-      '서른': 30, '삼십': 30, '마흔': 40, '사십': 40, '쉰': 50, '오십': 50
-    };
-    
-    // 복합 숫자 매핑 (자주 사용되는 것들)
-    final compositeNumbers = {
-      '열하나': 11, '열한': 11, '열둘': 12, '열두': 12, '열셋': 13, '열세': 13,
-      '열넷': 14, '열네': 14, '열다섯': 15, '열여섯': 16, '열일곱': 17,
-      '열여덟': 18, '열아홉': 19, '스물하나': 21, '스물한': 21, '스물둘': 22,
-      '스물두': 22, '스물셋': 23, '스물세': 23, '스물넷': 24, '스물네': 24,
-      '스물다섯': 25
-    };
-    
-    // 1. 직접적인 숫자 패턴 찾기 (15걸음, 20보 등)
-    final patterns = [
-      RegExp(r'(\d+)\s*(?:걸음|보|발자국|스텝|개|번|회)'),
-      RegExp(r'(\d+)\s*(?:번|개)?'),
-      RegExp(r'(?:걸음|보|발자국|스텝).*?(\d+)'),
-    ];
-    
-    for (final pattern in patterns) {
-      final match = pattern.firstMatch(cleanText);
-      if (match != null) {
-        final num = int.tryParse(match.group(1)!);
-        if (num != null && num > 0 && num <= 100) {
-          _addDebugLog('✅ 패턴 매칭으로 걸음 수 추출: $num');
-          return num;
-        }
-      }
-    }
-    
-    // 2. 복합 한국어 숫자 변환 시도 (우선순위 높음)
-    for (final entry in compositeNumbers.entries) {
-      if (cleanText.contains(entry.key)) {
-        _addDebugLog('✅ 복합 한국어 숫자 변환으로 걸음 수 추출: ${entry.value}');
-        return entry.value;
-      }
-    }
-    
-    // 3. 기본 한국어 숫자 변환 시도
-    if (cleanText.contains('열') && cleanText.length > 1) {
-      // 열 + 숫자 조합 처리
-      final afterTen = cleanText.replaceFirst('열', '').trim();
-      final baseNum = koreanNumbers[afterTen];
-      if (baseNum != null && baseNum < 10) {
-        _addDebugLog('✅ 열+숫자 조합으로 걸음 수 추출: ${10 + baseNum}');
-        return 10 + baseNum;
-      }
-      _addDebugLog('✅ 열로 걸음 수 추출: 10');
-      return 10;
-    }
-    
-    for (final entry in koreanNumbers.entries) {
-      if (cleanText.contains(entry.key)) {
-        _addDebugLog('✅ 기본 한국어 숫자 변환으로 걸음 수 추출: ${entry.value}');
-        return entry.value;
-      }
-    }
-    
-    // 4. 전체 텍스트에서 숫자만 추출
-    final digitOnly = RegExp(r'\d+').allMatches(cleanText);
-    for (final match in digitOnly) {
-      final num = int.tryParse(match.group(0)!);
-      if (num != null && num > 0 && num <= 100) {
-        _addDebugLog('✅ 숫자 추출로 걸음 수 획득: $num');
-        return num;
-      }
-    }
-    
-    _addDebugLog('❌ 걸음 수 추출 실패: "$cleanText"');
-    return 0;
-  }
 
   Future<void> _executeCommand(
     String command,
@@ -433,455 +308,26 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
     _addDebugLog("🎯 인식된 명령: $command, 엔티티: $entities");
     _setStatus("명령 실행: $command");
 
-    // 보폭 측정 관련 명령들 상세 로깅
-    final stepMeasureCommands = [
-      'MEASURE_STEP',
-      'BEGIN_WALKING',
-      'FOOTSTEP_MEASUREMENT_START',
-      'FOOTSTEP_MEASUREMENT_BEGIN',
-    ];
-    if (stepMeasureCommands.contains(command)) {
-      _addDebugLog("🚶‍♂️ 보폭 측정 명령 감지됨: $command");
-    }
-
     switch (command) {
-      case 'MEASURE_STEP':
-      case 'BEGIN_WALKING':
-      case 'FOOTSTEP_MEASUREMENT_START':
-      case 'FOOTSTEP_MEASUREMENT_BEGIN':
-        _setStatus("보폭 측정을 시작하겠습니다");
-        // 개선된 10m 측정 방식 안내
-        await speak("보폭 측정을 시작합니다. 10미터를 직선으로 걸으면서 걸음수를 세어주세요.", speed: 1.0);
-        await speak("측정을 시작하려면 '시작'이라고 말씀하세요.", speed: 1.0);
-        _setStatus("측정 시작 대기 중...");
-        break;
-      case 'START':
-      case 'START_WALKING':
-        if (!_isAwaitingStepCount) {
-          await _start10mMeasurement();
-        }
-        break;
-      case 'FOOTSTEP_MEASUREMENT_COMPLETE':
-      case 'STOP_MEASUREMENT':
-      case 'FINISH_MEASURING':
-      case 'END_WALKING':
-      case 'MEASUREMENT_COMPLETE':
-        if (_isAwaitingStepCount) {
-          await speak("먼저 걸음수를 말씀해주세요.", speed: 1.0);
-        } else {
-          await speak("현재 진행 중인 측정이 없습니다.", speed: 1.0);
-        }
-        break;
       case 'STOP_LISTENING':
-      case 'FOOTSTEP_MEASUREMENT_CANCEL':
-        _setStatus("측정을 중단하겠습니다");
-        _isAwaitingStepCount = false;
-        _userCountedSteps = null;
-        _measurementStartTime = null;
         stopAutoRecognitionCycle();
-        speak("측정을 중단하겠습니다.", speed: 1.2);
+        await speak("음성 인식을 중단합니다.", priority: true);
         break;
       default:
-        // 걸음수 입력 대기 중인지 확인
-        if (_isAwaitingStepCount) {
-          final stepCount = _extractStepCountFromText(_lastRecognizedText);
-          if (stepCount != null && stepCount > 0) {
-            _userCountedSteps = stepCount;
-            _isAwaitingStepCount = false;
-            await _complete10mMeasurement();
-            break;
-          } else {
-            await speak("걸음수를 다시 말씀해주세요. 예: 열 걸음, 15걸음", speed: 1.0);
-            break;
-          }
-        }
         _setStatus("알 수 없는 명령: $command");
         _addDebugLog('알 수 없는 명령: $command');
         break;
     }
   }
 
-  // 기존 측정 관련 메서드들은 10m 측정으로 대체됨
 
-  /// IMU + 카메라 융합 측정 시작 (최고 정확도)
-  Future<void> _start10mMeasurement() async {
-    try {
-      _measurementStartTime = DateTime.now();
-      _setStatus("IMU + 카메라 융합 보폭 측정을 시작합니다");
-      
-      await speak("IMU 센서와 카메라를 함께 사용한 정밀 보폭 측정을 시작합니다.", speed: 1.0);
-      await speak("휴대폰을 손에 들고 직선으로 걸으면서 걸음수를 세어주세요.", speed: 1.0);
-      await speak("두 센서가 함께 거리를 측정해 더 정확한 결과를 얻습니다.", speed: 1.0);
-      await Future.delayed(const Duration(seconds: 1));
-      await speak("시작!", speed: 1.2);
-      
-      // IMU + 카메라 융합 측정 시작
-      await _startHybridMeasurement();
-      
-      // 측정 시작 콜백 호출
-      if (onMeasurementStart != null) {
-        onMeasurementStart!({'status': 'started', 'method': '10m_measurement'});
-        _addDebugLog('10m 측정 시작 콜백 호출됨');
-      }
-      
-      // 30초 후 완료 안내
-      Future.delayed(const Duration(seconds: 30), () async {
-        if (_measurementStartTime != null && !_isAwaitingStepCount) {
-          await speak("10미터 걷기가 완료되었습니다. 총 몇 걸음 걸으셨는지 말씀해주세요.", speed: 1.0);
-          _isAwaitingStepCount = true;
-          _setStatus("걸음수 입력 대기 중...");
-        }
-      });
-      
-      _addDebugLog("IMU + 카메라 융합 측정 시작");
-      
-    } catch (e) {
-      _addDebugLog("❌ 융합 측정 시작 오류: $e");
-      _setStatus("측정 시작 중 오류 발생");
-    }
-  }
 
-  /// IMU + 카메라 하이브리드 측정 시작
-  Future<void> _startHybridMeasurement() async {
-    try {
-      // 1. IMU 센서 시작
-      _initializeIMUSensors();
-      
-      // 2. 카메라 기반 측정 세션 시작
-      await _startMeasurementSession();
-      
-      // 30초 후 측정 완료 및 걸음수 입력 요청
-      Future.delayed(const Duration(seconds: 30), () async {
-        if (_measurementStartTime != null && !_isAwaitingStepCount) {
-          await _stopHybridMeasurement();
-          await speak("측정이 완료되었습니다. 총 몇 걸음 걸으셨는지 말씀해주세요.", speed: 1.0);
-          _isAwaitingStepCount = true;
-          _setStatus("걸음수 입력 대기 중...");
-        }
-      });
-      
-      _addDebugLog("하이브리드 측정 세션 시작됨");
-      
-    } catch (e) {
-      _addDebugLog("❌ 하이브리드 측정 시작 오류: $e");
-      _setStatus("하이브리드 측정 시작 실패");
-    }
-  }
 
-  /// IMU 센서 초기화 및 시작
-  void _initializeIMUSensors() {
-    try {
-      // 초기화
-      _totalDistance = 0.0;
-      _currentVelocity = 0.0;
-      _detectedSteps = 0;
-      _accelerationHistory.clear();
-      _velocityHistory.clear();
-      _lastSensorUpdate = DateTime.now();
-      
-      // 가속도계 구독 시작 (100Hz)
-      _accelerometerSubscription = accelerometerEventStream().listen(
-        _onAccelerometerEvent,
-        onError: (error) {
-          _addDebugLog("❌ 가속도계 오류: $error");
-        },
-      );
-      
-      // 자이로스코프 구독 시작 (추가 안정성을 위해)
-      _gyroscopeSubscription = gyroscopeEventStream().listen(
-        _onGyroscopeEvent,
-        onError: (error) {
-          _addDebugLog("❌ 자이로스코프 오류: $error");
-        },
-      );
-      
-      _addDebugLog("✅ IMU 센서 초기화 완료 (가속도계 + 자이로스코프)");
-    } catch (e) {
-      _addDebugLog("❌ IMU 센서 초기화 오류: $e");
-    }
-  }
 
-  /// 가속도계 이벤트 처리
-  void _onAccelerometerEvent(AccelerometerEvent event) {
-    if (_measurementStartTime == null) return;
-    
-    final now = DateTime.now();
-    final deltaTime = _lastSensorUpdate != null 
-        ? now.difference(_lastSensorUpdate!).inMicroseconds / 1000000.0
-        : 0.01; // 기본 10ms
-    
-    _lastSensorUpdate = now;
-    
-    // 중력 보정된 가속도 계산 (지구 중력: 9.8m/s²)
-    final magnitude = math.sqrt(
-      event.x * event.x + event.y * event.y + event.z * event.z
-    );
-    
-    final linearAccel = (magnitude - 9.8).abs();
-    _accelerationHistory.add(linearAccel);
-    
-    // 가속도 히스토리 관리 (최근 100개 샘플만 유지)
-    if (_accelerationHistory.length > 100) {
-      _accelerationHistory.removeAt(0);
-    }
-    
-    // 걸음 감지 (피크 감지 알고리즘)
-    _detectStep(linearAccel, now.millisecondsSinceEpoch / 1000.0);
-    
-    // 속도 및 거리 적분 계산
-    _currentVelocity += linearAccel * deltaTime;
-    _velocityHistory.add(_currentVelocity);
-    
-    // 속도 히스토리 관리 및 드리프트 보정
-    if (_velocityHistory.length > 50) {
-      _velocityHistory.removeAt(0);
-      // 속도 드리프트 보정 (평균값으로 중심화)
-      final avgVelocity = _velocityHistory.reduce((a, b) => a + b) / _velocityHistory.length;
-      _currentVelocity -= avgVelocity * 0.1; // 드리프트 보정 계수
-    }
-    
-    // 거리 적분
-    _totalDistance += _currentVelocity.abs() * deltaTime;
-    
-    // 로그 출력 (5초마다)
-    if (now.millisecond % 5000 < 50) { // 대략 5초마다
-      _addDebugLog("IMU: ${_totalDistance.toStringAsFixed(1)}m, 걸음: $_detectedSteps, 가속도: ${linearAccel.toStringAsFixed(2)}m/s²");
-    }
-  }
-  
-  /// 자이로스코프 이벤트 처리 (회전 보정용)
-  void _onGyroscopeEvent(GyroscopeEvent event) {
-    // 걷는 중 회전에 대한 보정을 위해 사용
-    // 현재는 기본 구현, 필요시 고도화 가능
-  }
-  
-  /// 걸음 감지 알고리즘
-  void _detectStep(double acceleration, double timestamp) {
-    // 간단한 피크 감지: 임계값 초과 & 최소 간격
-    if (acceleration > _stepThreshold && 
-        (timestamp - _lastPeakTime) > 0.3) { // 최소 300ms 간격
-      
-      _detectedSteps++;
-      _lastPeakTime = timestamp;
-      
-      // 걸음 감지시 로그
-      _addDebugLog("🚶 걸음 감지: $_detectedSteps걸음");
-    }
-  }
 
-  /// 하이브리드 측정 중지
-  Future<void> _stopHybridMeasurement() async {
-    try {
-      // IMU 센서 구독 해제
-      await _accelerometerSubscription?.cancel();
-      _accelerometerSubscription = null;
-      
-      await _gyroscopeSubscription?.cancel();
-      _gyroscopeSubscription = null;
-      
-      // 기존 타이머도 정리
-      _sensorTimer?.cancel();
-      _sensorTimer = null;
-      
-      // 카메라 측정 중지는 기존 시스템 활용 (서버에서 처리)
-      _addDebugLog("✅ 하이브리드 측정 중지됨 (IMU 센서 구독 해제)");
-      
-    } catch (e) {
-      _addDebugLog("❌ 하이브리드 측정 중지 오류: $e");
-    }
-  }
 
-  /// IMU + 카메라 융합 측정 완료 및 보폭 계산
-  Future<void> _complete10mMeasurement() async {
-    try {
-      if (_userCountedSteps == null || _userCountedSteps! <= 0) {
-        await speak("유효하지 않은 걸음수입니다.", speed: 1.0);
-        return;
-      }
 
-      _setStatus("하이브리드 센서 데이터를 융합하여 보폭을 계산하고 있습니다...");
-      
-      // 센서 융합: IMU 거리와 카메라 거리를 결합
-      final fusedDistance = await _calculateFusedDistance();
-      // ignore: non_constant_identifier_names
-      final step_length_cm = (fusedDistance * 100) / _userCountedSteps!; // m를 cm로 변환
-      
-      _addDebugLog("✅ 하이브리드 측정 완료: $_userCountedSteps 걸음, 융합거리: ${fusedDistance.toStringAsFixed(1)}m, 보폭: ${step_length_cm.toStringAsFixed(1)}cm");
-      
-      await speak("센서 융합 계산 완료! 총 $_userCountedSteps 걸음, 측정거리 ${fusedDistance.toStringAsFixed(1)}미터로 보폭은 ${step_length_cm.toStringAsFixed(1)}센티미터입니다.", speed: 1.0);
-      
-      // 서버에 결과 전송 (기존 API 사용)
-      await _sendStepLengthResult(step_length_cm);
-      
-      // 측정 완료 콜백 호출
-      if (onMeasurementComplete != null) {
-        onMeasurementComplete!({
-          'step_length_cm': step_length_cm,
-          'step_count': _userCountedSteps,
-          'fused_distance': fusedDistance,
-          'method': 'imu_camera_fusion',
-          'confidence': 0.92 // 융합 측정이므로 더 높은 신뢰도
-        });
-      }
-      
-      // 초기화
-      _userCountedSteps = null;
-      _measurementStartTime = null;
-      _totalDistance = 0.0;
-      _setStatus("하이브리드 보폭 측정 완료");
-      
-    } catch (e) {
-      _addDebugLog("❌ 하이브리드 측정 완료 오류: $e");
-      _setStatus("측정 완료 중 오류 발생");
-    }
-  }
 
-  /// IMU와 카메라 데이터를 융합하여 최종 거리 계산
-  Future<double> _calculateFusedDistance() async {
-    try {
-      // 1. IMU 센서 거리
-      final imuDistance = _totalDistance;
-      
-      // 2. 카메라 기반 거리 (서버에서 계산된 값 가져오기)
-      double cameraDistance = 0.0;
-      try {
-        final cameraResult = await _getCameraDistance();
-        cameraDistance = cameraResult;
-      } catch (e) {
-        _addDebugLog("카메라 거리 측정 실패: $e");
-        cameraDistance = 0.0;
-      }
-      
-      _addDebugLog("IMU 거리: ${imuDistance.toStringAsFixed(1)}m, 카메라 거리: ${cameraDistance.toStringAsFixed(1)}m");
-      
-      // 3. 센서 융합 알고리즘
-      double fusedDistance;
-      
-      if (cameraDistance > 0 && imuDistance > 0) {
-        // 두 센서 모두 유효한 데이터가 있는 경우 가중평균
-        // IMU는 60%, 카메라는 40% 가중치 (IMU가 더 안정적)
-        fusedDistance = (imuDistance * 0.6) + (cameraDistance * 0.4);
-        _addDebugLog("센서 융합 성공 (IMU 60% + 카메라 40%)");
-      } else if (imuDistance > 0) {
-        // IMU만 유효한 경우
-        fusedDistance = imuDistance;
-        _addDebugLog("IMU 센서만 사용");
-      } else if (cameraDistance > 0) {
-        // 카메라만 유효한 경우
-        fusedDistance = cameraDistance;
-        _addDebugLog("카메라 센서만 사용");
-    } else {
-        // 둘 다 실패한 경우 평균 걷기 속도 추정
-        final elapsedTime = DateTime.now().difference(_measurementStartTime!).inSeconds;
-        fusedDistance = elapsedTime * 1.2; // 평균 걷기 속도 1.2m/s
-        _addDebugLog("센서 융합 실패, 시간 기반 추정 사용");
-    }
-      
-      // 합리적인 범위 체크 (0.5m ~ 100m)
-      fusedDistance = math.max(0.5, math.min(100.0, fusedDistance));
-      
-      _addDebugLog("최종 융합 거리: ${fusedDistance.toStringAsFixed(1)}m");
-      return fusedDistance;
-      
-    } catch (e) {
-      _addDebugLog("❌ 센서 융합 계산 오류: $e");
-      return 10.0; // 기본값 10m
-    }
-  }
-
-  /// 카메라 기반 측정 거리 가져오기
-  Future<double> _getCameraDistance() async {
-    try {
-      // 기존 측정 세션에서 결과 가져오기
-      final response = await http.get(
-        Uri.parse('$baseUrl/api/users/measurement/distance'),
-        headers: {'Content-Type': 'application/json'},
-      ).timeout(const Duration(seconds: 5));
-
-      if (response.statusCode == 200) {
-        final result = jsonDecode(utf8.decode(response.bodyBytes));
-        final distance = result['total_distance_meters']?.toDouble() ?? 0.0;
-        _addDebugLog("카메라 측정 거리: ${distance.toStringAsFixed(1)}m");
-        return distance;
-      } else {
-        _addDebugLog("카메라 거리 조회 실패: ${response.statusCode}");
-        return 0.0;
-      }
-    } catch (e) {
-      _addDebugLog("카메라 거리 조회 오류: $e");
-      return 0.0;
-    }
-  }
-
-  /// 기존 API를 사용하여 보폭 결과 전송 (백엔드와 동일한 변수명)
-  // ignore: non_constant_identifier_names
-  Future<void> _sendStepLengthResult(double step_length_cm) async {
-    try {
-      final response = await http
-          .post(
-            Uri.parse('$baseUrl/api/users/step-length'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'user_id': 'current_user',
-              'step_length': step_length_cm,
-            }),
-          )
-          .timeout(const Duration(seconds: 30));
-
-      if (response.statusCode == 200) {
-        _addDebugLog('✅ 개선된 보폭 측정 결과 전송 성공 (기존 API 사용)');
-        } else {
-        _addDebugLog('❌ 보폭 결과 전송 실패: ${response.statusCode}');
-      }
-    } catch (e) {
-      _addDebugLog('❌ 보폭 결과 전송 오류: $e');
-    }
-  }
-
-  /// 한국어 텍스트에서 걸음수 추출
-  int? _extractStepCountFromText(String text) {
-    try {
-      final cleanText = text.toLowerCase().trim();
-      
-      // 한국어 숫자 매핑
-      final koreanNumbers = {
-        '하나': 1, '둘': 2, '셋': 3, '넷': 4, '다섯': 5,
-        '여섯': 6, '일곱': 7, '여덟': 8, '아홉': 9, '열': 10,
-        '열하나': 11, '열둘': 12, '열셋': 13, '열넷': 14, '열다섯': 15,
-        '열여섯': 16, '열일곱': 17, '열여덟': 18, '열아홉': 19, '스무': 20,
-        '스물하나': 21, '스물둘': 22, '스물셋': 23, '스물넷': 24, '스물다섯': 25,
-        '서른': 30, '마흔': 40, '쉰': 50
-      };
-      
-      // 아라비아 숫자 패턴
-      final arabicPattern = RegExp(r'\d+');
-      final arabicMatch = arabicPattern.firstMatch(cleanText);
-      if (arabicMatch != null) {
-        return int.parse(arabicMatch.group(0)!);
-      }
-      
-      // 한국어 숫자 패턴
-      for (final entry in koreanNumbers.entries) {
-        if (cleanText.contains(entry.key)) {
-          return entry.value;
-        }
-      }
-      
-      // "걸음" 앞의 숫자 추출 시도
-      final stepPattern = RegExp(r'(\d+)\s*걸음');
-      final stepMatch = stepPattern.firstMatch(cleanText);
-      if (stepMatch != null) {
-        return int.parse(stepMatch.group(1)!);
-      }
-      
-      _addDebugLog("걸음수 추출 실패: $text");
-      return null;
-      
-    } catch (e) {
-      _addDebugLog("걸음수 추출 오류: $e");
-      return null;
-    }
-  }
 
 
   /// STT API 호출을 재시도 로직과 함께 실행
@@ -1101,278 +547,315 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
     }
   }
 
-  /// 디버그 로그 추가
+  /// 디버그 로그 추가 (안전한 버전)
   void _addDebugLog(String message) {
+    if (_isDisposed) return;
     final timestamp = DateTime.now().toIso8601String().substring(11, 23);
     _debugLogs.add("[$timestamp] $message");
     // 콘솔에도 출력 (개발용)
-    notifyListeners();
+    debugPrint("[$timestamp] $message");
+    _safeNotifyListeners();
   }
 
-  /// 상태 메시지 설정
+  /// 상태 메시지 설정 (안전한 버전)
   void _setStatus(String message) {
+    if (_isDisposed) return;
     _statusMessage = message;
-    notifyListeners();
+    _safeNotifyListeners();
   }
 
-  /// 상태 변경
+  /// 상태 변경 (안전한 버전)
   void _setState(VoiceState newState) {
+    if (_isDisposed) return;
     if (_currentState != newState) {
       _currentState = newState;
-      notifyListeners();
+      _safeNotifyListeners();
+    }
+  }
+  
+  /// 안전한 리스너 알림
+  void _safeNotifyListeners() {
+    if (!_isDisposed) {
+      try {
+        notifyListeners();
+      } catch (e) {
+        debugPrint('⚠️ notifyListeners 호출 실패 (위젯 dispose됨): $e');
+      }
     }
   }
 
-  /// 카메라 기반 측정 세션 시작 (하이브리드 모드용)
-  Future<bool> _startMeasurementSession() async {
-    try {
-      _addDebugLog("=== 카메라 측정 세션 시작 요청 (하이브리드 모드) ===");
 
-      final response = await _httpClient
-          .post(
-            Uri.parse('$baseUrl/api/users/measurement/session/start'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'user_id': 'current_user', 'mode': 'hybrid_imu_camera'}),
-          )
-          .timeout(
-            const Duration(seconds: 5),
-            onTimeout: () {
-              throw TimeoutException(
-                'Hybrid measurement start request timed out after 5 seconds',
-              );
-            },
-          );
-
-      if (response.statusCode == 200) {
-        final result = jsonDecode(utf8.decode(response.bodyBytes));
-        _addDebugLog('✅ 하이브리드 측정이 시작되었습니다');
-        _addDebugLog('세션 상태: ${result['status']}');
-        _addDebugLog('모드: ${result.containsKey('mode') ? result['mode'] : 'hybrid'}');
-        _setStatus("카메라 + IMU 하이브리드 측정 세션 시작됨");
-        return true;
-      } else {
-        _addDebugLog('❌ 하이브리드 측정 시작 실패: ${response.statusCode}');
-        _addDebugLog('서버 응답: ${response.body}');
-        _setStatus("하이브리드 측정 시작 실패");
-        return false;
-      }
-    } on TimeoutException catch (e) {
-      _addDebugLog('❌ 하이브리드 측정 시작 타임아웃: $e');
-      _setStatus("하이브리드 측정 시작 요청 타임아웃");
-      return false;
-    } on SocketException catch (e) {
-      _addDebugLog('❌ 하이브리드 측정 시작 네트워크 오류: $e');
-      _setStatus("네트워크 연결 오류");
-      return false;
-    } catch (e) {
-      _addDebugLog('❌ 하이브리드 측정 시작 오류: $e');
-      _setStatus("하이브리드 측정 시작 중 오류 발생");
-      return false;
-    }
-  }
-
-  /// 하이브리드 측정용 프레임 업로드 (조용히, 음성 안내 없음)
-  Future<void> uploadFrameForMeasurement(String imagePath) async {
-    try {
-      // 측정 중이 아니면 업로드하지 않음
-      if (_measurementStartTime == null) return;
-
-      final file = File(imagePath);
-      if (!file.existsSync()) {
-        _addDebugLog("❌ 프레임 파일이 존재하지 않음: $imagePath");
-        return;
-      }
-
-      final request = http.MultipartRequest(
-        'POST',
-        Uri.parse('$baseUrl/api/users/measurement/frame'),
-      );
-
-      // 파일 첨부
-      request.files.add(
-        await http.MultipartFile.fromPath(
-          'frame',
-          imagePath,
-          contentType: MediaType('image', 'jpeg'),
-        ),
-      );
-
-      // 사용자 ID 추가
-      request.fields['user_id'] = 'current_user';
-      request.fields['measurement_type'] = 'hybrid_imu_camera';
-      request.fields['timestamp'] = DateTime.now().toIso8601String();
-
-      // 조용히 업로드 (음성 안내 없음)
-      final response = await _httpClient.send(request).timeout(
-        const Duration(seconds: 10),
-      );
-
-      if (response.statusCode == 200) {
-        // 성공해도 조용히 처리 (디버그 로그만)
-        _addDebugLog("📸 하이브리드 측정용 프레임 업로드 성공 (조용히)");
-      } else {
-        _addDebugLog("❌ 하이브리드 측정용 프레임 업로드 실패: ${response.statusCode}");
-      }
-    } catch (e) {
-      _addDebugLog("❌ 하이브리드 측정용 프레임 업로드 오류: $e");
-      // 오류가 발생해도 측정은 계속 진행 (IMU 데이터는 유지)
-    }
-  }
-
-  /// 로그 초기화
+  /// 로그 초기화 (안전한 버전)
   void clearLogs() {
+    if (_isDisposed) return;
     _debugLogs.clear();
     _lastRecognizedText = "";
     _addDebugLog("로그 초기화됨");
   }
 
-  /// 강제 중단
+  /// 강제 중단 (안전한 버전)
   void forceStop() {
+    if (_isDisposed) return;
+    
     if (_currentState == VoiceState.listening) {
-      _audioRecorder.stop();
+      try {
+        _audioRecorder.stop();
+      } catch (e) {
+        debugPrint('⚠️ 녹음 중단 중 오류: $e');
+      }
     }
     _setState(VoiceState.idle);
     _addDebugLog("강제 중단됨");
     _setStatus("중단됨");
   }
 
-  /// Google Cloud TTS를 통한 음성 출력 - 최적화된 버전
+  /// 개선된 TTS 음성 출력 - 안정성과 성능 향상
   Future<void> speak(
     String text, {
-    String gender = "female",
-    double speed = 1.0,
+    String? gender,
+    double? speed,
+    bool priority = false,
   }) async {
     // 빈 텍스트는 즉시 반환
     if (text.trim().isEmpty) return;
     
-    // 이미 음성 출력 중이면 즉시 중단 (await 제거로 속도 향상)
-    if (_isSpeaking) {
-      try {
-        _audioPlayer.stop();
-      } catch (e) {
-        // 무시 (로그 제거로 속도 향상)
-      }
-      _isSpeaking = false;
+    // 우선순위 메시지가 아니면 큐에 추가
+    if (!priority && _isProcessingTtsQueue) {
+      _ttsQueue.add(text);
+      return;
     }
-
+    
+    // 안전한 오디오 중단
+    await _stopCurrentTts();
+    
     try {
       _isSpeaking = true;
+      _isProcessingTtsQueue = true;
       
-      // HTTP 요청 타임아웃을 3초로 단축 (기존 8초 → 3초)
+      // 현재 설정된 성별과 속도 사용 (정규화/범위 보정)
+      final currentGender = _normalizeGender(gender ?? _currentVoiceGender);
+      final currentSpeed = (speed ?? getCurrentSpeed()).clamp(0.25, 4.0).toDouble();
+      
+      // 사용자 UUID 확보
+      String? uuid;
+      try {
+        uuid = await ApiService().getCurrentUserUuid();
+      } catch (_) {
+        uuid = null;
+      }
+      if (uuid == null || uuid.trim().isEmpty) {
+        // 사용자 미등록 시 1회 초기화 시도 후 재조회
+        try {
+          await ApiService().initializeUser();
+          uuid = await ApiService().getCurrentUserUuid();
+        } catch (_) {}
+      }
+      if (uuid == null || uuid.trim().isEmpty) {
+        _isSpeaking = false;
+        _isProcessingTtsQueue = false;
+        debugPrint('❌ TTS 요청 불가: 사용자 UUID를 찾을 수 없습니다');
+        return;
+      }
+
+      // TTS API 호출
       final response = await _httpClient
           .post(
             Uri.parse('$baseUrl/api/users/voice'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
-              'user_id': 'c63427ae-ac05-4292-a52f-c967f36b3861',
+              'user_id': uuid,
               'text': text,
-              'gender': gender,
-              'speed': speed,
+              'gender': currentGender,
+              'speed': currentSpeed,
             }),
           )
-          .timeout(const Duration(seconds: 3));
+          .timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
-        // 데이터 크기 체크 (빠른 검증)
+        // 응답 데이터 유효성 검사
         if (response.bodyBytes.length < 100) {
           _isSpeaking = false;
+          _isProcessingTtsQueue = false;
           return;
         }
 
-        // 메모리 기반 재생으로 변경 (파일 I/O 제거)
-        await _ttsSubscription?.cancel();
-
-        // audioFile을 상위 스코프로 이동
-        final directory = await getApplicationDocumentsDirectory();
-        final timestamp = DateTime.now().millisecondsSinceEpoch;
-        final audioFile = File('${directory.path}/tts_$timestamp.mp3');
-
+        // 안전한 파일 생성
+        final audioFile = await _createSafeTempFile();
+        
         try {
-          final player = _audioPlayer;
-          
-          // 플레이어 상태 초기화 (병렬 처리)
-          await Future.wait([
-            player.stop(),
-            player.setVolume(1.0),
-          ]);
-          
-          // 파일 쓰기와 오디오 소스 설정을 병렬 처리
+          // 오디오 데이터 저장
           await audioFile.writeAsBytes(response.bodyBytes);
-          await player.setAudioSource(AudioSource.file(audioFile.path));
+          _tempFiles.add(audioFile.path);
           
-          // 즉시 재생 시작
-          await player.play();
-
-          // 재생 완료 시 간소화된 정리 (지연 최소화)
-          _ttsSubscription = player.processingStateStream
-              .where((state) => state == ProcessingState.completed)
-              .take(1)
-              .listen((_) {
-                _isSpeaking = false;
-                // 파일 정리를 백그라운드에서 즉시 실행
-                try {
-                  audioFile.deleteSync();
-                } catch (_) {
-                  // 파일 삭제 실패 무시
-                }
-              });
-              
-        } catch (playerError) {
+          // 안전한 오디오 재생
+          await _playAudioSafely(audioFile);
+          
+        } catch (playError) {
+          debugPrint('❌ TTS 재생 오류: $playError');
           _isSpeaking = false;
-          
-          // 간소화된 재시도 로직 (한 번만)
-          try {
-            final newPlayer = AudioPlayer();
-            await Future.wait([
-              newPlayer.setVolume(1.0),
-              newPlayer.setAudioSource(AudioSource.file(audioFile.path)),
-            ]);
-            await newPlayer.play();
-            
-            _isSpeaking = true;
-            
-            // 새 플레이어 정리
-            newPlayer.processingStateStream
-                .where((state) => state == ProcessingState.completed)
-                .take(1)
-                .listen((_) {
-                  _isSpeaking = false;
-                  newPlayer.dispose();
-                  try {
-                    audioFile.deleteSync();
-                  } catch (_) {}
-                });
-                
-            return; // 재시도 성공
-            
-          } catch (_) {
-            // 재시도 실패 - 파일만 정리
-            try {
-              audioFile.deleteSync();
-            } catch (_) {}
-          }
+          await _cleanupFile(audioFile.path);
         }
       } else {
         _isSpeaking = false;
+        debugPrint('❌ TTS HTTP ${response.statusCode}: ${response.body}');
       }
     } catch (e) {
       _isSpeaking = false;
+      debugPrint('❌ TTS 요청 실패: $e');
+    } finally {
+      _isProcessingTtsQueue = false;
+      
+      // 큐에 대기 중인 TTS가 있으면 다음 실행
+      if (!_isDisposed && _ttsQueue.isNotEmpty) {
+        final nextText = _ttsQueue.removeAt(0);
+        Future.delayed(const Duration(milliseconds: 200), () {
+          if (!_isDisposed) {
+            speak(nextText, gender: gender, speed: speed);
+          }
+        });
+      }
     }
+  }
+
+  /// 현재 TTS 안전하게 중단
+  Future<void> _stopCurrentTts() async {
+    if (_isSpeaking) {
+      try {
+        await _ttsSubscription?.cancel();
+        _ttsSubscription = null;
+        
+        await _audioPlayer.stop();
+        await Future.delayed(const Duration(milliseconds: 100)); // 완전한 정리 대기
+        
+        _isSpeaking = false;
+      } catch (e) {
+        debugPrint('⚠️ TTS 중단 중 오류 (무시됨): $e');
+        _isSpeaking = false;
+      }
+    }
+  }
+
+  /// 안전한 임시 파일 생성
+  Future<File> _createSafeTempFile() async {
+    final directory = await getApplicationDocumentsDirectory();
+    final timestamp = DateTime.now().microsecondsSinceEpoch; // 마이크로초로 변경
+    final randomSuffix = math.Random().nextInt(1000);
+    return File('${directory.path}/tts_${timestamp}_$randomSuffix.mp3');
+  }
+
+  /// 안전한 오디오 재생
+  Future<void> _playAudioSafely(File audioFile) async {
+    final player = _audioPlayer;
+    
+    // 플레이어 초기화
+    await player.setVolume(1.0);
+    await player.setAudioSource(AudioSource.file(audioFile.path));
+    
+    // 재생 시작
+    await player.play();
+    
+    // 완료 리스너 설정 (생명주기 체크 추가)
+    _ttsSubscription = player.processingStateStream
+        .where((state) => state == ProcessingState.completed)
+        .take(1)
+        .listen((_) async {
+          if (!_isDisposed) {
+            _isSpeaking = false;
+            await _cleanupFile(audioFile.path);
+            
+            // 다음 큐 처리를 위한 짧은 대기
+            await Future.delayed(const Duration(milliseconds: 100));
+          }
+        });
+  }
+
+  /// 파일 정리
+  Future<void> _cleanupFile(String filePath) async {
+    _tempFiles.remove(filePath);
+    try {
+      final file = File(filePath);
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (e) {
+      debugPrint('⚠️ TTS 파일 정리 실패: $e');
+    }
+  }
+
+  /// 주기적 파일 정리 (메모리 누수 방지)
+  void _startPeriodicCleanup() {
+    _cleanupTimer?.cancel();
+    _cleanupTimer = Timer.periodic(const Duration(minutes: 5), (_) async {
+      final directory = await getApplicationDocumentsDirectory();
+      final files = directory.listSync()
+          .where((entity) => entity is File && entity.path.contains('tts_'))
+          .cast<File>();
+      
+      for (final file in files) {
+        try {
+          final stats = await file.stat();
+          final age = DateTime.now().difference(stats.modified);
+          
+          // 10분 이상 된 TTS 파일 삭제
+          if (age.inMinutes > 10) {
+            await file.delete();
+            debugPrint('🗑️ 오래된 TTS 파일 정리: ${file.path}');
+          }
+        } catch (e) {
+          debugPrint('⚠️ TTS 파일 정리 중 오류: $e');
+        }
+      }
+    });
   }
 
   @override
   void dispose() {
-    // IMU 센서 구독 해제
-    _accelerometerSubscription?.cancel();
-    _gyroscopeSubscription?.cancel();
-    _sensorTimer?.cancel();
+    // dispose 플래그 설정 (가장 먼저)
+    _isDisposed = true;
     
-    _httpClient.close(); // HTTP 클라이언트 해제
-    _ttsSubscription?.cancel(); // TTS 스트림 리스너 해제
-    _audioRecorder.dispose();
-    // AudioPlayer 관리자의 dispose 호출 (필요시)
-    // _playerManager.dispose(); // 전역 사용시에는 dispose하지 않음
+    // 자동 인식 사이클 즉시 중단
+    _isCycleRunning = false;
+    
+    // TTS 큐와 현재 재생 정리
+    _ttsQueue.clear();
+    _stopCurrentTts(); // await 제거 (dispose는 동기적으로)
+    
+    // 정리 타이머 중지
+    _cleanupTimer?.cancel();
+    
+    // 비동기 정리 작업들을 백그라운드에서 실행
+    _cleanupResourcesAsync();
+    
+    // 기존 동기 리소스 정리
+    try {
+      _httpClient.close();
+      _ttsSubscription?.cancel();
+      _audioRecorder.dispose();
+    } catch (e) {
+      debugPrint('⚠️ dispose 리소스 정리 중 오류: $e');
+    }
+    
     super.dispose();
+  }
+  
+  /// 비동기 리소스 정리 (백그라운드 실행)
+  Future<void> _cleanupResourcesAsync() async {
+    try {
+      // 남은 임시 파일들 정리
+      for (final filePath in _tempFiles) {
+        try {
+          final file = File(filePath);
+          if (await file.exists()) {
+            await file.delete();
+          }
+        } catch (e) {
+          debugPrint('⚠️ dispose 파일 정리 실패: $e');
+        }
+      }
+      _tempFiles.clear();
+    } catch (e) {
+      debugPrint('⚠️ 비동기 리소스 정리 실패: $e');
+    }
   }
 }
 

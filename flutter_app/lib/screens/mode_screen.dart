@@ -184,7 +184,7 @@ class _ModeScreenState extends State<ModeScreen> {
                     decoration: BoxDecoration(
                       color: const Color(0xFF151C2C),
                       borderRadius: BorderRadius.circular(999),
-                      border: Border.all(color: divider.withOpacity(0.35)),
+                      border: Border.all(color: divider.withValues(alpha: 0.35)),
                     ),
                     child: Text(
                       preferredBadge,
@@ -351,15 +351,15 @@ class _ModeCard extends StatelessWidget {
     return InkWell(
       borderRadius: BorderRadius.circular(18),
       onTap: onTap,
-      splashColor: Colors.white.withOpacity(0.1),
-      highlightColor: Colors.white.withOpacity(0.05),
+      splashColor: Colors.white.withValues(alpha: 0.1),
+      highlightColor: Colors.white.withValues(alpha: 0.05),
       child: Container(
         height: 110,
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
           color: panel,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: divider.withOpacity(0.25)),
+          border: Border.all(color: divider.withValues(alpha: 0.25)),
         ),
         child: Row(
           children: [
@@ -369,7 +369,7 @@ class _ModeCard extends StatelessWidget {
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: divider.withOpacity(0.4)),
+                border: Border.all(color: divider.withValues(alpha: 0.4)),
               ),
               child: Icon(icon, color: Colors.white, size: 28),
             ),

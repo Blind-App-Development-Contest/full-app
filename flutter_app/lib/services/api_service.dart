@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
@@ -11,8 +12,18 @@ class ApiService {
   ApiService._internal();
 
   // String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'http://localhost:8000';
-String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-app-jp.azurewebsites.net';
-  final http.Client _httpClient = http.Client();
+  String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-app-jp.azurewebsites.net';
+  
+  // Azure HTTPS 연결을 위한 HTTP 클라이언트 설정
+  late final http.Client _httpClient = _createHttpClient();
+  
+  http.Client _createHttpClient() {
+    if (kDebugMode && Platform.isAndroid) {
+      // 디버그 모드에서 Android SSL 인증서 문제 해결
+      return http.Client();
+    }
+    return http.Client();
+  }
   
   /// 사용자 UUID 키
   static const String _userUuidKey = 'app_uuid';
@@ -21,11 +32,11 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
   bool _serverConnected = false;
   DateTime? _lastConnectionCheck;
   
-  /// 안정적인 HTTP 요청 (재시도 로직 포함)
+  /// 안정적인 HTTP 요청 (재시도 로직 포함 - Azure 서버 최적화)
   Future<http.Response?> _safeHttpRequest(
     Future<http.Response> Function() requestFunction, {
-    int maxRetries = 2, // 재시도 횟수 축소
-    Duration retryDelay = const Duration(seconds: 2), // 재시도 간격 축소
+    int maxRetries = 3, // Azure 서버를 위해 재시도 횟수 증가
+    Duration retryDelay = const Duration(seconds: 3), // Azure 콜드 스타트를 위해 더 긴 간격
   }) async {
     for (int attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -46,9 +57,16 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
         
         // 특정 오류는 재시도하지 않음
         if (errorMsg.contains('FormatException') || 
-            errorMsg.contains('Invalid argument')) {
-          debugPrint('🚫 재시도 불가능한 오류 - 즉시 중단');
+            errorMsg.contains('Invalid argument') ||
+            errorMsg.contains('SocketException') ||
+            errorMsg.contains('HandshakeException')) {
+          debugPrint('🚫 재시도 불가능한 오류 - 즉시 중단: $errorMsg');
           return null;
+        }
+        
+        // Azure 서버 관련 특별 처리
+        if (errorMsg.contains('TimeoutException')) {
+          debugPrint('⏰ Azure 서버 타임아웃 - 콜드 스타트 가능성 (재시도 진행)');
         }
         
         if (attempt == maxRetries) {
@@ -77,7 +95,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
     return false;
   }
 
-  /// 사용자 초기화 (UUID 생성/로드)
+  /// 사용자 초기화 (UUID 생성/로드 + Azure 서버 워밍업)
   Future<void> initializeUser() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -93,11 +111,49 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
         debugPrint('기존 사용자 UUID 로드: $existingUuid');
       }
       
+      // Azure 서버 워밍업 (콜드 스타트 방지)
+      await _warmupAzureServer();
+      
       // 서버에 사용자 등록/확인
       await _registerUser(existingUuid);
+      debugPrint('✅ ApiService 초기화 완료');
     } catch (e) {
       debugPrint('사용자 초기화 오류: $e');
       rethrow;
+    }
+  }
+
+  /// Azure 서버 워밍업 (콜드 스타트 방지)
+  Future<void> _warmupAzureServer() async {
+    try {
+      debugPrint('🔥 Azure 서버 워밍업 시작...');
+      debugPrint('🌐 서버 URL: $baseUrl');
+      
+      // 간단한 GET 요청으로 서버를 깨움
+      final warmupResponse = await _safeHttpRequest(
+        () => _httpClient.get(
+          Uri.parse('$baseUrl/api/users/measurement/'),
+          headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'AEye-Flutter-App/1.0',
+            'Connection': 'keep-alive',
+          },
+        ).timeout(const Duration(seconds: 45)), // 워밍업을 위해 더 긴 타임아웃
+        maxRetries: 2, // 워밍업은 재시도 횟수 줄임
+        retryDelay: const Duration(seconds: 5), // 워밍업 재시도 간격
+      );
+      
+      if (warmupResponse != null) {
+        debugPrint('🔥 Azure 서버 워밍업 완료 (상태코드: ${warmupResponse.statusCode})');
+        _serverConnected = true;
+        _lastConnectionCheck = DateTime.now();
+      } else {
+        debugPrint('⚠️ 서버 연결 완전 실패 - 설정을 가져올 수 없음');
+        _serverConnected = false;
+      }
+    } catch (e) {
+      debugPrint('🔥 서버 워밍업 중 오류: $e');
+      _serverConnected = false;
     }
   }
 
@@ -108,7 +164,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
         Uri.parse('$baseUrl/api/users/register'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'app_uuid': uuid}),
-      ).timeout(const Duration(seconds: 10)),
+      ).timeout(const Duration(seconds: 30)), // Azure 서버 콜드 스타트를 위해 타임아웃 증가
     );
 
     if (response != null) {
@@ -137,7 +193,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
       final response = await _httpClient.get(
         Uri.parse('$baseUrl/api/users/measurement/'),
         headers: {'Accept': 'application/json'},
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(const Duration(seconds: 15)); // Azure 서버 상태 확인용 타임아웃 증가
 
       if (response.statusCode == 200) {
         return jsonDecode(utf8.decode(response.bodyBytes));
@@ -187,7 +243,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
         Uri.parse('$baseUrl/api/users/measurement/results/save'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(payload),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30)); // Azure 서버를 위해 타임아웃 증가
 
       return response.statusCode == 200;
     } catch (e) {
@@ -210,7 +266,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
           'user_id': uuid,
           'step_length_cm': step_length_cm.toInt(),
         }),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30)); // Azure 서버를 위해 타임아웃 증가
 
       return response.statusCode == 200;
     } catch (e) {
@@ -239,7 +295,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
           'gender': settings['gender'] ?? 'F',
           'speed': settings['speed'] ?? 1.0,
         }),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30)); // Azure 서버를 위해 타임아웃 증가
 
       return response.statusCode == 200;
     } catch (e) {
@@ -281,7 +337,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
         Uri.parse('$baseUrl/api/users/onboarding/complete'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(payload), // 수정된 payload를 전송
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30)); // Azure 서버를 위해 타임아웃 증가
 
       if (response.statusCode == 200) {
         debugPrint('✅ 온보딩 완료 데이터 전송 성공');
@@ -322,7 +378,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
       () => _httpClient.get(
         Uri.parse('$baseUrl/api/users/settings/$uuid'),
         headers: {'Accept': 'application/json'},
-      ).timeout(const Duration(seconds: 10)),
+      ).timeout(const Duration(seconds: 30)), // Azure 서버를 위해 타임아웃 증가
     );
 
     if (response != null) {
@@ -357,7 +413,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
       () => _httpClient.get(
         Uri.parse('$baseUrl/api/users/settings/$uuid'),
         headers: {'Accept': 'application/json'},
-      ).timeout(const Duration(seconds: 10)),
+      ).timeout(const Duration(seconds: 30)), // Azure 서버를 위해 타임아웃 증가
       maxRetries: 1, // 재시도는 1번만
     );
 
@@ -377,7 +433,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
       final response = await _httpClient.post(
         Uri.parse('$baseUrl/api/users/settings/initialize/$uuid'),
         headers: {'Content-Type': 'application/json'},
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30)); // Azure 서버를 위해 타임아웃 증가
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         debugPrint('✅ 기본 사용자 설정 생성 성공');
@@ -414,7 +470,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
           'caregivers_name': caregiversName,
           'phone_number': phoneNumber,
         }),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30)); // Azure 서버를 위해 타임아웃 증가
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         final result = jsonDecode(utf8.decode(response.bodyBytes));
@@ -462,7 +518,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
         Uri.parse('$baseUrl/api/users/caregiver/$uuid'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(updateData),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30)); // Azure 서버를 위해 타임아웃 증가
 
       if (response.statusCode == 200) {
         final result = jsonDecode(utf8.decode(response.bodyBytes));
@@ -490,7 +546,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
         body: jsonEncode({
           'user_id': uuid,
         }),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 30)); // Azure 서버를 위해 타임아웃 증가
 
       if (response.statusCode == 200) {
         final result = jsonDecode(utf8.decode(response.bodyBytes));

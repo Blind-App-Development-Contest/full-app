@@ -100,9 +100,10 @@ class _CaregiverButtonState extends State<CaregiverButton> {
     } catch (e) {
       message = '❌ 오류 발생: $e';
     } finally {
-      if (!mounted) return;
-      setState(() => _loading = false);
-      widget.onCompleted?.call(ok, message);
+      if (mounted) {
+        setState(() => _loading = false);
+        widget.onCompleted?.call(ok, message);
+      }
     }
   }
 
@@ -121,15 +122,15 @@ class _CaregiverButtonState extends State<CaregiverButton> {
     return InkWell(
       borderRadius: BorderRadius.circular(18),
       onTap: _loading ? null : _callCaregiver,
-      splashColor: Colors.white.withOpacity(0.1),
-      highlightColor: Colors.white.withOpacity(0.05),
+      splashColor: Colors.white.withValues(alpha: 0.1),
+      highlightColor: Colors.white.withValues(alpha: 0.05),
       child: Container(
         height: 110,
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
           color: panel,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: divider.withOpacity(0.25)),
+          border: Border.all(color: divider.withValues(alpha: 0.25)),
         ),
         child: Row(
           children: [
@@ -139,7 +140,7 @@ class _CaregiverButtonState extends State<CaregiverButton> {
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: divider.withOpacity(0.4)),
+                border: Border.all(color: divider.withValues(alpha: 0.4)),
               ),
               child: _loading
                   ? const SizedBox(
@@ -157,22 +158,29 @@ class _CaregiverButtonState extends State<CaregiverButton> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
                     '보호자 호출',
                     style: TextStyle(
                       color: Colors.white,
-                      fontSize: 20,
+                      fontSize: 18,
                       fontWeight: FontWeight.w900,
                     ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  SizedBox(height: 6),
-                  Text(
-                    '긴급 상황 시 보호자에게 즉시 알림을 보냅니다',
-                    style: TextStyle(
-                      color: Color(0xFF9AA3B2),
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
+                  SizedBox(height: 4),
+                  Flexible(
+                    child: Text(
+                      '긴급 상황 시 보호자에게 즉시 알림을 보냅니다',
+                      style: TextStyle(
+                        color: Color(0xFF9AA3B2),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                 ],
