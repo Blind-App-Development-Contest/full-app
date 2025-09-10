@@ -242,21 +242,10 @@ async def process_fastdepth_frame(frame_data: FastDepthFrameData):
         import numpy as np
         dummy_image = np.zeros((480, 640, 3), dtype=np.uint8)
         
-        # 기본 IMU 데이터
-        import time
-        default_imu_data = {
-            'accelerometer': [0, 0, 9.81],
-            'gyroscope': [0, 0, 0],
-            'timestamp': time.time(),
-            'device_orientation': 'portrait'
-        }
-        
-        # 새로운 시스템으로 처리
+        # 카메라 기반 처리 (IMU 제거됨)
         result = await processor.process_frame_for_measurement(
             cv_image=dummy_image,
-            user_id="frame_processor",
-            imu_data=default_imu_data,
-            enable_advanced_fusion=False
+            user_id="frame_processor"
         )
         
         return result
@@ -469,32 +458,20 @@ async def process_measurement_frame(
     file: UploadFile = File(...),
     user_id: str = Form('current_user'),
     enable_kalman: str = Form('true'),
-    # IMU 데이터 필드 추가 - 정교한 측정을 위한 센서 융합
-    accelerometer_x: float = Form(default=0.0),
-    accelerometer_y: float = Form(default=0.0), 
-    accelerometer_z: float = Form(default=9.81),
-    gyroscope_x: float = Form(default=0.0),
-    gyroscope_y: float = Form(default=0.0),
-    gyroscope_z: float = Form(default=0.0),
-    device_orientation: str = Form(default="portrait"),
+    # 카메라 전용 - IMU 필드 제거됨
     frame_count: int = Form(default=1),
     estimated_distance: float = Form(default=0.0),
     estimated_step_count: int = Form(default=0)
 ):
     """
-    정교한 보폭 측정 시스템 - MediaPipe + IMU + FastDepth + Kalman Filter 통합
+    간소화된 카메라 기반 거리 측정 시스템
     
     워크플로우:
-    1. (준비) MediaPipe 초기화 및 IMU로 카메라 자세 측정
-    2. (뎁스 보정) FastDepth 뎁스 맵 생성 + IMU 기울기로 거리 왜곡 실시간 보정
-    3. (시각 측정) MediaPipe Pose로 보정된 뎁스 맵에서 발 키포인트 3D 좌표 계산
-    4. (걸음 감지) IMU 가속도계로 '걸음 이벤트' 감지
-    5. (데이터 융합) Kalman 필터로 MediaPipe + IMU 데이터 융합하여 정확한 보폭 계산
+    1. 카메라 프레임으로 거리 측정
+    2. 단순 거리 계산 (10m 측정용)
     """
     try:
-        logger.info(f'[정교한 측정 시작] 사용자: {user_id}, 프레임: {frame_count}')
-        logger.info(f'[센서 데이터] 가속도계: [{accelerometer_x:.2f}, {accelerometer_y:.2f}, {accelerometer_z:.2f}]')
-        logger.info(f'[센서 데이터] 자이로스코프: [{gyroscope_x:.2f}, {gyroscope_y:.2f}, {gyroscope_z:.2f}]')
+        logger.info(f'[카메라 거리 측정] 사용자: {user_id}, 프레임: {frame_count}')
         
         # 1. 측정 세션 활성 상태 확인
         command_executor = service_manager.get_command_executor()
@@ -531,58 +508,41 @@ async def process_measurement_frame(
         # 2.5. DEBUG: 프레임 저장 (진단용)
         await save_debug_frame(cv_image, frame_count, user_id)
         
-        # 3. 정교한 IMU 데이터 구성 (실제 센서 데이터 사용)
-        imu_data = {
-            'accelerometer': [accelerometer_x, accelerometer_y, accelerometer_z],
-            'gyroscope': [gyroscope_x, gyroscope_y, gyroscope_z],
-            'timestamp': time.time(),
-            'device_orientation': device_orientation,
-            'frame_count': frame_count,
-            'estimated_distance': estimated_distance,
-            'estimated_step_count': estimated_step_count
-        }
+        # 3. 카메라 기반 간단 측정 프로세서
+        processor = get_fastdepth_processor()
         
-        # 4. IMU 가속도계로 걸음 이벤트 감지
-        step_event_detected = _detect_step_event_from_imu(imu_data)
-        logger.info(f'[걸음 감지] 걸음 이벤트: {step_event_detected}')
-        
-        # 5. 통합 워크플로우 실행: MediaPipe + IMU + FastDepth + Kalman
-        measurement_result = await _execute_integrated_measurement_workflow(
+        # 4. 카메라 프레임만으로 거리 측정 (IMU 제거됨)
+        measurement_result = await processor.process_frame_for_measurement(
             cv_image=cv_image,
-            user_id=user_id,
-            imu_data=imu_data,
-            kalman_enabled=enable_kalman.lower() == 'true',
-            step_event_detected=step_event_detected
+            user_id=user_id
         )
         
-        # 6. 결과 로깅 및 반환
-        logger.info(f'[통합 측정 완료] 결과: {measurement_result}')
+        # 5. 결과 로깅 및 반환
+        logger.info(f'[카메라 측정 완료] 결과: {measurement_result}')
         
         if measurement_result is None:
-            logger.warning('통합 측정 결과가 None - 기본값 반환')
+            logger.warning('카메라 측정 결과가 None - 기본값 반환')
             return {
                 'success': True,
                 'measurement': None,
                 'session_active': True,
-                'message': '측정 진행 중 - 센서 융합 처리 중',
-                'user_id': user_id,
-                'step_event_detected': step_event_detected
+                'message': '측정 진행 중 - 카메라 처리 중',
+                'user_id': user_id
             }
         
-        # 7. 메모리 정리
+        # 6. 메모리 정리
         del cv_image, nparr, frame_data
         import gc
         gc.collect()
         
-        # 8. 성공 응답
+        # 7. 성공 응답
         return {
             'success': True,
             'measurement': measurement_result.model_dump() if measurement_result else None,
             'session_active': True,
-            'message': '통합 측정 완료',
+            'message': '카메라 측정 완료',
             'user_id': user_id,
-            'step_event_detected': step_event_detected,
-            'processing_method': 'MediaPipe_IMU_FastDepth_Kalman_Fusion'
+            'processing_method': 'FastDepth_Camera_Only'
         }
         
     except Exception as e:
@@ -904,244 +864,6 @@ async def get_user_measurement_history(
 
 
 # =========================
-# 정교한 통합 측정 시스템
+# 간소화된 카메라 전용 측정 시스템
 # =========================
-
-def _detect_step_event_from_imu(imu_data: dict) -> bool:
-    """
-    IMU 가속도계 데이터로 걸음 이벤트 감지
-    
-    Args:
-        imu_data: IMU 센서 데이터
-        
-    Returns:
-        bool: 걸음 이벤트 감지 여부
-    """
-    try:
-        accel = imu_data.get('accelerometer', [0, 0, 9.81])
-        
-        # 총 가속도 크기 계산
-        import math
-        total_accel = math.sqrt(sum(x**2 for x in accel))
-        
-        # 걸음 이벤트 임계값 (경험적 값)
-        # 일반적으로 걸을 때 9.81 ± 3.0 m/s² 범위를 벗어남
-        gravity = 9.81
-        variation = 3.0
-        step_threshold_low = gravity - variation   # 발을 들 때 (중력 감소)
-        step_threshold_high = gravity + variation  # 발을 내디딜 때 (충격 가속도)
-        
-        step_detected = total_accel < step_threshold_low or total_accel > step_threshold_high
-        
-        logger.debug(f"[걸음 감지] 총 가속도: {total_accel:.2f}, 감지: {step_detected}")
-        return step_detected
-        
-    except Exception as e:
-        logger.error(f"[걸음 감지 오류] {e}")
-        return False
-
-
-async def _execute_integrated_measurement_workflow(
-    cv_image,
-    user_id: str,
-    imu_data: dict,
-    kalman_enabled: bool,
-    step_event_detected: bool
-):
-    """
-    통합 측정 워크플로우 실행
-    
-    워크플로우:
-    1. MediaPipe로 발 키포인트 감지
-    2. FastDepth로 뎁스 맵 생성 및 IMU 보정
-    3. Kalman 필터로 데이터 융합
-    4. 최종 보폭 계산
-    """
-    try:
-        logger.info("[통합 워크플로우] 시작")
-        
-        # 1. MediaPipe Pose 프로세서 초기화 및 발 키포인트 감지
-        mediapipe_processor = get_mediapipe_pose_processor(enable_imu_fusion=True)
-        
-        # MediaPipe로 발 키포인트 추출 (강화된 버전 사용)
-        foot_keypoints = mediapipe_processor.extract_foot_keypoints_enhanced(cv_image)
-        
-        if not foot_keypoints:
-            logger.warning("[통합 워크플로우] MediaPipe 발 키포인트 감지 실패")
-            
-            # FastDepth 백업 시도
-            try:
-                logger.info("[백업 처리] FastDepth 전용 모드")
-                fastdepth_processor = get_fastdepth_processor()
-                return await fastdepth_processor.process_frame_for_measurement(
-                    cv_image, 
-                    user_id, 
-                    imu_data=imu_data,
-                    enable_advanced_fusion=kalman_enabled
-                )
-            except Exception as backup_error:
-                logger.error(f"[백업 처리] FastDepth 백업 실패: {backup_error}")
-                # 베이스 클래스의 대체 측정 사용
-                return mediapipe_processor.create_fallback_step_result(
-                    reason="mediapipe_and_fastdepth_failed",
-                    estimated_distance_cm=imu_data.get('estimated_distance', 0) * 100 if imu_data.get('estimated_distance') else None,
-                    estimated_step_count=imu_data.get('estimated_step_count')
-                )
-        
-        logger.info(f"[통합 워크플로우] MediaPipe 키포인트 감지 성공 - 신뢰도: {foot_keypoints.confidence_score:.3f}")
-        
-        # 2. FastDepth로 뎁스 맵 생성
-        fastdepth_processor = get_fastdepth_processor()
-        
-        # IMU 기울기 데이터로 뎁스 맵 보정
-        depth_result = await fastdepth_processor.process_frame_for_measurement(
-            cv_image, 
-            user_id, 
-            imu_data=imu_data,
-            enable_advanced_fusion=kalman_enabled
-        )
-        
-        # 3. MediaPipe 3D 좌표 계산 (FastDepth 뎁스 맵 사용)
-        depth_map = None
-        if depth_result and hasattr(depth_result, 'source_data'):
-            depth_map = depth_result.source_data.get('depth_map')
-        
-        foot_positions_3d = mediapipe_processor.convert_to_3d_coordinates(
-            foot_keypoints, 
-            cv_image, 
-            depth_map=depth_map
-        )
-        
-        # 4. Kalman 필터 데이터 융합
-        if kalman_enabled and foot_positions_3d:
-            logger.info("[통합 워크플로우] Kalman 필터 데이터 융합 시작")
-            
-            # Kalman 필터로 MediaPipe 결과와 IMU 걸음 이벤트 융합
-            fused_result = await _apply_kalman_filter_fusion(
-                mediapipe_result=foot_positions_3d,
-                fastdepth_result=depth_result,
-                step_event_detected=step_event_detected,
-                user_id=user_id
-            )
-            
-            if fused_result:
-                logger.info(f"[통합 워크플로우] Kalman 융합 완료 - 보폭: {fused_result.step_length_cm:.1f}cm")
-                return fused_result
-        
-        # 5. Kalman 필터 없이 MediaPipe 결과만 사용
-        if foot_positions_3d:
-            logger.info("[통합 워크플로우] MediaPipe 직접 결과 사용")
-            return await mediapipe_processor.process_frame_for_step_measurement(
-                cv_image, 
-                user_id, 
-                enable_depth_fusion=True
-            )
-        
-        # 6. 모든 방법 실패 시 FastDepth 백업
-        logger.warning("[통합 워크플로우] 모든 방법 실패 - FastDepth 백업 사용")
-        return depth_result
-        
-    except Exception as e:
-        logger.error(f"[통합 워크플로우 오류] {e}")
-        return None
-
-
-# _fallback_to_fastdepth_only 함수는 중복 제거됨 - 위의 인라인 코드로 대체
-
-
-async def _apply_kalman_filter_fusion(
-    mediapipe_result,
-    fastdepth_result,
-    step_event_detected: bool,
-    user_id: str
-):
-    """
-    Kalman 필터를 사용한 데이터 융합
-    
-    MediaPipe 키포인트 + FastDepth 거리 + IMU 걸음 이벤트를 융합하여
-    가장 정확한 보폭 계산
-    """
-    try:
-        logger.info("[Kalman 융합] 데이터 융합 시작")
-        
-        # MediaPipe에서 가장 신뢰도 높은 발 위치 2개 선택
-        if not mediapipe_result or len(mediapipe_result) < 2:
-            logger.warning("[Kalman 융합] MediaPipe 결과 부족")
-            return fastdepth_result
-        
-        # 좌우발 또는 신뢰도 높은 2개 위치 선택
-        sorted_positions = sorted(mediapipe_result, key=lambda x: x.confidence, reverse=True)
-        pos1, pos2 = sorted_positions[0], sorted_positions[1]
-        
-        # 3D 거리 계산
-        import math
-        dx = pos1.x - pos2.x
-        dy = pos1.y - pos2.y
-        dz = pos1.z - pos2.z
-        
-        mediapipe_step_length = math.sqrt(dx**2 + dy**2 + dz**2) * 100  # m -> cm
-        mediapipe_confidence = (pos1.confidence + pos2.confidence) / 2
-        
-        # FastDepth 결과와 가중 평균
-        if fastdepth_result:
-            fastdepth_step_length = fastdepth_result.step_length_cm
-            fastdepth_confidence = fastdepth_result.confidence
-            
-            # 신뢰도 기반 가중 평균
-            total_confidence = mediapipe_confidence + fastdepth_confidence
-            if total_confidence > 0:
-                fused_step_length = (
-                    mediapipe_step_length * mediapipe_confidence + 
-                    fastdepth_step_length * fastdepth_confidence
-                ) / total_confidence
-                
-                fused_confidence = total_confidence / 2
-            else:
-                fused_step_length = mediapipe_step_length
-                fused_confidence = mediapipe_confidence
-        else:
-            fused_step_length = mediapipe_step_length
-            fused_confidence = mediapipe_confidence
-        
-        # IMU 걸음 이벤트 감지 보너스
-        if step_event_detected:
-            fused_confidence = min(0.95, fused_confidence + 0.1)
-            logger.info("[Kalman 융합] IMU 걸음 이벤트 보너스 적용")
-        
-        # 결과 범위 보정 (베이스 클래스 설정값 사용)
-        mediapipe_processor = get_mediapipe_pose_processor()
-        fused_step_length = max(mediapipe_processor.config.min_step_length_cm, 
-                               min(mediapipe_processor.config.max_step_length_cm, fused_step_length))
-        
-        # StepCalculationResult 생성
-        from models.step_models import StepCalculationResult, StepTrackingQuality, StepMeasurementMethod, AccuracyLevel
-        
-        result = StepCalculationResult(
-            step_length_cm=round(fused_step_length, 1),
-            confidence=round(fused_confidence, 3),
-            step_count=1,
-            tracking_quality=StepTrackingQuality.EXCELLENT if fused_confidence >= 0.8 else StepTrackingQuality.GOOD,
-            accuracy_level=AccuracyLevel.HIGH if fused_confidence >= 0.85 else AccuracyLevel.MEDIUM,
-            measurement_method=StepMeasurementMethod.KALMAN_FILTER,
-            consistency_score=fused_confidence,
-            processing_time_ms=None,  # 처리 시간 측정은 필요시 추가
-            source_data={
-                "method": "kalman_filter_fusion",
-                "mediapipe_step_length_cm": round(mediapipe_step_length, 1),
-                "mediapipe_confidence": round(mediapipe_confidence, 3),
-                "fastdepth_step_length_cm": round(fastdepth_result.step_length_cm, 1) if fastdepth_result else None,
-                "fastdepth_confidence": round(fastdepth_result.confidence, 3) if fastdepth_result else None,
-                "step_event_detected": step_event_detected,
-                "imu_fusion_applied": True,
-                "kalman_applied": True,
-                "processing_method": "MediaPipe_IMU_FastDepth_Kalman_Fusion"
-            }
-        )
-        
-        logger.info(f"[Kalman 융합 완료] 보폭: {fused_step_length:.1f}cm, 신뢰도: {fused_confidence:.3f}")
-        return result
-        
-    except Exception as e:
-        logger.error(f"[Kalman 융합 오류] {e}")
-        return fastdepth_result
 

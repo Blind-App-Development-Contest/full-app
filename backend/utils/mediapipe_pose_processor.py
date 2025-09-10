@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from models.step_models import StepCalculationResult, StepMeasurementMethod, TrackingQuality, AccuracyLevel, AccuracyConverter
 
-from utils.imu_fusion_processor import IMUFusionProcessor
 from utils.step_measurement_base import StepMeasurementBase, StepMeasurementUtils, get_visual_impairment_config
 
 logger = logging.getLogger("uvicorn.error")
@@ -43,7 +42,7 @@ class Enhanced3DFootPosition:
     keypoint_type: str  # 'heel', 'toe'
     foot_side: str     # 'left', 'right'
     timestamp: float
-    imu_enhanced: bool = False
+    imu_enhanced: bool = False  # IMU 센서 비활성화 (카메라 전용)
     pose_confidence: float = 0.0
     depth_confidence: float = 0.0
 
@@ -54,11 +53,10 @@ class MediaPipePoseProcessor(StepMeasurementBase):
     주요 기능:
     - MediaPipe Pose로 발 키포인트 감지
     - FastDepth와 데이터 융합하여 정확한 3D 좌표 생성
-    - IMU 센서와의 융합으로 움직임 예측 및 안정화
-    - 칼만 필터 적용으로 부드러운 추적
+    - 카메라 기반 10m 거리 측정 전용
     """
     
-    def __init__(self, enable_imu_fusion: bool = True):
+    def __init__(self, enable_imu_fusion: bool = False):
         # 시각장애인 특화 설정으로 베이스 클래스 초기화
         super().__init__(get_visual_impairment_config())
         
@@ -118,16 +116,11 @@ class MediaPipePoseProcessor(StepMeasurementBase):
             self.depth_processor = None
             self.depth_integration_enabled = False
         
-        # IMU 융합 프로세서
-        self.imu_fusion_enabled = enable_imu_fusion
+        # IMU 융합 비활성화 (카메라 전용 모드)
+        self.imu_fusion_enabled = False
+        self.imu_processor = None
         if enable_imu_fusion:
-            try:
-                self.imu_processor = IMUFusionProcessor()
-                logger.info("[MediaPipe] IMU 융합 프로세서 초기화 완료")
-            except Exception as e:
-                logger.warning(f"[MediaPipe] IMU 융합 초기화 실패: {e}")
-                self.imu_processor = None
-                self.imu_fusion_enabled = False
+            logger.warning("[MediaPipe] IMU 융합이 요청되었지만 카메라 전용 모드에서는 비활성화되었습니다")
         
         # 성능 통계
         self.processing_stats = {
@@ -364,21 +357,8 @@ class MediaPipePoseProcessor(StepMeasurementBase):
                 else:
                     actual_x, actual_y, actual_z = world_x, world_y, 1.5
                 
-                # IMU 센서와 융합 (선택적)
+                # IMU 센서 융합 비활성화 (카메라 전용)
                 imu_enhanced = False
-                if self.imu_fusion_enabled and self.imu_processor:
-                    try:
-                        # IMU 데이터로 위치 보정
-                        corrected_pos = self.imu_processor.fuse_with_vision(
-                            vision_x=float(actual_x), vision_y=float(actual_y), vision_z=float(actual_z),
-                            foot_side=foot_side, timestamp=keypoints.timestamp
-                        )
-                        if corrected_pos:
-                            actual_x, actual_y, actual_z = map(float, corrected_pos)
-                            imu_enhanced = True
-                            logger.debug(f"[MediaPipe] IMU 융합 적용: {foot_side} {keypoint_type}")
-                    except Exception as e:
-                        logger.debug(f"[MediaPipe] IMU 융합 실패: {e}")
                 
                 # 전체 신뢰도 계산
                 pose_confidence = float(landmark.visibility) * float(landmark.presence)
@@ -392,7 +372,7 @@ class MediaPipePoseProcessor(StepMeasurementBase):
                     keypoint_type=keypoint_type,
                     foot_side=foot_side,
                     timestamp=float(keypoints.timestamp),
-                    imu_enhanced=imu_enhanced,
+                    imu_enhanced=False,  # IMU 센서 비활성화
                     pose_confidence=float(pose_confidence),
                     depth_confidence=float(depth_confidence)
                 )
@@ -437,11 +417,10 @@ class MediaPipePoseProcessor(StepMeasurementBase):
             depth_map = None
             if enable_depth_fusion and self.depth_integration_enabled and self.depth_processor is not None:
                 try:
-                    # FastDepth로 깊이 맵 생성 (새로운 통합 시스템 사용)
+                    # FastDepth로 깊이 맵 생성 (카메라 전용 시스템)
                     depth_result = await self.depth_processor.process_frame_for_measurement(
                         cv_image, 
-                        user_id, 
-                        enable_advanced_fusion=False
+                        user_id
                     )
                     if depth_result and hasattr(depth_result, 'source_data'):
                         depth_map = depth_result.source_data.get('depth_map')
@@ -464,7 +443,7 @@ class MediaPipePoseProcessor(StepMeasurementBase):
                 step_result.source_data["processing_time_ms"] = round(processing_time * 1000, 1)
                 step_result.source_data["mediapipe_keypoints"] = len(foot_positions_3d)
                 step_result.source_data["depth_fusion_enabled"] = enable_depth_fusion and depth_map is not None
-                step_result.source_data["imu_fusion_enabled"] = self.imu_fusion_enabled
+                step_result.source_data["imu_fusion_enabled"] = False
                 
                 logger.info(f"[MediaPipe] 보폭 측정 완료: {step_result.step_length_cm:.1f}cm "
                            f"(신뢰도: {step_result.confidence:.3f}, 처리시간: {processing_time*1000:.1f}ms)")
@@ -503,10 +482,8 @@ class MediaPipePoseProcessor(StepMeasurementBase):
                 # 일관성 점수 계산
                 consistency_score = self.calculate_consistency_score(step_length_cm)
                 
-                # IMU 센서 일치도 계산
+                # 센서 일치도 계산 (IMU 비활성화)
                 sensor_agreement = 1.0
-                if left_big_toe.imu_enhanced or right_big_toe.imu_enhanced:
-                    sensor_agreement = min(1.0, sensor_agreement * 1.2)  # IMU 융합 보너스 (1.0 제한)
                 
                 # 시각장애인 특화 신뢰도 조정
                 confidence = self.calculate_adjusted_confidence(
@@ -535,8 +512,8 @@ class MediaPipePoseProcessor(StepMeasurementBase):
                         "average_step_length_cm": self.get_average_step_length(),
                         "left_big_toe_confidence": round(left_big_toe.confidence, 3),
                         "right_big_toe_confidence": round(right_big_toe.confidence, 3),
-                        "left_imu_enhanced": left_big_toe.imu_enhanced,
-                        "right_imu_enhanced": right_big_toe.imu_enhanced,
+                        "left_imu_enhanced": False,
+                        "right_imu_enhanced": False,
                         "pose_detection_method": "MediaPipe Pose v1.0 - Big Toe Priority",
                         "depth_fusion_used": any(pos.depth_confidence > self.config.acceptable_confidence for pos in foot_positions)
                     },
@@ -566,10 +543,8 @@ class MediaPipePoseProcessor(StepMeasurementBase):
                 # 일관성 점수 계산
                 consistency_score = self.calculate_consistency_score(step_length_cm)
                 
-                # IMU 센서 일치도 계산
+                # 센서 일치도 계산 (IMU 비활성화)
                 sensor_agreement = 1.0
-                if left_heel.imu_enhanced or right_heel.imu_enhanced:
-                    sensor_agreement = min(1.0, sensor_agreement * 1.2)
                 
                 # 시각장애인 특화 신뢰도 조정
                 confidence = self.calculate_adjusted_confidence(
@@ -598,8 +573,8 @@ class MediaPipePoseProcessor(StepMeasurementBase):
                         "average_step_length_cm": self.get_average_step_length(),
                         "left_heel_confidence": round(left_heel.confidence, 3),
                         "right_heel_confidence": round(right_heel.confidence, 3),
-                        "left_imu_enhanced": left_heel.imu_enhanced,
-                        "right_imu_enhanced": right_heel.imu_enhanced,
+                        "left_imu_enhanced": False,
+                        "right_imu_enhanced": False,
                         "pose_detection_method": "MediaPipe Pose v1.0",
                         "depth_fusion_used": any(pos.depth_confidence > self.config.acceptable_confidence for pos in foot_positions)
                     },
@@ -697,7 +672,7 @@ class MediaPipePoseProcessor(StepMeasurementBase):
             "depth_fusion_success_rate": round(
                 self.processing_stats['depth_fusion_success'] / max(1, self.processing_stats['successful_detections']), 3
             ),
-            "imu_fusion_enabled": self.imu_fusion_enabled,
+            "imu_fusion_enabled": False,
             "depth_integration_enabled": self.depth_integration_enabled
         }
     
@@ -743,9 +718,9 @@ class MediaPipePoseProcessor(StepMeasurementBase):
             logger.debug(f"[MediaPipe] 낮은 신뢰도 감지 성공 - 신뢰도: {result.confidence_score:.3f}")
             return result
         
-        # 3단계: 이미지 전처리 후 재시도
+        # 3단계: 이미지 전처리 후 재시도 (비활성화됨)
         logger.debug("[MediaPipe] 이미지 전처리 후 재시도")
-        enhanced_images = self._enhance_image_for_foot_detection(cv_image)
+        enhanced_images = []  # 이미지 전처리 기능 비활성화
         
         for i, enhanced_image in enumerate(enhanced_images):
             result = self.extract_foot_keypoints(enhanced_image, 0.2)
@@ -768,7 +743,8 @@ class MediaPipePoseProcessor(StepMeasurementBase):
         logger.debug("[MediaPipe] 모든 발 특화 감지 방법 실패")
         return None
     
-    def _enhance_image_for_foot_detection(self, cv_image: np.ndarray) -> List[np.ndarray]:
+    # 발 감지 강화 기능 삭제됨 (카메라 거리 측정만 사용)
+    def _enhance_image_for_foot_detection_REMOVED(self, cv_image: np.ndarray) -> List[np.ndarray]:
         """발 감지를 위한 이미지 전처리 방법들"""
         enhanced_images = []
         
@@ -852,7 +828,7 @@ class MediaPipePoseProcessor(StepMeasurementBase):
 # 싱글톤 인스턴스
 _mediapipe_pose_processor = None
 
-def get_mediapipe_pose_processor(enable_imu_fusion: bool = True) -> MediaPipePoseProcessor:
+def get_mediapipe_pose_processor(enable_imu_fusion: bool = False) -> MediaPipePoseProcessor:
     """MediaPipe Pose 프로세서 싱글톤 인스턴스 반환"""
     global _mediapipe_pose_processor
     if _mediapipe_pose_processor is None:

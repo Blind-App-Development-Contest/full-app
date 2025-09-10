@@ -64,20 +64,10 @@ async def create_footstep_measurement(request: StepMeasurementRequest):
         import numpy as np
         dummy_image = np.zeros((480, 640, 3), dtype=np.uint8)
         
-        # 기본 IMU 데이터 (센서가 없을 때의 기본값)
-        default_imu_data = {
-            'accelerometer': [0, 0, 9.81],
-            'gyroscope': [0, 0, 0],
-            'timestamp': time.time(),
-            'device_orientation': 'portrait'
-        }
-        
-        # 새로운 통합 시스템으로 계산 (레거시 API 호환)
+        # 카메라 기반 계산 (IMU 제거됨)
         step_result = await processor.process_frame_for_measurement(
             cv_image=dummy_image,
-            user_id=str(request.user_id) if getattr(request, 'user_id', None) else 'api_user',
-            imu_data=default_imu_data,
-            enable_advanced_fusion=False  # API 호출에서는 기본 모드 사용
+            user_id=str(request.user_id) if getattr(request, 'user_id', None) else 'api_user'
         )
         
         # 레거시 API 호환을 위해 결과가 없으면 거리 기반 단순 계산

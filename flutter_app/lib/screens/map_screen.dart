@@ -886,6 +886,10 @@ class _MapScreenState extends State<MapScreen> {
         indoorEnable: false,
         logoClickEnable: false,
         locationButtonEnable: false,
+        // 타일 로딩 문제 해결 시도
+        mapType: NMapType.basic,
+        buildingHeight: 1.0,
+        symbolScale: 1.0,
       ),
       onMapReady: (c) async {
         debugPrint('🗺️ onMapReady called');
@@ -895,6 +899,9 @@ class _MapScreenState extends State<MapScreen> {
         setState(() => _status = '맵 로드 완료');
         debugPrint('✅ NaverMap widget ready');
         
+        // 타일 로딩 상태 확인을 위한 짧은 대기
+        await Future.delayed(const Duration(seconds: 2));
+        
         // 맵이 준비되면 현재 위치로 자동 이동
         try {
           await Future.delayed(const Duration(milliseconds: 500));
@@ -902,6 +909,15 @@ class _MapScreenState extends State<MapScreen> {
         } catch (e) {
           debugPrint('⚠️ 초기 위치 이동 실패: $e');
         }
+        
+        // 타일 로딩 실패 감지
+        Future.delayed(const Duration(seconds: 5), () {
+          if (mounted && _status.contains('맵 로드 완료')) {
+            debugPrint('🔍 지도 타일 로딩 상태 확인');
+            debugPrint('💡 그리드만 보인다면 클라이언트 ID 권한 문제일 수 있습니다.');
+            debugPrint('📋 해결 방법: 네이버 클라우드 플랫폼에서 새 ID 발급');
+          }
+        });
       },
       onMapTapped: (point, latLng) {
         // 맵 탭 시 인증 오류 감지

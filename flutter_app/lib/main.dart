@@ -44,53 +44,60 @@ Future<void> main() async {
     debugPrint("Warning: .env 파일을 찾을 수 없습니다: $e");
   }
 
-  // NaverMap SDK 초기화
+  // NaverMap SDK 초기화 - 새로운 인증 API 사용 (2025년 7월 이후 필수)
   try {
     // 환경변수에서 클라이언트 ID를 가져오되, 없으면 플랫폼별 설정을 사용
     final clientId = dotenv.env['NAVER_MAP_CLIENT_ID'];
     
     if (clientId != null && clientId.isNotEmpty && clientId != 'YOUR_NAVER_MAP_CLIENT_ID_HERE') {
-      // 유효한 클라이언트 ID가 있는 경우
-      // ignore: deprecated_member_use
-      await NaverMapSdk.instance.initialize(
+      // 유효한 클라이언트 ID가 있는 경우 - 새로운 인증 API 사용
+      await FlutterNaverMap().init(
         clientId: clientId,
-        onAuthFailed: (error) {
-          debugPrint("❌ NaverMap 인증 실패: $error");
+        onAuthFailed: (ex) {
+          debugPrint("❌ NaverMap 새 인증 API 실패: $ex");
           debugPrint("💡 해결방법:");
-          debugPrint("   1. 네이버 클라우드 플랫폼에서 클라이언트 ID 발급");
-          debugPrint("   2. .env 파일에 NAVER_MAP_CLIENT_ID 설정");
-          debugPrint("   3. iOS: Info.plist의 NMFNcpKeyId 값 설정");
-          debugPrint("   4. Android: AndroidManifest.xml의 com.naver.maps.map.CLIENT_ID 값 설정");
+          debugPrint("   1. 네이버 클라우드 플랫폼에서 Mobile Dynamic Map 서비스 등록");
+          debugPrint("   2. 새로운 Client ID 발급 (기존 ID와 다를 수 있음)");
+          debugPrint("   3. .env 파일에 NAVER_MAP_CLIENT_ID 업데이트");
+          debugPrint("   4. 2025년 7월 이후 무료 할당량 정책 확인");
+          debugPrint("🗺️ 그리드만 보이는 현상은 이 인증 실패가 원인일 수 있습니다.");
         },
       );
-      debugPrint("✅ NaverMap SDK 초기화 완료 (클라이언트 ID: ${clientId.substring(0, 8)}...)");
+      debugPrint("✅ NaverMap 새 인증 API 초기화 완료 (클라이언트 ID: ${clientId.substring(0, 8)}...)");
     } else {
-      // 클라이언트 ID가 없는 경우 플랫폼별 설정 사용
+      // 클라이언트 ID가 없는 경우 - 플랫폼별 설정에서 읽기 시도
       debugPrint("⚠️ .env에 NAVER_MAP_CLIENT_ID가 설정되지 않음");
       debugPrint("📱 플랫폼별 설정 파일에서 클라이언트 ID를 읽어옵니다:");
       debugPrint("   - iOS: Info.plist의 NMFNcpKeyId");
       debugPrint("   - Android: AndroidManifest.xml의 com.naver.maps.map.CLIENT_ID");
       
-      // ignore: deprecated_member_use
-      await NaverMapSdk.instance.initialize(
-        clientId: '', // 플랫폼별 설정에서 자동으로 읽어옴
-        onAuthFailed: (error) {
-          debugPrint("❌ NaverMap 인증 실패: $error");
-          debugPrint("💡 해결방법:");
-          debugPrint("   1. 네이버 클라우드 플랫폼(https://console.ncloud.com/)에서 클라이언트 ID 발급");
-          debugPrint("   2. iOS: Info.plist의 NMFNcpKeyId에 클라이언트 ID 입력");
-          debugPrint("   3. Android: AndroidManifest.xml의 com.naver.maps.map.CLIENT_ID에 클라이언트 ID 입력");
-          debugPrint("   4. 또는 .env 파일 생성 후 NAVER_MAP_CLIENT_ID 설정");
-        },
-      );
-      debugPrint("✅ NaverMap SDK 초기화 시도 완료 (플랫폼별 설정 사용)");
+      // 플랫폼별 설정에서 클라이언트 ID 읽기 시도
+      try {
+        await FlutterNaverMap().init(
+          onAuthFailed: (ex) {
+            debugPrint("❌ NaverMap 새 인증 API 실패 (플랫폼 설정): $ex");
+            debugPrint("💡 해결방법:");
+            debugPrint("   1. 네이버 클라우드 플랫폼(https://console.ncloud.com/)에서 Mobile Dynamic Map 서비스 등록");
+            debugPrint("   2. 새로운 Client ID 발급");
+            debugPrint("   3. iOS: Info.plist의 NMFNcpKeyId에 새 클라이언트 ID 입력");
+            debugPrint("   4. Android: AndroidManifest.xml의 com.naver.maps.map.CLIENT_ID에 새 클라이언트 ID 입력");
+            debugPrint("   5. 또는 .env 파일 생성 후 NAVER_MAP_CLIENT_ID 설정");
+          },
+        );
+        debugPrint("✅ NaverMap 새 인증 API 초기화 시도 완료 (플랫폼별 설정 사용)");
+      } catch (platformError) {
+        debugPrint("❌ 플랫폼별 설정에서 클라이언트 ID를 찾을 수 없음: $platformError");
+        debugPrint("🔧 .env 파일에 NAVER_MAP_CLIENT_ID를 설정하는 것을 권장합니다.");
+      }
     }
   } catch (e) {
-    debugPrint("❌ NaverMap SDK 초기화 실패: $e");
+    debugPrint("❌ NaverMap 새 인증 API 초기화 실패: $e");
     debugPrint("💡 문제 해결을 위해 다음을 확인하세요:");
-    debugPrint("   1. 네이버 클라우드 플랫폼에서 클라이언트 ID 발급 여부");
-    debugPrint("   2. 플랫폼별 설정 파일에 클라이언트 ID 정확히 입력 여부");
-    debugPrint("   3. 인터넷 연결 상태");
+    debugPrint("   1. 네이버 클라우드 플랫폼에서 Mobile Dynamic Map 서비스 활성화");
+    debugPrint("   2. 새로운 인증 API용 클라이언트 ID 발급 (기존과 다를 수 있음)");
+    debugPrint("   3. 플랫폼별 설정 파일에 올바른 클라이언트 ID 입력");
+    debugPrint("   4. 인터넷 연결 상태");
+    debugPrint("   5. 2025년 7월 이후 새로운 요금 정책 확인");
   }
 
   // 앱을 먼저 시작하고 백그라운드에서 초기화 (iPhone 최적화)
@@ -321,7 +328,7 @@ class _AlternativeStartupState extends State<_AlternativeStartup> {
           '/name': (_) => const NameScreen(),
           '/mode': (_) => const ModeScreen(),
           '/measurement-camera':
-              (context) => const CameraMeasurementScreen(isFromSettings: false),
+              (context) => const CameraMeasurementScreen(),
         },
       ),
     );

@@ -39,14 +39,15 @@ class _VoiceScreenState extends State<VoiceScreen> {
     _gender = widget.initialGender;
     _speed = widget.initialSpeed;
     
-    // VoiceService에 초기 속도 설정
+    // VoiceService에 초기 속도와 성별 설정
     WidgetsBinding.instance.addPostFrameCallback((_) {
       try {
         _voiceService = context.read<VoiceService>();
         _voiceService!.setVoiceSpeed(_speed);
-        debugPrint('🎙️ VoiceScreen 초기화: 음성 속도 ${_speed}x 설정');
+        _voiceService!.setVoiceGender(_gender == 'F' ? 'female' : 'male');
+        debugPrint('🎙️ VoiceScreen 초기화: 음성 속도 ${_speed}x, 성별 ${_gender == 'F' ? '여성' : '남성'} 설정');
       } catch (e) {
-        debugPrint('❌ VoiceScreen 초기화: VoiceService 음성 속도 설정 실패: $e');
+        debugPrint('❌ VoiceScreen 초기화: VoiceService 설정 실패: $e');
       }
     });
   }
@@ -240,8 +241,14 @@ class _VoiceScreenState extends State<VoiceScreen> {
                             label: '여성 음성',
                             selected: _gender == 'F',
                             onTap: () {
-                              _speakText('여성 음성');
                               setState(() => _gender = 'F');
+                              // VoiceService에 성별 변경 알리기
+                              try {
+                                _voiceService?.setVoiceGender('female');
+                              } catch (e) {
+                                debugPrint('❌ 음성 성별 변경 실패: $e');
+                              }
+                              _speakText('여성 음성');
                             },
                           ),
                         ),
@@ -251,8 +258,14 @@ class _VoiceScreenState extends State<VoiceScreen> {
                             label: '남성 음성',
                             selected: _gender == 'M',
                             onTap: () {
-                              _speakText('남성 음성');
                               setState(() => _gender = 'M');
+                              // VoiceService에 성별 변경 알리기
+                              try {
+                                _voiceService?.setVoiceGender('male');
+                              } catch (e) {
+                                debugPrint('❌ 음성 성별 변경 실패: $e');
+                              }
+                              _speakText('남성 음성');
                             },
                           ),
                         ),
@@ -393,10 +406,12 @@ class _VoiceScreenState extends State<VoiceScreen> {
 
     if (lowerCommand.contains('여성') || lowerCommand.contains('여자')) {
       setState(() => _gender = 'F');
+      _voiceService?.setVoiceGender('female');
       _voiceService?.setVoiceSpeed(_speed);
       _speakText('여성 음성으로 설정되었습니다.');
     } else if (lowerCommand.contains('남성') || lowerCommand.contains('남자')) {
       setState(() => _gender = 'M');
+      _voiceService?.setVoiceGender('male');
       _voiceService?.setVoiceSpeed(_speed);
       _speakText('남성 음성으로 설정되었습니다.');
     } else if (lowerCommand.contains('빠르게') || lowerCommand.contains('빨리')) {
