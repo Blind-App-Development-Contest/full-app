@@ -22,10 +22,7 @@ from models.step_models import (
     StepTrackingQuality
 )
 from config.settings import get_settings
-# 새로운 IMU 통합 시스템 사용
-from utils.imu_fusion_processor import get_imu_fusion_processor
 from utils.fastdepth_processor import get_fastdepth_processor
-# 레거시 호환성 제거 - 새로운 IMU 통합 시스템만 사용
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -87,7 +84,7 @@ class CommandExecutor:
         self.measurement_start_time = None
         self.frame_count = 0
         self.step_tracker = None  # 레거시 호환성 (더 이상 사용하지 않음)
-        self.imu_processor = None  # 새로운 IMU 융합 프로세서
+        
         self.fastdepth_processor = None  # 새로운 FastDepth 프로세서
         self.session_id = None # 측정 세션 ID
 
@@ -615,9 +612,7 @@ class CommandExecutor:
             # 레거시 계산기 준비 (호환성)
             logger.info("레거시 시스템 준비 완료")
             
-            # 새로운 IMU 통합 시스템 초기화
-            logger.info("새로운 IMU 통합 시스템 초기화")
-            self.imu_processor = get_imu_fusion_processor()
+            
             self.fastdepth_processor = get_fastdepth_processor()
             
             # 상태 설정
@@ -648,49 +643,21 @@ class CommandExecutor:
                 logger.warning("활성화된 측정이 없습니다")
                 return None
             
-            # 새로운 IMU 시스템에서 최종 결과 가져오기
-            if hasattr(self, 'imu_processor') and self.imu_processor:
-                # IMU 융합 시스템 통계 가져오기
-                fusion_stats = self.imu_processor.get_fusion_statistics()
-                walking_state = self.imu_processor.get_walking_state()
-                
-                logger.info(f"IMU 시스템 측정 완료: 걸음수={walking_state.get('total_steps', 0)}, "
-                           f"융합률={fusion_stats.get('success_rate', 0):.3f}")
-                
-                # 기본 결과 생성 (새로운 시스템에서)
-                final_result = StepResult(
-                    step_length_cm=self.user_settings.get("step_length", 65.0),
-                    confidence=0.8,
-                    step_count=walking_state.get('total_steps', 0),
-                    tracking_quality=AccuracyConverter.confidence_to_quality(0.8),
-                    accuracy_level=AccuracyConverter.confidence_to_korean_level(0.8),
-                    measurement_method=StepMeasurementMethod.IMU_SENSOR,
-                    consistency_score=0.8,
-                    processing_time_ms=1000.0,
-                    source_data={
-                        "method": "imu_integrated_measurement",
-                        "fusion_stats": fusion_stats,
-                        "walking_state": walking_state,
-                        "frame_count": self.frame_count,
-                        "session_duration": time.time() - (self.measurement_start_time or time.time())
-                    }
-                )
-            else:
-                # 레거시 fallback
-                logger.warning("IMU 시스템 없음 - 기본값 사용")
-                final_result = StepResult(
-                    step_length_cm=self.user_settings.get("step_length", 65.0),
-                    confidence=0.6,
-                    step_count=1,
-                    tracking_quality=AccuracyConverter.confidence_to_quality(0.6),
-                    accuracy_level=AccuracyConverter.confidence_to_korean_level(0.6),
-                    measurement_method=StepMeasurementMethod.DISTANCE_BASED,
-                    consistency_score=0.6,
-                    processing_time_ms=500.0,
-                    source_data={
-                        "method": "fallback_measurement"
-                    }
-                )
+            # 레거시 fallback
+            logger.warning("IMU 시스템 없음 - 기본값 사용")
+            final_result = StepResult(
+                step_length_cm=self.user_settings.get("step_length", 65.0),
+                confidence=0.6,
+                step_count=1,
+                tracking_quality=AccuracyConverter.confidence_to_quality(0.6),
+                accuracy_level=AccuracyConverter.confidence_to_korean_level(0.6),
+                measurement_method=StepMeasurementMethod.DISTANCE_BASED,
+                consistency_score=0.6,
+                processing_time_ms=500.0,
+                source_data={
+                    "method": "fallback_measurement"
+                }
+            )
             
             # 상태 리셋
             self.measurement_active = False
@@ -763,15 +730,11 @@ class CommandExecutor:
             if hasattr(self, 'fastdepth_processor') and self.fastdepth_processor:
                 # 프레임 데이터에서 이미지가 있다면 새로운 시스템으로 처리
                 if frame_data.get("cv_image") is not None:
-                    # IMU 데이터도 있다면 함께 처리
-                    imu_data = frame_data.get("imu_data")
                     try:
                         # 새로운 통합 측정 수행
                         measurement_result = await self.fastdepth_processor.process_frame_for_measurement(
                             cv_image=frame_data["cv_image"],
-                            user_id=f"command_executor_{self.session_id}",
-                            imu_data=imu_data,
-                            enable_advanced_fusion=imu_data is not None
+                            user_id=f"command_executor_{self.session_id}"
                         )
                         
                         if measurement_result:
@@ -881,8 +844,7 @@ class CommandExecutor:
                         timestamp=time.time()
                     )
                     
-                    # 새로운 IMU 통합 시스템 사용 (레거시 시스템 제거됨)
-                    logger.info("프레임 기반 계산은 새로운 IMU 융합 시스템으로 통합됨")
+                    logger.info("프레임 기반 계산")
                         
                 except Exception as e:
                     logger.warning(f"프레임 기반 계산 실패: {e}")
@@ -1500,5 +1462,7 @@ class CommandExecutor:
         
         # UnifiedStepCalculator 데이터도 리셋
         self.processed_frames.clear()
+        self.total_distance_traveled = 0.0
+        self.last_position = Noner()
         self.total_distance_traveled = 0.0
         self.last_position = None
