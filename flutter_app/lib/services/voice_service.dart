@@ -216,8 +216,8 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
       _setStatus("녹음 중... (최대 20초)");
       _addDebugLog("녹음 시작됨");
 
-      // 3초 타임아웃으로 더 단축 (빠른 응답)
-      Future.delayed(const Duration(seconds: 3), () {
+      // 7초 타임아웃으로 변경 (사용자 발화 시간 확보)
+      Future.delayed(const Duration(seconds: 7), () {
         if (_currentState == VoiceState.listening) {
           stopListeningAndProcess();
         }
@@ -593,6 +593,48 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
     _addDebugLog("로그 초기화됨");
   }
 
+  /// 마지막으로 녹음된 오디오 재생 (디버깅용)
+  Future<void> playLastRecording() async {
+    if (_currentRecordingPath == null) {
+      _addDebugLog("재생할 녹음 파일이 없습니다.");
+      return;
+    }
+    if (_isSpeaking) {
+      await _stopCurrentTts(); // 기존 TTS 중지
+    }
+    if (_currentState == VoiceState.listening) {
+      _addDebugLog("녹음 중에는 재생할 수 없습니다.");
+      return; // 녹음 중에는 재생 안함
+    }
+
+    _addDebugLog("마지막 녹음 파일 재생 시작: $_currentRecordingPath");
+    try {
+      await _audioPlayer.setAudioSource(AudioSource.file(_currentRecordingPath!));
+      _isSpeaking = true; // 재생 중임을 표시 (다른 동작 방지)
+      _safeNotifyListeners();
+      
+      _audioPlayer.play();
+
+      // 재생 완료 리스너
+      _audioPlayer.processingStateStream
+          .firstWhere((state) => state == ProcessingState.completed)
+          .then((_) {
+        if (!_isDisposed) {
+          _isSpeaking = false;
+          _addDebugLog("마지막 녹음 파일 재생 완료.");
+          _safeNotifyListeners();
+        }
+      });
+
+    } catch (e) {
+      _addDebugLog("재생 오류: $e");
+      if (!_isDisposed) {
+        _isSpeaking = false;
+        _safeNotifyListeners();
+      }
+    }
+  }
+
   /// 강제 중단 (안전한 버전)
   void forceStop() {
     if (_isDisposed) return;
@@ -616,6 +658,12 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
     double? speed,
     bool priority = false,
   }) async {
+    // 녹음 중에는 음성 출력을 하지 않음 (에코 방지)
+    if (_currentState == VoiceState.listening) {
+      _addDebugLog("녹음 중이므로 TTS 출력을 무시합니다: $text");
+      return;
+    }
+
     // 빈 텍스트는 즉시 반환
     if (text.trim().isEmpty) return;
     

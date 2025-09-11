@@ -336,20 +336,30 @@ class _VoiceScreenState extends State<VoiceScreen> {
           ),
         ),
       ),
-      floatingActionButton: Container(
-        decoration: BoxDecoration(
-          color: _isListening ? Colors.red : Colors.blue,
-          shape: BoxShape.circle,
-        ),
-        child: FloatingActionButton(
-          onPressed: _toggleVoiceRecognition,
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          child: Icon(
-            _isListening ? Icons.mic : Icons.mic_none,
-            color: Colors.white,
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FloatingActionButton(
+            onPressed: _toggleVoiceRecognition,
+            backgroundColor: _isListening ? Colors.red : Colors.blue,
+            elevation: 0,
+            heroTag: 'mic_button', // Hero 태그 추가
+            child: Icon(
+              _isListening ? Icons.mic : Icons.mic_none,
+              color: Colors.white,
+            ),
           ),
-        ),
+          const SizedBox(height: 16),
+          // 다시 듣기 버튼 추가
+          FloatingActionButton(
+            onPressed: () {
+              _voiceService?.playLastRecording();
+            },
+            backgroundColor: Colors.amber,
+            heroTag: 'playback_button', // Hero 태그 추가
+            child: const Icon(Icons.replay, color: Colors.white),
+          ),
+        ],
       ),
     );
   }

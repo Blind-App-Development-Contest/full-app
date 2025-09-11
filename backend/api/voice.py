@@ -73,14 +73,28 @@ async def synthesize_and_save(req: TTSRequest, request: Request):
     if pool is None:
         raise HTTPException(status_code=500, detail="DB pool not initialized")
 
-    # 0) 사용자 존재 검증 (FK 위반 방지)
+    # 0) 사용자 존재 검증 및 자동 생성 (Get or Create)
     async with pool.acquire() as conn:
         user_exists = await conn.fetchval(
             "SELECT 1 FROM users WHERE user_id = $1",
             req.user_id
         )
         if not user_exists:
-            raise HTTPException(status_code=400, detail="Unknown user_id (users row not found)")
+            # 사용자가 없으면 새로 생성
+            try:
+                await conn.execute(
+                    "INSERT INTO users (user_id, user_name) VALUES ($1, $2)",
+                    req.user_id,
+                    "새 사용자"  # 기본 사용자 이름
+                )
+                logger.info(f"신규 사용자 자동 생성: {req.user_id}")
+            except pg_exc.UniqueViolationError:
+                # 매우 드문 경우: 동시성 문제로 다른 요청이 방금 사용자를 생성함
+                logger.warning(f"신규 사용자 생성 중 UniqueViolationError 발생 (무시): {req.user_id}")
+                pass # 그냥 계속 진행
+            except Exception as e:
+                logger.exception(f"사용자 자동 생성 중 DB 오류 발생: {e}")
+                raise HTTPException(status_code=500, detail="사용자 자동 생성 실패")
 
     # 1) 선호 저장(UPSERT)
     gender_char = "F" if req.gender == "female" else "M"
