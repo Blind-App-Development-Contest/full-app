@@ -512,8 +512,7 @@ class MediaPipePoseProcessor(StepMeasurementBase):
                         "average_step_length_cm": self.get_average_step_length(),
                         "left_big_toe_confidence": round(left_big_toe.confidence, 3),
                         "right_big_toe_confidence": round(right_big_toe.confidence, 3),
-                        "left_imu_enhanced": False,
-                        "right_imu_enhanced": False,
+                        
                         "pose_detection_method": "MediaPipe Pose v1.0 - Big Toe Priority",
                         "depth_fusion_used": any(pos.depth_confidence > self.config.acceptable_confidence for pos in foot_positions)
                     },
@@ -573,8 +572,7 @@ class MediaPipePoseProcessor(StepMeasurementBase):
                         "average_step_length_cm": self.get_average_step_length(),
                         "left_heel_confidence": round(left_heel.confidence, 3),
                         "right_heel_confidence": round(right_heel.confidence, 3),
-                        "left_imu_enhanced": False,
-                        "right_imu_enhanced": False,
+                        
                         "pose_detection_method": "MediaPipe Pose v1.0",
                         "depth_fusion_used": any(pos.depth_confidence > self.config.acceptable_confidence for pos in foot_positions)
                     },
@@ -672,7 +670,6 @@ class MediaPipePoseProcessor(StepMeasurementBase):
             "depth_fusion_success_rate": round(
                 self.processing_stats['depth_fusion_success'] / max(1, self.processing_stats['successful_detections']), 3
             ),
-            "imu_fusion_enabled": False,
             "depth_integration_enabled": self.depth_integration_enabled
         }
     
