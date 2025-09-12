@@ -55,7 +55,8 @@ class SpeechService:
             raise HTTPException(status_code=400, detail=f"파일 읽기 실패: {str(e)}")
         
         # 3. 파일 크기 검증
-        file_size_mb = len(audio_bytes) / (1024 * 1024)
+        total_bytes = len(audio_bytes)
+        file_size_mb = total_bytes / (1024 * 1024)
         
         if file_size_mb > settings.MAX_FILE_SIZE_MB:
             logger.error(f"[STT] 파일 크기 초과: {file_size_mb:.2f}MB")
@@ -64,7 +65,13 @@ class SpeechService:
                 detail=f"파일 크기가 너무 큽니다. 최대 {settings.MAX_FILE_SIZE_MB}MB"
             )
         
-        logger.info(f"[STT] 파일 크기: {len(audio_bytes)} bytes ({file_size_mb:.2f}MB)")
+        # 최소 크기 검증(무발화/빈 업로드 차단)
+        MIN_AUDIO_BYTES = 1200  # 환경에 맞게 조정 가능
+        if total_bytes < MIN_AUDIO_BYTES:
+            logger.error(f"[STT] 파일 크기 너무 작음: {total_bytes} bytes (< {MIN_AUDIO_BYTES})")
+            raise HTTPException(status_code=400, detail="오디오 데이터가 너무 짧습니다. 다시 시도해주세요.")
+
+        logger.info(f"[STT] 파일 크기: {total_bytes} bytes ({file_size_mb:.2f}MB)")
         
         return audio_bytes, file_size_mb, file.content_type or "application/octet-stream"
     
@@ -94,7 +101,12 @@ class SpeechService:
         
         headers = {"Authorization": f"Bearer {self.api_key}"}
         files = {"file": (filename, file_content, content_type)}
-        data = {"model": "whisper-1", "language": "ko"}
+        # 낮은 temperature로 환각 줄이기, 한국어 고정
+        data = {
+            "model": "whisper-1",
+            "language": "ko",
+            "temperature": 0,
+        }
         
         async with httpx.AsyncClient() as client:
             try:

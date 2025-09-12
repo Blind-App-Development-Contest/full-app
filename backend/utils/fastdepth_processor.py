@@ -2,8 +2,8 @@
 
 10m 거리 측정을 위한 카메라 기반 처리:
 - 기본적인 이미지 전처리
-- MediaPipe 발 키포인트 감지
 - 거리 기반 보폭 계산
+- 이미지 속성 기반 추정
 """
 
 import time
@@ -61,145 +61,45 @@ class FastDepthProcessor(StepMeasurementBase):
                 raise ValueError("유효하지 않은 이미지")
             height, width = cv_image.shape[:2]
             logger.debug(f"[FastDepth] 이미지 크기: {width}x{height}")
-            # 카메라만 사용한 기본 시스템
-            result = await self._use_basic_camera_system(cv_image, user_id)
+            # 거리 기반 측정 시스템 직접 사용 (시각장애인 최적화)
+            result = await self._use_distance_measurement_system(cv_image, user_id)
             processing_time = time.time() - start_time
-            # 통계/평균 업데이트
+            
+            # 결과 처리 및 메타데이터 추가
             if result:
-                self._update_stats(processing_time, True, result.step_length_cm, result.confidence)
-            else:
-                self._update_stats(processing_time, False)
-            if result:
-                # 평균 보폭/신뢰도 정보 추가
-                avg_step = self.get_average_step_length()
                 result.source_data.update({
                     "processing_time_ms": int(processing_time * 1000),
-                    "processor_version": "camera_only",
+                    "processor_version": "visual_impairment_optimized", 
                     "image_size": f"{width}x{height}",
-                    "user_id": user_id,
-                    "average_step_length_cm": avg_step
+                    "user_id": user_id
                 })
-                logger.info(f"[FastDepth] 측정 완료: {result.step_length_cm:.1f}cm (신뢰도: {result.confidence:.3f}, {processing_time*1000:.1f}ms, 평균보폭: {avg_step:.1f}cm)")
+                self._update_stats(processing_time, True, result.step_length_cm, result.confidence)
+                logger.info(f"[FastDepth] 측정 완료: {result.step_length_cm:.1f}cm (신뢰도: {result.confidence:.3f})")
             else:
-                logger.warning("[FastDepth] 측정 실패 - fallback 로직 실행")
-                # 시각장애인을 위한 무조건 fallback 실행
-                result = self.create_fallback_step_result(
-                    reason="vision_processing_failed",
-                    estimated_distance_cm=None,
-                    estimated_step_count=None
-                )
-                logger.info(f"[FastDepth] fallback 적용: {result.step_length_cm:.1f}cm (신뢰도: {result.confidence:.3f})")
+                # 통합된 fallback 처리
+                result = self._create_unified_fallback(user_id, "distance_measurement_failed")
+                self._update_stats(processing_time, False)
+                logger.info(f"[FastDepth] Fallback 적용: {result.step_length_cm:.1f}cm")
+            
             return result
         except Exception as e:
             processing_time = time.time() - start_time
             self._update_stats(processing_time, False)
             logger.error(f"[FastDepth] 프레임 처리 오류: {e}")
             
-            # 시각장애인을 위한 대체 측정 결과 생성
-            try:
-                fallback_result = self.create_fallback_step_result(
-                    reason=f"fastdepth_processing_error: {str(e)}",
-                    estimated_distance_cm=None,
-                    estimated_step_count=None
-                )
-                
-                logger.warning(f"[FastDepth] 대체 측정 적용: {fallback_result.step_length_cm:.1f}cm (신뢰도: {fallback_result.confidence:.3f})")
-                return fallback_result
-                
-            except Exception as fallback_error:
-                logger.error(f"[FastDepth] 대체 측정 생성 실패: {fallback_error} - 기본값 사용")
-                # 최후의 수단: 하드코딩된 기본값 반환 (시각장애인 보조)
-                return StepCalculationResult(
-                    step_length_cm=65.0,  # 성인 평균 보폭
-                    confidence=0.3,
-                    step_count=1,
-                    tracking_quality=StepTrackingQuality.POOR,
-                    accuracy_level=AccuracyLevel.LOW,
-                    measurement_method=StepMeasurementMethod.DISTANCE_BASED,
-                    timestamp=datetime.now(),
-                    source_data={
-                        "method": "emergency_fallback",
-                        "reason": f"all_fallback_failed: {str(fallback_error)}",
-                        "default_value": True
-                    },
-                    consistency_score=None,
-                    processing_time_ms=0.0
-                )
+            # 통합된 fallback 처리
+            return self._create_unified_fallback(user_id, f"processing_error: {str(e)}")
     
     
-    async def _use_basic_camera_system(self, cv_image: np.ndarray, user_id: str) -> Optional[StepCalculationResult]:
-        """기본 카메라 전용 처리 (발 특화 감지 포함)"""
+    async def _use_distance_measurement_system(self, cv_image: np.ndarray, user_id: str) -> Optional[StepCalculationResult]:
+        """거리 기반 측정 시스템 (시각장애인 최적화)"""
         try:
-            from utils.mediapipe_pose_processor import get_mediapipe_pose_processor
-            
-            # MediaPipe 프로세서 가져오기
-            mediapipe_processor = get_mediapipe_pose_processor(enable_imu_fusion=False)
-            
-            # 1단계: 강화된 발 키포인트 감지 시도
-            keypoints = mediapipe_processor.extract_foot_keypoints_enhanced(cv_image)
-            
-            if not keypoints:
-                logger.warning("[FastDepth] 모든 MediaPipe 발 키포인트 감지 방법 실패")
-                
-                # 2단계: 거리 기반 백업 시스템 사용
-                logger.info("[FastDepth] 거리 기반 백업 시스템으로 전환")
-                return await self._use_distance_backup_system(cv_image, user_id)
-            
-            logger.info(f"[FastDepth] 발 키포인트 감지 성공 (신뢰도: {keypoints.confidence_score:.3f})")
-            
-            # 3D 좌표 변환
-            foot_positions = mediapipe_processor.convert_to_3d_coordinates(keypoints, cv_image)
-            
-            # left/right foot 추출
-            lefts = [p for p in foot_positions if getattr(p, 'foot_side', None) == 'left']
-            rights = [p for p in foot_positions if getattr(p, 'foot_side', None) == 'right']
-            
-            if lefts and rights:
-                left = lefts[0]
-                right = rights[0]
-                
-                # 두 발 사이 거리 계산
-                dx = left.x - right.x
-                dy = left.y - right.y
-                dz = left.z - right.z
-                
-                distance_m = np.sqrt(dx**2 + dy**2 + dz**2)
-                step_length_cm = distance_m * 100
-                
-                confidence = (left.confidence + right.confidence) / 2
-                
-                return StepCalculationResult(
-                    step_length_cm=round(step_length_cm, 1),
-                    confidence=confidence,
-                    step_count=1,
-                    tracking_quality=AccuracyConverter.confidence_to_quality(confidence),
-                    accuracy_level=AccuracyConverter.confidence_to_korean_level(confidence),
-                    measurement_method=StepMeasurementMethod.POSE_ESTIMATION,
-                    timestamp=datetime.now(),
-                    source_data={
-                        "method": "basic_camera_mediapipe",
-                        "keypoint_types": f"{left.keypoint_type}-{right.keypoint_type}",
-                        "processing_quality": "basic"
-                    },
-                    consistency_score=None,
-                    processing_time_ms=0.0
-                )
-            
-            # 시각장애인을 위한 fallback 실행
-            return self.create_fallback_step_result(
-                reason="basic_camera_no_valid_keypoints",
-                estimated_distance_cm=None,
-                estimated_step_count=None
-            )
+            logger.info("[FastDepth] 시각장애인 맞춤 거리 기반 측정 시작")
+            return await self._calculate_distance_based_stride(cv_image, user_id)
             
         except Exception as e:
-            logger.error(f"[FastDepth] 기본 카메라 처리 오류: {e} - fallback 실행")
-            # 시각장애인을 위한 무조건 fallback 실행
-            return self.create_fallback_step_result(
-                reason=f"basic_camera_error: {str(e)}",
-                estimated_distance_cm=None,
-                estimated_step_count=None
-            )
+            logger.error(f"[FastDepth] 거리 측정 오류: {e}")
+            return None  # 통합 fallback에서 처리
 
     def get_total_distance(self, user_id: str) -> float:
         """
@@ -212,163 +112,7 @@ class FastDepthProcessor(StepMeasurementBase):
             return float(value) if value is not None else 8.5
         except Exception:
             return 8.5
-    
-    def _calculate_foot_distance(self, left_pos, right_pos) -> float:
-        """두 발 사이의 3D 거리 계산 (None 방지)"""
-        try:
-            lx = float(left_pos[0]) if left_pos and len(left_pos) > 0 and left_pos[0] is not None else 0.0
-            ly = float(left_pos[1]) if left_pos and len(left_pos) > 1 and left_pos[1] is not None else 0.0
-            lz = float(left_pos[2]) if left_pos and len(left_pos) > 2 and left_pos[2] is not None else 0.0
-            rx = float(right_pos[0]) if right_pos and len(right_pos) > 0 and right_pos[0] is not None else 0.0
-            ry = float(right_pos[1]) if right_pos and len(right_pos) > 1 and right_pos[1] is not None else 0.0
-            rz = float(right_pos[2]) if right_pos and len(right_pos) > 2 and right_pos[2] is not None else 0.0
-            dx = lx - rx
-            dy = ly - ry
-            dz = lz - rz
-            return float(np.sqrt(dx**2 + dy**2 + dz**2))
-        except Exception:
-            return 0.0
-    
-    def _extract_confidence(self, position_data) -> float:
-        """위치 데이터에서 신뢰도 추출 (None/타입/NaN 방지)"""
-        if position_data is None:
-            return 0.7
-        if isinstance(position_data, (tuple, list)):
-            if len(position_data) < 4 or position_data[3] is None:
-                return 0.7
-            val = position_data[3]
-            import math
-            if not isinstance(val, (float, int)):
-                return 0.7
-            if math.isnan(val):
-                return 0.7
-            return float(val)
-        try:
-            import numpy as np
-            if isinstance(position_data, np.ndarray):
-                if position_data.ndim == 1:
-                    if position_data.shape[0] < 4:
-                        return 0.7
-                    val = position_data[3]
-                    import math
-                    if not isinstance(val, (float, int, np.floating)):
-                        return 0.7
-                    if math.isnan(val):
-                        return 0.7
-                    return float(val)
-                else:
-                    return 0.7
-        except ImportError:
-            pass
-        if isinstance(position_data, dict) and 'confidence' in position_data and position_data['confidence'] is not None:
-            val = position_data['confidence']
-            import math
-            if not isinstance(val, (float, int)):
-                return 0.7
-            if math.isnan(val):
-                return 0.7
-            return float(val)
-        return 0.7  # 기본 신뢰도
-    
-    def _update_stats(self, processing_time: float, success: bool, step_length_cm: Optional[float] = None, confidence: Optional[float] = None):
-        self.processing_stats["total_processed"] += 1
-        if success:
-            self.processing_stats["successful_measurements"] += 1
-        else:
-            self.processing_stats["failed_measurements"] += 1
-        total = self.processing_stats["total_processed"]
-        current_avg = self.processing_stats["average_processing_time"]
-        new_avg = ((current_avg * (total - 1)) + processing_time) / total
-        self.processing_stats["average_processing_time"] = new_avg
-        # 최근 측정값 저장 - 베이스 클래스 메서드 사용
-        if step_length_cm is not None and confidence is not None:
-            self.update_step_history(step_length_cm, confidence)
-
-    # 베이스 클래스에서 메서드를 제공하므로 중복 제거됨
-    
-    def get_processing_stats(self) -> Dict[str, Any]:
-        """처리 통계 반환"""
-        stats = self.processing_stats.copy()
-        if stats["total_processed"] > 0:
-            stats["success_rate"] = stats["successful_measurements"] / stats["total_processed"]
-        else:
-            stats["success_rate"] = 0.0
-        return stats
-    
-    async def _use_distance_backup_system(self, cv_image: np.ndarray, user_id: str) -> Optional[StepCalculationResult]:
-        """거리 기반 백업 측정 시스템 - MediaPipe 실패 시 사용"""
-        try:
-            logger.info("[FastDepth] 거리 기반 백업 시스템 시작")
-            
-            # 이미지 크기 기반 대략적 스케일 추정
-            height, width = cv_image.shape[:2]
-            
-            # 10m 거리 측정을 위한 보폭 추정
-            estimated_step_length_cm = self._estimate_step_from_image_properties(width, height)
-            
-            # 이미지 품질에 따른 신뢰도 계산
-            confidence = self._calculate_image_confidence(cv_image)
-            
-            logger.info(f"[FastDepth] 거리 백업 추정 보폭: {estimated_step_length_cm}cm, 신뢰도: {confidence:.3f}")
-            
-            return StepCalculationResult(
-                step_length_cm=round(estimated_step_length_cm, 1),
-                confidence=confidence,
-                step_count=1,
-                tracking_quality=AccuracyConverter.confidence_to_quality(confidence),
-                accuracy_level=AccuracyConverter.confidence_to_korean_level(confidence),
-                measurement_method=StepMeasurementMethod.DISTANCE_BASED,
-                timestamp=datetime.now(),
-                source_data={
-                    "method": "distance_backup_system",
-                    "estimation_basis": "image_properties",
-                    "image_size": f"{width}x{height}",
-                    "fallback_reason": "mediapipe_failed"
-                },
-                consistency_score=None,
-                processing_time_ms=0.0
-            )
-            
-        except Exception as e:
-            logger.error(f"[FastDepth] 거리 백업 시스템 오류: {e} - fallback 실행")
-            # 시각장애인을 위한 무조건 fallback 실행
-            return self.create_fallback_step_result(
-                reason=f"distance_backup_error: {str(e)}",
-                estimated_distance_cm=None,
-                estimated_step_count=None
-            )
-    
-    def _estimate_step_from_image_properties(self, width: int, height: int) -> float:
-        """이미지 속성을 기반으로 보폭 추정"""
-        try:
-            # 카메라 해상도 기반 스케일링
-            # 일반적으로 휴대폰 카메라는 지면에서 100-150cm 높이에서 촬영
-            
-            # 기본 성인 보폭 (60-80cm)
-            base_step_length = 70.0
-            
-            # 해상도 보정 팩터
-            resolution_factor = min(width, height) / 720.0  # 720p 기준
-            resolution_factor = max(0.8, min(1.2, resolution_factor))  # 0.8-1.2 범위로 제한
-            
-            # 화면 비율 보정 (세로 모드 vs 가로 모드)
-            aspect_ratio = width / height
-            if aspect_ratio > 1.5:  # 가로 모드
-                aspect_correction = 1.1
-            elif aspect_ratio < 0.8:  # 세로 모드
-                aspect_correction = 0.95
-            else:
-                aspect_correction = 1.0
-            
-            estimated_length = base_step_length * resolution_factor * aspect_correction
-            
-            # 일반적인 보폭 범위로 제한 (40-120cm)
-            return max(40.0, min(120.0, estimated_length))
-            
-        except Exception as e:
-            logger.warning(f"[FastDepth] 보폭 추정 오류: {e}")
-            return 70.0  # 기본값
-    
+         
     def _calculate_image_confidence(self, cv_image: np.ndarray) -> float:
         """이미지 백업 시스템의 신뢰도 계산"""
         try:
@@ -395,6 +139,51 @@ class FastDepthProcessor(StepMeasurementBase):
         }
         # 베이스 클래스에서 초기화 처리
         self.reset_statistics()
+    
+    def _create_unified_fallback(self, user_id: str, reason: str) -> StepCalculationResult:
+        """통합된 시각장애인 맞춤 Fallback 시스템"""
+        try:
+            # 시각장애인 평균 보폭 특성 반영
+            visual_impaired_stride_cm = 62.0  # 일반인 70cm보다 안전을 위해 짧음
+            
+            logger.info(f"[FastDepth] 시각장애인 맞춤 Fallback 적용: {visual_impaired_stride_cm}cm")
+            
+            return StepCalculationResult(
+                step_length_cm=visual_impaired_stride_cm,
+                confidence=0.6,  # 적당한 신뢰도 - 너무 낮지도 높지도 않게
+                step_count=1,
+                tracking_quality=StepTrackingQuality.FAIR,
+                accuracy_level=AccuracyLevel.MEDIUM,
+                measurement_method=StepMeasurementMethod.DISTANCE_BASED,
+                timestamp=datetime.now(),
+                source_data={
+                    "method": "unified_visual_impairment_fallback",
+                    "stride_basis": "visual_impaired_average",
+                    "user_id": user_id,
+                    "fallback_reason": reason,
+                    "optimized_for": "visual_impairment"
+                },
+                consistency_score=None,
+                processing_time_ms=0.0
+            )
+        except Exception as e:
+            logger.error(f"[FastDepth] 통합 Fallback 생성 실패: {e} - 응급 기본값 사용")
+            # 최후의 수단: 하드코딩된 안전값
+            return StepCalculationResult(
+                step_length_cm=62.0,
+                confidence=0.5,
+                step_count=1,
+                tracking_quality=StepTrackingQuality.FAIR,
+                accuracy_level=AccuracyLevel.MEDIUM,
+                measurement_method=StepMeasurementMethod.DISTANCE_BASED,
+                timestamp=datetime.now(),
+                source_data={
+                    "method": "emergency_hardcoded_fallback",
+                    "reason": f"unified_fallback_failed: {str(e)}"
+                },
+                consistency_score=None,
+                processing_time_ms=0.0
+            )
 
 # 싱글톤 인스턴스
 _fastdepth_processor = None

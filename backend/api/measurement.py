@@ -1,7 +1,6 @@
 """측정 관련 라우터 - FastDepth 프레임 처리 및 보폭 측정"""
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
-import asyncio
 import logging
 # 중앙화된 데이터베이스 연결 사용
 from core.database import get_async_db
@@ -12,28 +11,16 @@ from uuid import UUID
 from datetime import datetime
 from typing import Optional
 
-from models.fastdepth_models import (
-    FastDepthFrameData,
-    EnhancedCommandRequest
-)
-from models.execution_schemas import (
-    FullCommandResponse
-)
-from models.common_models import ExecutionStatus, CommandExecutionResponse
-from models.recognition_schemas import SpeechRecognitionResponse
-# CommandExecutionResponse는 common_models에서 가져옴
-from services.command_executor import CommandExecutionResult
+# 카메라 거리 측정에만 필요한 모델들
+from models.common_models import ExecutionStatus
 from services.singleton import service_manager
-# 측정 처리를 위한 FastDepth 프로세서 사용
+# 카메라 거리 측정을 위한 FastDepth 프로세서 
 from utils.fastdepth_processor import get_fastdepth_processor
-# MediaPipe 통합을 위한 임포트
-from utils.mediapipe_pose_processor import get_mediapipe_pose_processor
 
 # 카메라 모드 통합을 위한 임포트
 from api.camera import manager as camera_manager
 from pydantic import BaseModel
 import os
-import cv2
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -43,7 +30,7 @@ DEBUG_FRAMES_DIR = "debug_frames"
 os.makedirs(DEBUG_FRAMES_DIR, exist_ok=True)
 
 async def save_debug_frame(cv_image, frame_count: int, user_id: str):
-    """진단용 프레임 저장 - MediaPipe 입력을 시각적으로 검사하기 위함"""
+    """진단용 프레임 저장 - 카메라 입력을 시각적으로 검사하기 위함"""
     try:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{DEBUG_FRAMES_DIR}/debug_{user_id}_{timestamp}_frame_{frame_count:03d}.jpg"
@@ -58,59 +45,7 @@ async def save_debug_frame(cv_image, frame_count: int, user_id: str):
     except Exception as e:
         logger.error(f"[DEBUG] 프레임 저장 중 오류: {e}")
 
-@router.post("/debug/static-test")
-async def static_detection_test(
-    file: UploadFile = File(...),
-    confidence_threshold: float = Form(default=0.2)
-):
-    """
-    정적 감지 테스트 - 정지된 신발에서 MediaPipe 감지 성능 테스트
-    모션 블러 등의 문제를 분리하여 코드/모델 설정 문제를 진단
-    """
-    try:
-        logger.info(f"[정적 테스트] 신뢰도 임계값: {confidence_threshold}")
-        
-        # 이미지 로드
-        frame_data = await file.read()
-        import numpy as np
-        nparr = np.frombuffer(frame_data, np.uint8)
-        cv_image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        if cv_image is None:
-            raise ValueError('유효하지 않은 이미지 데이터')
-        
-        # 디버그 프레임 저장
-        await save_debug_frame(cv_image, 0, "static_test")
-        
-        # MediaPipe 프로세서 가져오기
-        mediapipe_processor = get_mediapipe_pose_processor()
-        
-        # 낮은 신뢰도 임계값으로 감지 시도
-        result = await mediapipe_processor.process_frame_for_step_measurement(
-            cv_image,
-            "static_test_user",
-            confidence_threshold=confidence_threshold,
-            enable_depth_fusion=False  # 정적 테스트에서는 depth 비활성화
-        )
-        
-        # 상세 결과 반환
-        return {
-            "success": True,
-            "test_type": "static_detection",
-            "confidence_threshold": confidence_threshold,
-            "detection_result": result,
-            "image_size": cv_image.shape,
-            "debug_frame_saved": True,
-            "message": "정적 감지 테스트 완료 - 저장된 디버그 프레임을 확인하세요"
-        }
-        
-    except Exception as e:
-        logger.error(f"[정적 테스트 오류]: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-            "message": "정적 감지 테스트 실패"
-        }
+# MediaPipe 정적 테스트 엔드포인트 제거됨 (프론트엔드에서 사용되지 않음)
 
 @router.get("")
 async def measurement_status(
@@ -134,9 +69,7 @@ async def measurement_status(
             "service": "Measurement System",
             "status": "active",
             "endpoints": {
-                "commands/enhanced": "POST /commands/enhanced - 향상된 명령 처리",
-                "fastdepth/frame": "POST /fastdepth/frame - FastDepth 프레임 처리",
-                "frame": "POST /frame - 측정용 프레임 처리",
+                "frame": "POST /frame - 카메라 거리 측정",
                 "reset": "POST /reset - 측정 리셋",
                 "session/start": "POST /session/start - 측정 세션 시작",
                 "session/stop": "POST /session/stop - 측정 세션 중지"
@@ -208,130 +141,10 @@ async def measurement_status(
         logger.error(f"사용자 상태 확인 오류: {e}")
         raise HTTPException(status_code=500, detail=f"사용자 상태 확인 중 오류가 발생했습니다: {str(e)}")
 
-# 싱글톤 서비스 인스턴스 사용
+# 싱글톤 서비스 인스턴스 사용 (카메라 측정용)
 from services.singleton import service_manager
 
-speech_analyzer = service_manager.get_speech_analyzer()
-command_executor = service_manager.get_command_executor()
-
-# ===============================
-# 측정 처리 핵심 기능들
-# ===============================
-
-def get_current_context() -> str:
-    """현재 컨텍스트 조회"""
-    try:
-        if command_executor.is_measurement_active():
-            return "measurement_active"
-        else:
-            return "default"
-    except Exception as e:
-        logger.error(f"컨텍스트 조회 실패: {e}")
-        return "default"
-
-async def process_fastdepth_frame(frame_data: FastDepthFrameData):
-    """프레임 처리 - 새로운 IMU 통합 시스템 사용"""
-    try:
-        # 새로운 IMU 통합 시스템 사용
-        processor = get_fastdepth_processor()
-        
-        # 프레임 데이터 사용 (향후 실제 이미지 처리로 확장 예정)
-        logger.debug(f"프레임 데이터 처리: {frame_data.model_dump_json()}")
-        
-        # 더미 이미지 생성 (실제로는 클라이언트에서 이미지를 함께 보내야 함)
-        import numpy as np
-        dummy_image = np.zeros((480, 640, 3), dtype=np.uint8)
-        
-        # 카메라 기반 처리 (IMU 제거됨)
-        result = await processor.process_frame_for_measurement(
-            cv_image=dummy_image,
-            user_id="frame_processor"
-        )
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"FastDepth 프레임 처리 실패: {e}")
-        raise
-
-async def process_speech_command_with_context(request: EnhancedCommandRequest, context: str):
-    """컨텍스트를 포함한 음성 명령 처리 - 새로운 시스템 사용"""
-    try:
-        # SpeechAnalyzer로 분석 (컨텍스트 포함)
-        recognition_result = speech_analyzer.analyze_command(request.command_text, context)
-        
-        # 통합 조건부 실행 로직 사용
-        execution_result = await execute_command_conditionally(
-            recognition_result, 
-            request.execute_immediately, 
-            context
-        )
-        
-        return recognition_result, execution_result
-        
-    except Exception as e:
-        logger.error(f"음성 명령 처리 실패: {e}")
-        raise
-
-async def execute_command_conditionally(
-    recognition_result: SpeechRecognitionResponse, 
-    execute_immediately: bool,
-    context: Optional[str] = None
-) -> CommandExecutionResult:
-    """조건부 명령 실행 로직"""
-    command_executor = service_manager.get_command_executor()
-    if execute_immediately:
-        return await command_executor.execute_command(recognition_result)
-    else:
-        return CommandExecutionResult(
-            status=ExecutionStatus.PENDING,
-            message="명령이 분석되었습니다.",
-            data={"execute_immediately": False, "context": context or get_current_context()},
-            actions=["analyze_command"]
-        )
-
-def build_enhanced_response(command_result, frame_result, context: str):
-    """향상된 응답 구성"""
-    if command_result:
-        recognition_result, execution_result = command_result
-    else:
-        recognition_result = SpeechRecognitionResponse(
-            intent="FASTDEPTH_FRAME_ONLY",
-            entities={"frame_processing": True, "context": context},
-            confidence=1.0,
-            command_text=""
-        )
-        execution_result = frame_result
-    
-    response_data = execution_result.data.copy() if execution_result else {}
-    response_actions = execution_result.actions.copy() if execution_result else []
-    
-    # 컨텍스트 정보 추가
-    response_data.update({
-        "context": context
-    })
-    
-    if frame_result:
-        response_data.update({
-            "frame_processing": {
-                "processed": True,
-                "frame_result": frame_result.data if hasattr(frame_result, 'data') else frame_result,
-                "frame_message": frame_result.message if hasattr(frame_result, 'message') else "프레임 처리 완료"
-            }
-        })
-    
-    return FullCommandResponse(
-        intent=recognition_result.intent,
-        entities=recognition_result.entities,
-        confidence=recognition_result.confidence,
-        execution=CommandExecutionResponse(
-            status=execution_result.status if execution_result else ExecutionStatus.SUCCESS,
-            message=execution_result.message if execution_result else "처리 완료",
-            data=response_data,
-            actions=response_actions,
-            timestamp=execution_result.timestamp if execution_result else datetime.now()
-        )
-    )
+# 사용하지 않는 FastDepth 및 음성 명령 통합 처리 함수들 제거됨
 
 # ===============================
 # 측정 처리 기능 완료
@@ -356,112 +169,14 @@ class MeasurementLogResponse(BaseModel):
 
 
 
-@router.post("/commands/enhanced", response_model=FullCommandResponse)
-async def execute_enhanced_speech_commands(request: EnhancedCommandRequest):
-    """
-    음성 명령 + FastDepth 프레임 통합 처리
-    """
-    try:
-        print(f"\n[향상된 명령] 시작: '{request.command_text}'")
-        if request.fastdepth_frame:
-            print(f"[FastDepth] 프레임 데이터 포함됨")
-        
-        # 컨텍스트 결정 (요청에서 제공되지 않은 경우 자동 감지)
-        context = request.context or get_current_context()
-        print(f"[컨텍스트] 사용 중인 컨텍스트: {context}")
-        
-        # 병렬 처리를 위한 태스크들
-        tasks = []
-        
-        # 1. FastDepth 프레임 처리 (있는 경우)
-        frame_task = None
-        if request.fastdepth_frame:
-            frame_task = asyncio.create_task(
-                process_fastdepth_frame(request.fastdepth_frame)
-            )
-            tasks.append(frame_task)
-        
-        # 2. 음성 명령 처리 (있는 경우)
-        command_task = None
-        if request.command_text and request.command_text.strip():
-            command_task = asyncio.create_task(
-                process_speech_command_with_context(request, context)
-            )
-            tasks.append(command_task)
-        
-        # 병렬 처리 실행
-        if not tasks:
-            raise HTTPException(400, "command_text 또는 fastdepth_frame 중 하나는 필수입니다")
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # 결과 분리
-        frame_result = results[0] if frame_task else None
-        command_result = results[1] if command_task and len(results) > 1 else results[0] if command_task else None
-        
-        # 에러 처리
-        for result in results:
-            if isinstance(result, Exception):
-                raise result
-        
-        # 응답 구성
-        response = build_enhanced_response(command_result, frame_result, context)
-        
-        return response
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[오류] 향상된 명령 처리 중 오류: {e}")
-        raise HTTPException(status_code=500, detail=f"서버 오류: {str(e)}")
-
-@router.post("/fastdepth/frame")
-async def process_fastdepth_frame_only(frame_data: FastDepthFrameData):
-    """
-    FastDepth 프레임만 처리 - 새로운 IMU 통합 시스템 사용
-    """
-    try:
-        logger.debug("[FastDepth] 새로운 IMU 통합 시스템으로 프레임 처리 시작")
-        
-        # 새로운 통합 시스템 사용
-        result = await process_fastdepth_frame(frame_data)
-        
-        if result:
-            return {
-                "success": True,
-                "message": f"보폭 측정 완료: {result.step_length_cm}cm",
-                "data": {
-                    "step_length_cm": result.step_length_cm,
-                    "confidence": result.confidence,
-                    "method": result.source_data.get("method", "imu_integrated")
-                },
-                "actions": ["frame_processed"],
-                "measurement_active": command_executor.is_measurement_active(),
-                "processing_time_ms": result.source_data.get("processing_time_ms", 0)
-            }
-        else:
-            return {
-                "success": False,
-                "message": "프레임 처리 결과가 없습니다.",
-                "measurement_active": command_executor.is_measurement_active()
-            }
-        
-    except ValueError as e:
-        logger.error(f"FastDepth 프레임 검증 실패: {e}")
-        raise HTTPException(status_code=400, detail=f"프레임 데이터 오류: {str(e)}")
-    except Exception as e:
-        logger.error(f"FastDepth 프레임 처리 중 오류: {e}")
-        raise HTTPException(status_code=500, detail=f"프레임 처리 오류: {str(e)}")
+# 사용하지 않는 enhanced command 및 fastdepth 전용 엔드포인트들 제거됨
 
 @router.post("/frame")
 async def process_measurement_frame(
     file: UploadFile = File(...),
     user_id: str = Form('current_user'),
-    enable_kalman: str = Form('true'),
-    # 카메라 전용 - IMU 필드 제거됨
-    frame_count: int = Form(default=1),
-    estimated_distance: float = Form(default=0.0),
-    estimated_step_count: int = Form(default=0)
+    # 카메라 기반 거리 측정 전용
+    frame_count: int = Form(default=1)
 ):
     """
     간소화된 카메라 기반 거리 측정 시스템
@@ -486,7 +201,6 @@ async def process_measurement_frame(
         frame_data = await file.read()
         import cv2
         import numpy as np
-        import time
         
         nparr = np.frombuffer(frame_data, np.uint8)
         cv_image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -511,7 +225,7 @@ async def process_measurement_frame(
         # 3. 카메라 기반 간단 측정 프로세서
         processor = get_fastdepth_processor()
         
-        # 4. 카메라 프레임만으로 거리 측정 (IMU 제거됨)
+        # 4. 카메라 프레임만으로 거리 측정
         measurement_result = await processor.process_frame_for_measurement(
             cv_image=cv_image,
             user_id=user_id
@@ -527,7 +241,7 @@ async def process_measurement_frame(
                 'measurement': None,
                 'session_active': True,
                 'message': '측정 진행 중 - 카메라 처리 중',
-                'user_id': user_id
+                'user_id': uuid
             }
         
         # 6. 메모리 정리

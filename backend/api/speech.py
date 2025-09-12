@@ -62,6 +62,22 @@ async def transcribe_audio(file: UploadFile = File(...)):
         file.file.seek(0)  # 파일 처음으로 복원
         
         print(f"[STT] 변환 결과: '{transcribed_text}'")
+
+        # 후처리: 블랙리스트/패턴 필터 (광고/자막 고정문구 등)
+        blacklist_patterns = [
+            r"http[s]?://", r"www\.", r"uptitle", r"자막", r"subtitles?",
+            r"뉴스", r"mbc\s*뉴스", r"광고", r"channel"
+        ]
+        import re
+        is_blacklisted = any(re.search(pat, transcribed_text, flags=re.IGNORECASE) for pat in blacklist_patterns)
+        if is_blacklisted:
+            print("[STT] 블랙리스트 패턴 감지 - 결과 필터링")
+            return STTResponse(
+                text="",
+                success=False,
+                message="STT 필터링: 신뢰도 낮은 고정 문구/URL 감지",
+                file_size_bytes=file_size_bytes
+            )
         
         return STTResponse(
             text=transcribed_text,

@@ -1464,6 +1464,4 @@ class CommandExecutor:
         # UnifiedStepCalculator 데이터도 리셋
         self.processed_frames.clear()
         self.total_distance_traveled = 0.0
-        self.last_position = Noner()
-        self.total_distance_traveled = 0.0
         self.last_position = None

@@ -36,7 +36,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
   VoiceRecognitionHelper? _voiceHelper;
   String _statusMessage = "카메라 초기화 중...";
   String? _currentUserUuid; // 실제 사용자 UUID
-  
+
   // 시각장애인용 상세 음성 안내 상태
   Timer? _progressAnnouncementTimer;
 
@@ -50,21 +50,20 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
 
   // 카메라 거리 측정 전용 변수
   int frameCount = 0;
-  double distanceMeters = 0.0; // 현재 측정된 거리 (미터) 
+  double distanceMeters = 0.0; // 현재 측정된 거리 (미터)
   double targetDistanceMeters = 10.0; // 목표 거리 10m
-  bool measurementActive = false; // 측정 진행 상태 
+  bool measurementActive = false; // 측정 진행 상태
   bool measurementCompleted = false; // 측정 완료 상태
   bool isWaitingForStart = true; // 시작 명령 대기 상태
- 
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    
+
     // 🚀 즉시 긍정적인 메시지 표시
     _statusMessage = "보폭 측정 준비 완료! 시작합니다...";
-    
+
     // 즉시 초기화 시작 (PostFrameCallback 제거로 더 빠른 시작)
     Future.microtask(() {
       _initializeServicesSequentially();
@@ -76,13 +75,13 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
     try {
       // 🚀 즉시 음성 안내 시작 (초기화 기다리지 않음)
       _quickAnnounceMeasurementStart();
-      
+
       // 1단계: VoiceService 먼저 초기화 (빠름 + 즉시 음성 피드백 가능)
       await _initializeVoiceService();
-      
+
       // 2단계: 카메라 초기화를 병렬로 시작하되 즉시 UI 업데이트
       _initializeCameraInBackground();
-      
+
       debugPrint('✅ 빠른 초기화 완료 - 카메라는 백그라운드에서 준비 중');
     } catch (e) {
       debugPrint('❌ 서비스 초기화 중 실패: $e');
@@ -102,10 +101,14 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
         _statusMessage = "보폭 측정을 시작합니다...";
       });
     }
-    
+
     // VoiceService가 없어도 일단 시도 (나중에 실제로 실행됨)
     Future.delayed(const Duration(milliseconds: 200), () {
-      VoiceUtils.speakWithService(_voiceService, "보폭 측정을 시작합니다. 잠시 기다려주세요.", speed: 1.0);
+      VoiceUtils.speakWithService(
+        _voiceService,
+        "보폭 측정을 시작합니다. 잠시 기다려주세요.",
+        speed: 1.0,
+      );
     });
   }
 
@@ -115,8 +118,6 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
       await _initializeCamera();
     });
   }
-
-  
 
   @override
   void dispose() {
@@ -134,10 +135,10 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
     try {
       _voiceService = context.read<VoiceService>();
       _voiceService!.addListener(_onVoiceServiceStateChanged);
-      
+
       // 음성 인식 헬퍼 초기화
       _voiceHelper = VoiceRecognitionHelper(voiceService: _voiceService!);
-      
+
       // 실제 사용자 UUID 가져오기
       try {
         _currentUserUuid = await ApiService().getCurrentUserUuid();
@@ -146,9 +147,9 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
         debugPrint("❌ 사용자 UUID 획득 실패: $e");
         _currentUserUuid = 'current_user'; // 백업값
       }
-      
+
       debugPrint("✅ VoiceService 및 헬퍼 초기화 성공");
-      
+
       // 🚀 즉시 상세 안내 시작 (딜레이 제거)
       if (mounted) {
         _announceCameraMeasurementEntry();
@@ -167,21 +168,24 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
   /// 카메라 측정 화면 진입 시 시각장애인용 상세 안내
   Future<void> _announceCameraMeasurementEntry() async {
     if (_voiceService == null) return;
-    
+
     try {
       // 🚀 딜레이 최소화하고 핵심 메시지만 전달
       await Future.delayed(const Duration(milliseconds: 300));
-      
-      await VoiceUtils.speakWithService(_voiceService,
-        "보폭 측정을 시작합니다. 직선으로 자연스럽게 걸어주세요.", 
-        speed: 1.0);
-      
+
+      await VoiceUtils.speakWithService(
+        _voiceService,
+        "보폭 측정을 시작합니다. 직선으로 자연스럽게 걸어주세요.",
+        speed: 1.0,
+      );
+
       await Future.delayed(const Duration(milliseconds: 600));
-      
-      await VoiceUtils.speakWithService(_voiceService,
-        "10미터 거리를 걸으면 자동으로 측정이 완료되고, 걸음 수를 물어보겠습니다.", 
-        speed: 0.9);
-      
+
+      await VoiceUtils.speakWithService(
+        _voiceService,
+        "10미터 거리를 걸으면 자동으로 측정이 완료되고, 걸음 수를 물어보겠습니다.",
+        speed: 0.9,
+      );
     } catch (e) {
       debugPrint('❌ 카메라 측정 화면 진입 안내 실패: $e');
     }
@@ -192,27 +196,32 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
   /// 거리 측정 완료 안내
   Future<void> _announceDistanceMeasurementComplete() async {
     if (_voiceService == null) return;
-    
+
     try {
-      await VoiceUtils.speakWithService(_voiceService, "거리 측정이 완료되었습니다!", speed: 1.0);
-      
+      await VoiceUtils.speakWithService(
+        _voiceService,
+        "거리 측정이 완료되었습니다!",
+        speed: 1.0,
+      );
+
       await Future.delayed(const Duration(milliseconds: 500));
-      
-      await VoiceUtils.speakWithService(_voiceService,
-        "정확히 ${distanceMeters.toStringAsFixed(1)}미터를 측정했습니다.", 
-        speed: 0.9);
-      
+
+      await VoiceUtils.speakWithService(
+        _voiceService,
+        "정확히 ${distanceMeters.toStringAsFixed(1)}미터를 측정했습니다.",
+        speed: 0.9,
+      );
+
       // 거리 측정 완료 - 결과 반환
       await Future.delayed(const Duration(milliseconds: 500));
-      
+
       // 스트리밍 중지 및 결과 반환
       _stopStreaming();
-      
+
       if (mounted) {
         // 측정된 거리를 StepScreen으로 반환
         Navigator.of(context).pop(distanceMeters);
       }
-      
     } catch (e) {
       debugPrint('❌ 거리 측정 완료 음성 안내 실패: $e');
       // 오류 시에도 결과 반환
@@ -221,8 +230,6 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
       }
     }
   }
-
-
 
   void _onVoiceServiceStateChanged() {
     if (!mounted || _voiceService == null) return;
@@ -247,18 +254,17 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
     });
   }
 
-
   Future<void> _initializeCamera() async {
     try {
       debugPrint("📱 카메라 초기화 시작");
-      
+
       // 상태 업데이트를 더 자주 하여 사용자에게 진행 상황 알림
       if (mounted) {
         setState(() {
           _statusMessage = "카메라 권한 확인 중...";
         });
       }
-      
+
       // 짧은 대기로 UI 업데이트 보장
       await Future.delayed(const Duration(milliseconds: 100));
 
@@ -268,10 +274,10 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
           _statusMessage = "카메라 감지 중...";
         });
       }
-      
+
       _cameras = await availableCameras();
       debugPrint("📷 발견된 카메라 수: ${_cameras.length}");
-      
+
       if (_cameras.isEmpty) {
         debugPrint("❌ 사용 가능한 카메라가 없음");
         if (mounted) {
@@ -293,7 +299,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
           _statusMessage = "카메라 준비 중...";
         });
       }
-      
+
       // UI 업데이트 대기
       await Future.delayed(const Duration(milliseconds: 100));
 
@@ -321,7 +327,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
           _statusMessage = "카메라 설정 중...";
         });
       }
-      
+
       await _cameraController!.setFocusMode(FocusMode.auto);
       await _cameraController!.setExposureMode(ExposureMode.auto);
       debugPrint('✅ 카메라 기본 설정 완료');
@@ -338,11 +344,11 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
 
       debugPrint("🎬 스트리밍 시작");
       await _startStreaming();
-      
+
       // 자동 측정 시작 제거 - 사용자가 수동으로 시작해야 함
       debugPrint("🎯 카메라 준비 완료 - 수동 시작 대기 중");
       _beginStartListening();
-      
+
       debugPrint("✅ 카메라 초기화 프로세스 완료");
     } catch (e) {
       debugPrint("❌ 카메라 초기화 실패: $e");
@@ -358,7 +364,8 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
   void _initializeZoomLevelsInBackground() {
     Future.microtask(() async {
       try {
-        if (_cameraController != null && _cameraController!.value.isInitialized) {
+        if (_cameraController != null &&
+            _cameraController!.value.isInitialized) {
           _minZoomLevel = await _cameraController!.getMinZoomLevel();
           _maxZoomLevel = await _cameraController!.getMaxZoomLevel();
           _currentZoomLevel = _minZoomLevel;
@@ -396,7 +403,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
     if (_voiceHelper == null || !isWaitingForStart) return;
 
     debugPrint("🎙️ 시작 음성 인식 활성화");
-    
+
     _voiceHelper!.startListeningForKeywords(
       keywords: ['시작', '측정', '보폭', '시작해', '측정해', '시작하자'],
       onMatch: (String matchedKeyword, String fullText) {
@@ -407,7 +414,10 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
       onTimeout: () {
         debugPrint("⏰ 시작 음성 인식 타임아웃");
         if (mounted) {
-          VoiceUtils.speakWithService(_voiceService, "시간이 초과되었습니다. 버튼을 눌러서 시작하거나 '시작'이라고 말씀해주세요.");
+          VoiceUtils.speakWithService(
+            _voiceService,
+            "시간이 초과되었습니다. 버튼을 눌러서 시작하거나 '시작'이라고 말씀해주세요.",
+          );
         }
       },
     );
@@ -416,14 +426,14 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
   /// 측정 시작 (음성 명령 또는 버튼 클릭)
   void _onMeasurementStart() {
     if (!isWaitingForStart || measurementActive) return;
-    
+
     setState(() {
       isWaitingForStart = false;
     });
 
     debugPrint("🚀 측정 시작!");
     _startAutomaticMeasurement();
-    
+
     // 측정 시작 후 프레임 캡처와 타임아웃 시작
     _startPeriodicCapture();
     _startMeasurementTimeout();
@@ -434,19 +444,19 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
     if (!mounted) return;
 
     try {
-      // 백엔드 측정 세션 시작 API 호출
+      // 백엔드 측정 세션 시작 API 호출 (타임아웃 연장으로 안정성 개선)
       final response = await http
           .post(
             Uri.parse(AppConfig.measurementSessionStartEndpoint),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'user_id': _currentUserUuid ?? 'current_user'}),
           )
-          .timeout(const Duration(seconds: 5));
+          .timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
         final result = jsonDecode(utf8.decode(response.bodyBytes));
         debugPrint('✅ 백엔드 측정 세션 시작 응답: $result');
-        
+
         if (result['success'] == true && result['session_active'] == true) {
           if (mounted) {
             setState(() {
@@ -458,10 +468,14 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
           }
 
           // 거리 측정 시작 음성 안내
-          VoiceUtils.speakWithService(_voiceService, "정교한 거리 측정을 시작합니다. 직선으로 자연스럽게 걸어주세요.", speed: 1.0);
-          
+          VoiceUtils.speakWithService(
+            _voiceService,
+            "정교한 거리 측정을 시작합니다. 직선으로 자연스럽게 걸어주세요.",
+            speed: 1.0,
+          );
+
           // 진행 상황 음성 안내는 제거 (10m 달성 또는 타임아웃 시에만 안내)
-          
+
           debugPrint('✅ 백엔드 연동 측정 세션 시작됨');
         } else {
           debugPrint('⚠️ 백엔드 측정 세션 시작 응답에 문제 있음: ${result['message']}');
@@ -488,12 +502,13 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
       });
     }
 
-    VoiceUtils.speakWithService(_voiceService, "거리 측정을 시작합니다. 직선으로 걸어주세요.", speed: 1.0);
+    VoiceUtils.speakWithService(
+      _voiceService,
+      "거리 측정을 시작합니다. 직선으로 걸어주세요.",
+      speed: 1.0,
+    );
     debugPrint('✅ 백엔드 백업 모드로 측정 시작');
   }
-
-
-
 
   // 일정 시간(120초) 동안 측정이 완료되지 않으면 자동 완료 처리
   void _startMeasurementTimeout() {
@@ -509,7 +524,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
         if (distanceMeters < 5.0) {
           distanceMeters = 8.0; // 기본 측정 거리 설정
         }
-        
+
         setState(() {
           measurementCompleted = true;
           measurementActive = false;
@@ -517,7 +532,8 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
         });
 
         // 음성 안내
-        VoiceUtils.speakWithService(_voiceService,
+        VoiceUtils.speakWithService(
+          _voiceService,
           "측정 시간이 완료되어 ${distanceMeters.toStringAsFixed(1)}미터로 측정을 마무리합니다. 걸음 수를 말씀해 주세요.",
           speed: 0.9,
         );
@@ -527,23 +543,23 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
       } else if (!measurementActive && !measurementCompleted) {
         // 아직 측정이 시작되지 않았다면 기본값으로 완료
         debugPrint('⚠️ 측정이 시작되지 않았음 - 기본 측정으로 진행');
-        
+
         setState(() {
           measurementActive = false;
           measurementCompleted = true;
           distanceMeters = 8.0; // 기본 거리
         });
 
-        VoiceUtils.speakWithService(_voiceService,
+        VoiceUtils.speakWithService(
+          _voiceService,
           "자동으로 8미터 측정을 완료했습니다. 걸음 수를 말씀해 주세요.",
           speed: 0.9,
         );
-        
+
         _announceDistanceMeasurementComplete();
       }
     });
   }
-
 
   void _startPeriodicCapture() {
     Future.doWhile(() async {
@@ -564,10 +580,11 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
           if (mounted && frameCount % 3 == 0) {
             // 3프레임마다 한 번씩 상태 업데이트
             setState(() {
-              _statusMessage = "거리 측정 중: ${distanceMeters.toStringAsFixed(1)}m / ${targetDistanceMeters}m";
+              _statusMessage =
+                  "거리 측정 중: ${distanceMeters.toStringAsFixed(1)}m / ${targetDistanceMeters}m";
             });
           }
-          
+
           // 프레임을 서버로 업로드 (거리 측정용)
           await _uploadFrameForHybridMeasurement(picture.path);
 
@@ -590,38 +607,33 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
     try {
       // 백엔드 /api/users/measurement/frame 엔드포인트 호출
       var request = http.MultipartRequest(
-        'POST', 
-        Uri.parse(AppConfig.measurementFrameEndpoint)
+        'POST',
+        Uri.parse(AppConfig.measurementFrameEndpoint),
       );
-      
+
       // 이미지 파일 추가
       request.files.add(await http.MultipartFile.fromPath('file', imagePath));
-      
-      // IMU 데이터는 사용하지 않으므로 기본값 전송 (백엔드에서 무시됨)
+
       request.fields.addAll({
         'user_id': _currentUserUuid ?? 'current_user',
-        'enable_kalman': 'false', // IMU 사용하지 않음
-        'accelerometer_x': '0.0',
-        'accelerometer_y': '0.0', 
-        'accelerometer_z': '9.81',
-        'gyroscope_x': '0.0',
-        'gyroscope_y': '0.0',
-        'gyroscope_z': '0.0',
-        'device_orientation': 'portrait',
         'frame_count': frameCount.toString(),
         'estimated_distance': distanceMeters.toString(),
-        'estimated_step_count': '0'
+        'estimated_step_count': '0',
       });
-      
-      debugPrint('🚀 백엔드 거리 측정 API 호출 - 프레임: $frameCount, 현재거리: ${distanceMeters}m');
-      
-      final streamedResponse = await request.send().timeout(const Duration(seconds: 30));
+
+      debugPrint(
+        '🚀 백엔드 거리 측정 API 호출 - 프레임: $frameCount, 현재거리: ${distanceMeters}m',
+      );
+
+      final streamedResponse = await request.send().timeout(
+        const Duration(seconds: 30),
+      );
       final response = await http.Response.fromStream(streamedResponse);
-      
+
       if (response.statusCode == 200) {
         final result = jsonDecode(utf8.decode(response.bodyBytes));
         debugPrint('✅ 백엔드 응답: ${result.toString()}');
-        
+
         // 백엔드에서 정교한 측정 결과 받아오기
         if (result['success'] == true && result.containsKey('measurement')) {
           final measurement = result['measurement'];
@@ -631,17 +643,24 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
           try {
             if (measurement is Map) {
               if (measurement['distance_meters'] is num) {
-                backendDistanceMeters = (measurement['distance_meters'] as num).toDouble();
+                backendDistanceMeters =
+                    (measurement['distance_meters'] as num).toDouble();
               } else if (measurement['distance_m'] is num) {
-                backendDistanceMeters = (measurement['distance_m'] as num).toDouble();
+                backendDistanceMeters =
+                    (measurement['distance_m'] as num).toDouble();
               } else if (measurement['distance_cm'] is num) {
-                backendDistanceMeters = (measurement['distance_cm'] as num).toDouble() / 100.0;
+                backendDistanceMeters =
+                    (measurement['distance_cm'] as num).toDouble() / 100.0;
               } else if (measurement['distance'] is num) {
                 // 거리 단위가 m라고 가정
-                backendDistanceMeters = (measurement['distance'] as num).toDouble();
-              } else if (measurement['step_length_cm'] is num && measurement['step_count'] is num) {
-                final double stepLenCm = (measurement['step_length_cm'] as num).toDouble();
-                final double stepCnt = (measurement['step_count'] as num).toDouble();
+                backendDistanceMeters =
+                    (measurement['distance'] as num).toDouble();
+              } else if (measurement['step_length_cm'] is num &&
+                  measurement['step_count'] is num) {
+                final double stepLenCm =
+                    (measurement['step_length_cm'] as num).toDouble();
+                final double stepCnt =
+                    (measurement['step_count'] as num).toDouble();
                 backendDistanceMeters = (stepLenCm * stepCnt) / 100.0;
               }
             }
@@ -649,8 +668,9 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
             debugPrint('백엔드 거리 파싱 실패: $e');
           }
 
-          if (backendDistanceMeters == null) {
-            // 파싱 실패 시 기존 백업 로직 사용
+          if (backendDistanceMeters == null || backendDistanceMeters <= 0) {
+            // 파싱 실패 또는 0값 시 시각장애인 특성 반영한 백업 로직 사용
+            debugPrint('백엔드 거리 값 없음 또는 0 - 시각장애인 맞춤 시뮬레이션으로 전환');
             _fallbackToSimulatedDistance();
           } else if (mounted && measurementActive) {
             setState(() {
@@ -662,7 +682,8 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
               distanceMeters = next;
 
               // 10미터 달성 시 측정 완료
-              if (distanceMeters >= targetDistanceMeters && !measurementCompleted) {
+              if (distanceMeters >= targetDistanceMeters &&
+                  !measurementCompleted) {
                 measurementCompleted = true;
                 measurementActive = false;
                 _progressAnnouncementTimer?.cancel();
@@ -677,33 +698,48 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
           // 백엔드 측정 결과가 없으면 기존 시뮬레이션 로직 사용
           _fallbackToSimulatedDistance();
         }
-        
-        debugPrint('📸 백엔드 거리 측정 완료 - 현재 거리: ${distanceMeters.toStringAsFixed(1)}m / ${targetDistanceMeters}m');
+
+        debugPrint(
+          '📸 백엔드 거리 측정 완료 - 현재 거리: ${distanceMeters.toStringAsFixed(1)}m / ${targetDistanceMeters}m',
+        );
       } else {
         debugPrint('❌ 백엔드 응답 오류: ${response.statusCode} ${response.body}');
         _fallbackToSimulatedDistance();
       }
-      
     } catch (e) {
       debugPrint('❌ 백엔드 거리 측정 API 호출 실패: $e');
       _fallbackToSimulatedDistance();
     }
   }
 
-  /// 백엔드 연결 실패 시 시뮬레이션으로 대체
+  /// 백엔드 연결 실패 시 시뮬레이션으로 대체 - 시각장애인 보폭 특성 반영
   void _fallbackToSimulatedDistance() {
     if (mounted && measurementActive) {
-      final simulatedDistance = distanceMeters + (0.2 + (frameCount * 0.01)); // 백엔드 오류 시 기본 증가량
+      // 시각장애인 평균 보폭: 60-65cm (일반인 70cm보다 짧음)
+      // 더 안전하고 신중한 걸음을 고려 (기존 step_length_cm 변수 활용)
+      final double visualImpairedStrideM = 0.62; // 62cm 평균 보폭
+      final double stepsPerSecond = 0.8; // 1.5초당 1.2보 = 초당 0.8보 (더 신중한 속도)
+      final double frameIntervalSec = 1.5;
+      final double estimatedStepsPerFrame = stepsPerSecond * frameIntervalSec;
+
+      final double frameIncrement =
+          estimatedStepsPerFrame * visualImpairedStrideM;
+      final simulatedDistance = distanceMeters + frameIncrement; // 프레임당 약 0.74m
+
+      debugPrint(
+        '📏 시각장애인 보폭 시뮬레이션: ${distanceMeters.toStringAsFixed(1)}m + ${frameIncrement.toStringAsFixed(2)}m',
+      );
+
       setState(() {
         distanceMeters = math.min(simulatedDistance, targetDistanceMeters);
-        
+
         if (distanceMeters >= targetDistanceMeters && !measurementCompleted) {
           measurementCompleted = true;
           measurementActive = false;
           _progressAnnouncementTimer?.cancel();
           distanceMeters = targetDistanceMeters;
-          
-          debugPrint('🎯 시뮬레이션 백업으로 10미터 달성! 측정 완료');
+
+          debugPrint('🎯 시각장애인 보폭 기반 시뮬레이션으로 10미터 달성! 측정 완료');
           _announceDistanceMeasurementComplete();
         }
       });
@@ -836,10 +872,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
               const SizedBox(height: 4),
               AccessibleDescription(
                 '진행률: ${(distanceMeters / targetDistanceMeters * 100).round()}%',
-                style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 14,
-                ),
+                style: const TextStyle(color: Colors.white70, fontSize: 14),
                 textAlign: TextAlign.center,
               ),
             ] else ...[
@@ -874,11 +907,18 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
                   icon: const Icon(Icons.play_arrow, color: Colors.white),
                   label: const AccessibleText(
                     '측정 시작',
-                    style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.green,
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 12,
+                    ),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(25),
                     ),
@@ -928,11 +968,7 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
       child: FloatingActionButton(
         onPressed: _triggerTestMeasurementComplete,
         backgroundColor: Colors.orange.withValues(alpha: 0.8),
-        child: const Icon(
-          Icons.play_arrow,
-          color: Colors.white,
-          size: 28,
-        ),
+        child: const Icon(Icons.play_arrow, color: Colors.white, size: 28),
       ),
     );
   }
@@ -940,10 +976,10 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
   /// 테스트용 측정 완료 트리거
   void _triggerTestMeasurementComplete() async {
     debugPrint('🧪 테스트: 측정 완료 시뮬레이션 시작');
-    
+
     // 스트리밍 중지
     _stopStreaming();
-    
+
     // 측정 값 설정 (시뮬레이션)
     setState(() {
       measurementActive = false;
@@ -951,12 +987,10 @@ class _CameraMeasurementScreenState extends State<CameraMeasurementScreen>
       distanceMeters = 10.0; // 10미터로 설정
       _progressAnnouncementTimer?.cancel();
     });
-    
-    
+
     debugPrint('🧪 테스트: 거리 측정 완료 음성 안내 시작');
-    
+
     // 거리 측정 완료 음성 안내
     await _announceDistanceMeasurementComplete();
   }
-
 }
