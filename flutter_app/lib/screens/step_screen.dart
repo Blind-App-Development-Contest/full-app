@@ -9,6 +9,7 @@ import '../widgets/accessible_text.dart';
 import '../services/voice_service.dart';
 import '../services/api_service.dart';
 import '../utils/voice_utils.dart';
+import '../utils/voice_recognition_helper.dart';
 import 'voice_screen.dart';
 import 'camera_measurement_screen.dart';
 
@@ -32,6 +33,7 @@ class _StepScreenState extends State<StepScreen> {
   // ignore: non_constant_identifier_names
   double? step_length_cm; // 백엔드와 동일한 변수명 사용
   VoiceService? _voiceService;
+  VoiceRecognitionHelper? _voiceHelper;
   
   // 음성인식 상태 관리
   bool _isListening = false;
@@ -52,7 +54,11 @@ class _StepScreenState extends State<StepScreen> {
   void _initializeVoiceService() {
     try {
       _voiceService = context.read<VoiceService>();
-      debugPrint("🎙️ StepScreen VoiceService Provider에서 가져오기 성공");
+      
+      // VoiceRecognitionHelper 초기화
+      _voiceHelper = VoiceRecognitionHelper(voiceService: _voiceService!);
+      
+      debugPrint("🎙️ StepScreen VoiceService 및 헬퍼 Provider에서 가져오기 성공");
       _setupVoiceCommands();
       debugPrint("✅ StepScreen VoiceService 초기화 및 음성 인식 시작 완료");
     } catch (e) {
@@ -103,10 +109,12 @@ class _StepScreenState extends State<StepScreen> {
       final measuredDistanceMeters = result;
       debugPrint("📏 카메라에서 측정된 거리: ${measuredDistanceMeters.toStringAsFixed(1)}m");
       
-      setState(() {
-        _measured = true;
-        _resultConfirmed = false; // 재측정 시 결과 확인 리셋
-      });
+      if (mounted) {
+        setState(() {
+          _measured = true;
+          _resultConfirmed = false; // 재측정 시 결과 확인 리셋
+        });
+      }
 
       // 거리 측정 완료 후 걸음 수 입력 안내
       _announceDistanceMeasured(measuredDistanceMeters);
@@ -119,17 +127,17 @@ class _StepScreenState extends State<StepScreen> {
 
     try {
       // 거리 측정 완료 안내
-      await _voiceService!.speak("거리 측정이 완료되었습니다!");
+      await VoiceUtils.speakWithService(_voiceService, "거리 측정이 완료되었습니다!");
 
       await Future.delayed(const Duration(milliseconds: 500));
-      await _voiceService!.speak("측정된 거리는 ${distanceMeters.toStringAsFixed(1)}미터입니다.");
+      await VoiceUtils.speakWithService(_voiceService, "측정된 거리는 ${distanceMeters.toStringAsFixed(1)}미터입니다.");
 
       await Future.delayed(const Duration(milliseconds: 500));
       
       // 걸음 수 입력 요청
-      await _voiceService!.speak("이제 ${distanceMeters.toStringAsFixed(0)}미터를 걸으며 세신 걸음 수를 말씀해 주세요.");
+      await VoiceUtils.speakWithService(_voiceService, "이제 ${distanceMeters.toStringAsFixed(0)}미터를 걸으며 세신 걸음 수를 말씀해 주세요.");
       await Future.delayed(const Duration(milliseconds: 300));
-      await _voiceService!.speak("걸음 수를 말씀해 주세요.");
+      await VoiceUtils.speakWithService(_voiceService, "걸음 수를 말씀해 주세요.");
       
       // 걸음 수 음성 인식 시작
       _startStepCountListening(distanceMeters);
@@ -149,16 +157,51 @@ class _StepScreenState extends State<StepScreen> {
       return;
     }
 
-    setState(() {
-      _isListening = true;
-    });
+    if (mounted) {
+      setState(() {
+        _isListening = true;
+      });
+    }
 
     // 거리 정보를 저장하여 나중에 보폭 계산에 사용
     _currentDistanceMeters = distanceMeters;
 
-    // 자동 음성 인식 사이클 시작 (걸음 수 입력 대기)
-    _voiceService!.addListener(_onStepCountVoiceUpdate);
-    _voiceService!.startAutoRecognitionCycle();
+    // VoiceRecognitionHelper로 걸음 수 인식 (로딩 에러 방지)
+    if (_voiceHelper != null) {
+      _voiceHelper!.startListeningForNumber(
+        onNumberFound: (int stepCount, String fullText) {
+          debugPrint('🎤 걸음 수 인식됨: $stepCount (전체: $fullText)');
+          // 사용자가 말한 숫자를 음성으로 확인
+          VoiceUtils.speakWithService(_voiceService, "$stepCount걸음으로 인식했습니다.");
+          if (mounted) {
+            setState(() => _isListening = false);
+          }
+          if (_currentDistanceMeters != null) {
+            _confirmStepCount(stepCount, _currentDistanceMeters!);
+          }
+        },
+        minValue: 1,
+        maxValue: 50,
+        timeoutSeconds: 30,
+        onTimeout: () {
+          debugPrint("⏰ 걸음 수 입력 타임아웃");
+          if (mounted) {
+            setState(() => _isListening = false);
+            _voiceService?.speak("시간이 초과되었습니다. 다시 시도해 주세요.");
+            _fallbackToNextStep();
+          }
+        },
+        onInvalidInput: () {
+          debugPrint("❌ 잘못된 걸음 수 입력");
+          if (mounted) {
+            _voiceService?.speak("죄송합니다. 1부터 50 사이의 숫자로 다시 말씀해 주세요.");
+          }
+        },
+      );
+    } else {
+      debugPrint("❌ VoiceRecognitionHelper가 초기화되지 않음 - 기본 진행");
+      _fallbackToNextStep();
+    }
   }
 
   /// 걸음 수 입력 음성 인식 리스너
@@ -170,38 +213,97 @@ class _StepScreenState extends State<StepScreen> {
 
     debugPrint('🎤 걸음 수 입력 인식: $recognizedText');
     
-    // 걸음 수 추출 로직 (VoiceService에서 이동)
-    final stepCount = _extractStepCountFromSpeech(recognizedText);
+    // VoiceRecognitionHelper의 공통 숫자 추출 로직 사용
+    final stepCount = VoiceRecognitionHelper.extractNumberFromSpeech(recognizedText);
 
     if (stepCount > 0 && stepCount <= 50 && _currentDistanceMeters != null) {
+      // 사용자가 말한 숫자를 음성으로 확인
+      VoiceUtils.speakWithService(_voiceService, "$stepCount걸음으로 인식했습니다.");
+      
       _voiceService!.removeListener(_onStepCountVoiceUpdate);
       _voiceService!.stopAutoRecognitionCycle();
-      setState(() => _isListening = false);
+      if (mounted) {
+        setState(() => _isListening = false);
+      }
       _confirmStepCount(stepCount, _currentDistanceMeters!);
+    } else if (stepCount > 0) {
+      // 숫자는 인식되었지만 범위를 벗어남
+      VoiceUtils.speakWithService(_voiceService, "$stepCount걸음으로 인식했습니다. 하지만 1부터 50 사이의 숫자로 다시 말씀해 주세요.");
     } else {
-      // 잘못된 입력 시 재시도 (음성 인식은 계속)
-      _voiceService?.speak("죄송합니다. 다시 걸음 수를 말씀해 주세요. 1부터 50 사이의 숫자로 말씀해 주세요.");
+      // 숫자를 인식하지 못함
+      VoiceUtils.speakWithService(_voiceService, "죄송합니다. 숫자를 인식하지 못했습니다. 1부터 50 사이의 걸음 수를 명확히 말씀해 주세요.");
     }
   }
 
   // 걸음 수 확인 (거리 정보 포함)
   void _confirmStepCount(int stepCount, double distanceMeters) async {
-    setState(() {
-      _isListening = false;
-    });
+    if (mounted) {
+      setState(() {
+        _isListening = false;
+      });
+    }
 
     try {
-      await _voiceService?.speak("$stepCount 걸음으로 입력하셨습니다. 맞으면 '네', 틀리면 '아니오'라고 말씀해 주세요.");
+      await VoiceUtils.speakWithService(_voiceService, "$stepCount 걸음으로 입력하셨습니다. 맞으면 '네', 틀리면 '아니오'라고 말씀해 주세요.");
       
       await Future.delayed(const Duration(milliseconds: 500));
       
-      // 확인 응답을 위한 음성 인식 시작 (거리 정보 포함)
-      _startConfirmationListening(stepCount, distanceMeters);
+      // VoiceRecognitionHelper로 확인 응답 인식 (로딩 에러 방지)
+      _startConfirmationListeningWithHelper(stepCount, distanceMeters);
       
     } catch (e) {
       debugPrint('❌ 걸음 수 확인 오류: $e');
       _saveStepCountAndProceed(stepCount, distanceMeters);
     }
+  }
+
+  // VoiceRecognitionHelper를 사용한 확인 응답 인식 (로딩 에러 방지)
+  void _startConfirmationListeningWithHelper(int stepCount, double distanceMeters) {
+    if (_voiceHelper == null) {
+      debugPrint("❌ VoiceRecognitionHelper가 초기화되지 않음 - 자동 저장");
+      _saveStepCountAndProceed(stepCount, distanceMeters);
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _isListening = true;
+        _isConfirming = true;
+      });
+    }
+
+    _voiceHelper!.startListeningForConfirmation(
+      onConfirm: (bool confirmed, String fullText) {
+        debugPrint('🎤 확인 응답: $confirmed (전체: $fullText)');
+        if (mounted) {
+          setState(() {
+            _isListening = false;
+            _isConfirming = false;
+          });
+        }
+
+        if (confirmed) {
+          _saveStepCountAndProceed(stepCount, distanceMeters);
+        } else {
+          _voiceService?.speak("다시 걸음 수를 말씀해 주세요.");
+          Future.delayed(const Duration(milliseconds: 500), () {
+            _startStepCountListening(distanceMeters);
+          });
+        }
+      },
+      timeoutSeconds: 15,
+      onTimeout: () {
+        debugPrint("⏰ 확인 응답 타임아웃");
+        if (mounted) {
+          setState(() {
+            _isListening = false;
+            _isConfirming = false;
+          });
+          _voiceService?.speak("시간이 초과되었습니다. 자동으로 저장하겠습니다.");
+          _saveStepCountAndProceed(stepCount, distanceMeters);
+        }
+      },
+    );
   }
 
   // 확인 응답 음성 인식 시작 (거리 정보 포함)
@@ -211,10 +313,12 @@ class _StepScreenState extends State<StepScreen> {
       return;
     }
 
-    setState(() {
-      _isListening = true;
-      _isConfirming = true;
-    });
+    if (mounted) {
+      setState(() {
+        _isListening = true;
+        _isConfirming = true;
+      });
+    }
 
     // 확인 응답을 위한 콜백 설정 (일반 음성 인식 사용)
     _voiceService!.addListener(() => _onConfirmationUpdate(stepCount, distanceMeters));
@@ -227,10 +331,12 @@ class _StepScreenState extends State<StepScreen> {
       if (mounted && _isListening && _isConfirming) {
         _voiceService?.removeListener(() => _onConfirmationUpdate(stepCount, distanceMeters));
         _voiceService?.stopAutoRecognitionCycle();
-        setState(() {
-          _isListening = false;
-          _isConfirming = false;
-        });
+        if (mounted) {
+          setState(() {
+            _isListening = false;
+            _isConfirming = false;
+          });
+        }
         _voiceService?.speak("시간이 초과되었습니다. 자동으로 저장하겠습니다.");
         _saveStepCountAndProceed(stepCount, distanceMeters);
       }
@@ -250,23 +356,25 @@ class _StepScreenState extends State<StepScreen> {
     _voiceService!.removeListener(() => _onConfirmationUpdate(stepCount, distanceMeters));
     _voiceService!.stopAutoRecognitionCycle();
     
-    setState(() {
-      _isListening = false;
-      _isConfirming = false;
-    });
+    if (mounted) {
+      setState(() {
+        _isListening = false;
+        _isConfirming = false;
+      });
+    }
 
     if (input.contains('네') || input.contains('예') || input.contains('맞') || 
         input.contains('확인') || input.contains('좋') || input.contains('그래')) {
       _saveStepCountAndProceed(stepCount, distanceMeters);
     } else if (input.contains('아니') || input.contains('다시') || 
                input.contains('틀렸') || input.contains('아니오') || input.contains('안')) {
-      _voiceService?.speak("다시 걸음 수를 말씀해 주세요.");
+      VoiceUtils.speakWithService(_voiceService, "다시 걸음 수를 말씀해 주세요.");
       Future.delayed(const Duration(milliseconds: 500), () {
         _startStepCountListening(distanceMeters);
       });
     } else {
       // 애매한 경우 재확인
-      _voiceService?.speak("네 또는 아니오로 답변해 주세요.");
+      VoiceUtils.speakWithService(_voiceService, "네 또는 아니오로 답변해 주세요.");
       Future.delayed(const Duration(milliseconds: 500), () {
         _startConfirmationListening(stepCount, distanceMeters);
       });
@@ -282,26 +390,28 @@ class _StepScreenState extends State<StepScreen> {
     }
     
     try {
-      await _voiceService?.speak("$stepCount 걸음으로 저장했습니다.");
+      await VoiceUtils.speakWithService(_voiceService, "$stepCount 걸음으로 저장했습니다.");
       
       debugPrint("💾 걸음 수 저장: $stepCount걸음, 거리: ${distanceMeters.toStringAsFixed(1)}m");
       
       // 거리와 걸음 수로 보폭 계산
-      await _voiceService?.speak("보폭을 계산하고 있습니다.");
+      await VoiceUtils.speakWithService(_voiceService, "보폭을 계산하고 있습니다.");
       final calculatedStepLength = (distanceMeters * 100) / stepCount; // cm 단위
       
       debugPrint("📏 계산된 보폭: ${calculatedStepLength.toStringAsFixed(1)}cm");
       
       // 기존 측정값을 계산된 값으로 업데이트
-      setState(() {
-        step_length_cm = calculatedStepLength;
-        _resultConfirmed = true;
-      });
+      if (mounted) {
+        setState(() {
+          step_length_cm = calculatedStepLength;
+          _resultConfirmed = true;
+        });
+      }
       
       // 서버에 최종 보폭 전송
       await _sendStepLengthResult(calculatedStepLength);
       
-      await _voiceService?.speak("보폭 계산이 완료되었습니다. ${calculatedStepLength.toStringAsFixed(1)}센티미터입니다.");
+      await VoiceUtils.speakWithService(_voiceService, "보폭 계산이 완료되었습니다. ${calculatedStepLength.toStringAsFixed(1)}센티미터입니다.");
       
       await Future.delayed(const Duration(milliseconds: 500));
 
@@ -318,10 +428,12 @@ class _StepScreenState extends State<StepScreen> {
 
   // 오류 시 기본 진행
   void _fallbackToNextStep() {
-    setState(() {
-      _isListening = false;
-      _resultConfirmed = true;
-    });
+    if (mounted) {
+      setState(() {
+        _isListening = false;
+        _resultConfirmed = true;
+      });
+    }
 
     if (widget.fromSettings) {
       _saveAndPop();
@@ -397,6 +509,7 @@ class _StepScreenState extends State<StepScreen> {
   @override
   void dispose() {
     // 음성 인식 사이클 중단 및 리소스 정리
+    _voiceHelper?.dispose();
     if (_voiceService != null) {
       _voiceService!.stopAutoRecognitionCycle();
       _voiceService!.removeListener(_onVoiceServiceUpdate);
@@ -461,9 +574,11 @@ class _StepScreenState extends State<StepScreen> {
                   label: '측정 결과 확인',
                   hasChanged: true,
                   onPressed: () {
-                    setState(() {
-                      _resultConfirmed = true;
-                    });
+                    if (mounted) {
+                      setState(() {
+                        _resultConfirmed = true;
+                      });
+                    }
                   },
                 )
                 : NextButton(
@@ -681,9 +796,11 @@ class _StepScreenState extends State<StepScreen> {
   void _toggleVoiceRecognition() async {
     if (_voiceService == null) return;
 
-    setState(() {
-      _isListening = !_isListening;
-    });
+    if (mounted) {
+      setState(() {
+        _isListening = !_isListening;
+      });
+    }
 
     if (_isListening) {
       _speakText('음성인식을 시작합니다. 측정시작이라고 말씀해주세요.');
@@ -693,7 +810,9 @@ class _StepScreenState extends State<StepScreen> {
         _voiceService!.addListener(_onVoiceServiceUpdate);
       } catch (e) {
         debugPrint('❌ 자동 인식 시작 실패: $e');
-        setState(() => _isListening = false);
+        if (mounted) {
+          setState(() => _isListening = false);
+        }
       }
     } else {
       _speakText('음성인식을 중지합니다.');
@@ -715,7 +834,9 @@ class _StepScreenState extends State<StepScreen> {
     if (recognizedText.isNotEmpty && _isListening) {
       debugPrint('🎤 보폭 화면에서 인식된 텍스트: $recognizedText');
       
-      setState(() => _isListening = false);
+      if (mounted) {
+        setState(() => _isListening = false);
+      }
       _voiceService!.removeListener(_onVoiceServiceUpdate);
       
       _processVoiceCommand(recognizedText);
@@ -771,88 +892,6 @@ class _StepScreenState extends State<StepScreen> {
   }
 
 
-  /// 음성에서 걸음 수 추출 (VoiceService에서 이동)
-  int _extractStepCountFromSpeech(String speech) {
-    final cleanText = speech.toLowerCase().trim();
-    debugPrint('🔍 걸음 수 추출 시도: "$cleanText"');
-    
-    // 확장된 한국어 숫자 매핑
-    final koreanNumbers = {
-      '영': 0, '공': 0, '하나': 1, '일': 1, '한': 1, '둘': 2, '이': 2,
-      '셋': 3, '삼': 3, '넷': 4, '사': 4, '다섯': 5, '오': 5,
-      '여섯': 6, '육': 6, '일곱': 7, '칠': 7, '여덟': 8, '팔': 8,
-      '아홉': 9, '구': 9, '열': 10, '십': 10, '스무': 20, '이십': 20,
-      '서른': 30, '삼십': 30, '마흔': 40, '사십': 40, '쉰': 50, '오십': 50
-    };
-    
-    // 복합 숫자 매핑 (자주 사용되는 것들)
-    final compositeNumbers = {
-      '열하나': 11, '열한': 11, '열둘': 12, '열두': 12, '열셋': 13, '열세': 13,
-      '열넷': 14, '열네': 14, '열다섯': 15, '열여섯': 16, '열일곱': 17,
-      '열여덟': 18, '열아홉': 19, '스물하나': 21, '스물한': 21, '스물둘': 22,
-      '스물두': 22, '스물셋': 23, '스물세': 23, '스물넷': 24, '스물네': 24,
-      '스물다섯': 25
-    };
-    
-    // 1. 직접적인 숫자 패턴 찾기 (15걸음, 20보 등)
-    final patterns = [
-      RegExp(r'(\d+)\s*(?:걸음|보|발자국|스텝|개|번|회)'),
-      RegExp(r'(\d+)\s*(?:번|개)?'),
-      RegExp(r'(?:걸음|보|발자국|스텝).*?(\d+)'),
-    ];
-    
-    for (final pattern in patterns) {
-      final match = pattern.firstMatch(cleanText);
-      if (match != null) {
-        final num = int.tryParse(match.group(1)!);
-        if (num != null && num > 0 && num <= 100) {
-          debugPrint('✅ 패턴 매칭으로 걸음 수 추출: $num');
-          return num;
-        }
-      }
-    }
-    
-    // 2. 복합 한국어 숫자 변환 시도 (우선순위 높음)
-    for (final entry in compositeNumbers.entries) {
-      if (cleanText.contains(entry.key)) {
-        debugPrint('✅ 복합 한국어 숫자 변환으로 걸음 수 추출: ${entry.value}');
-        return entry.value;
-      }
-    }
-    
-    // 3. 기본 한국어 숫자 변환 시도
-    if (cleanText.contains('열') && cleanText.length > 1) {
-      // 열 + 숫자 조합 처리
-      final afterTen = cleanText.replaceFirst('열', '').trim();
-      final baseNum = koreanNumbers[afterTen];
-      if (baseNum != null && baseNum < 10) {
-        debugPrint('✅ 열+숫자 조합으로 걸음 수 추출: ${10 + baseNum}');
-        return 10 + baseNum;
-      }
-      debugPrint('✅ 열로 걸음 수 추출: 10');
-      return 10;
-    }
-    
-    for (final entry in koreanNumbers.entries) {
-      if (cleanText.contains(entry.key)) {
-        debugPrint('✅ 기본 한국어 숫자 변환으로 걸음 수 추출: ${entry.value}');
-        return entry.value;
-      }
-    }
-    
-    // 4. 전체 텍스트에서 숫자만 추출
-    final digitOnly = RegExp(r'\d+').allMatches(cleanText);
-    for (final match in digitOnly) {
-      final num = int.tryParse(match.group(0)!);
-      if (num != null && num > 0 && num <= 100) {
-        debugPrint('✅ 숫자 추출로 걸음 수 획득: $num');
-        return num;
-      }
-    }
-    
-    debugPrint('❌ 걸음 수 추출 실패: "$cleanText"');
-    return 0;
-  }
 
   /// 보폭 결과를 서버에 전송
   Future<void> _sendStepLengthResult(double stepLengthCm) async {

@@ -248,6 +248,9 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
         return;
       }
 
+      // 오디오 파일 검증 및 정보 출력
+      await _verifyAudioFile(path);
+
       _setState(VoiceState.processing);
       // 1. STT 서버 호출하여 텍스트 얻기 (재시도 로직 포함)
       _setStatus("음성을 텍스트로 변환 중...");
@@ -682,7 +685,24 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
       
       // 현재 설정된 성별과 속도 사용 (정규화/범위 보정)
       final currentGender = _normalizeGender(gender ?? _currentVoiceGender);
-      final currentSpeed = (speed ?? getCurrentSpeed()).clamp(0.25, 4.0).toDouble();
+      final requested = (speed ?? getCurrentSpeed());
+      // 요구사항: "가장 낮은 설정값"을 정상 속도(1.0x)로 맵핑
+      // 입력 도메인(사용자 설정 범위) 0.25~2.0를 출력 1.0~2.0으로 선형 변환
+      const double inputMin = 0.25;
+      const double inputMax = 2.0;
+      const double outputMin = 1.0; // 정상 속도
+      const double outputMax = 2.0; // 제품 상한
+      double effective;
+      if (requested <= inputMin) {
+        effective = outputMin;
+      } else if (requested >= inputMax) {
+        effective = outputMax;
+      } else {
+        final t = (requested - inputMin) / (inputMax - inputMin);
+        effective = outputMin + t * (outputMax - outputMin);
+      }
+      // Google TTS 허용 범위 최종 클램프
+      final currentSpeed = effective.clamp(0.25, 4.0).toDouble();
       
       // 사용자 UUID 확보
       String? uuid;
@@ -854,6 +874,50 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
         }
       }
     });
+  }
+
+  /// 오디오 파일 검증 및 정보 출력
+  Future<void> _verifyAudioFile(String audioPath) async {
+    try {
+      final audioFile = File(audioPath);
+      if (!audioFile.existsSync()) {
+        _addDebugLog("❌ 오디오 파일이 존재하지 않습니다: $audioPath");
+        return;
+      }
+
+      // 오디오 파일 정보 출력
+      final fileSize = await audioFile.length();
+      final fileHash = audioFile.readAsBytesSync().hashCode;
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      
+      _addDebugLog("=== 오디오 파일 정보 ===");
+      _addDebugLog("파일 경로: $audioPath");
+      _addDebugLog("파일 크기: $fileSize bytes");
+      _addDebugLog("파일 해시: $fileHash");
+      _addDebugLog("타임스탬프: $timestamp");
+      
+      // 파일이 비어있는지 확인
+      if (fileSize == 0) {
+        _addDebugLog("⚠️ 경고: 오디오 파일이 비어있습니다!");
+      } else if (fileSize < 1024) {
+        _addDebugLog("⚠️ 경고: 오디오 파일이 너무 작습니다 ($fileSize bytes)");
+      } else {
+        _addDebugLog("✅ 오디오 파일 검증 완료");
+      }
+
+      // 매번 새로운 파일명으로 저장하도록 수정 (사용자 제안 적용)
+      try {
+        final directory = await getApplicationDocumentsDirectory();
+        final newAudioPath = "${directory.path}/audio_$timestamp.m4a";
+        await audioFile.copy(newAudioPath);
+        _addDebugLog("📁 검증용 복사본 생성: $newAudioPath");
+      } catch (e) {
+        _addDebugLog("⚠️ 검증용 복사본 생성 실패: $e");
+      }
+      
+    } catch (e) {
+      _addDebugLog("❌ 오디오 파일 검증 중 오류: $e");
+    }
   }
 
   @override

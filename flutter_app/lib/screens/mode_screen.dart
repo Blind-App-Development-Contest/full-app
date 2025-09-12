@@ -1,6 +1,9 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:provider/provider.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../constants/config.dart';
 import '../widgets/aeye_card.dart';
@@ -33,12 +36,17 @@ class _ModeScreenState extends State<ModeScreen> {
   // 음성인식 상태 관리
   bool _isListening = false;
   VoiceService? _voiceService;
+  
+  // 오디오 재생 관리
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  List<File> _audioFiles = [];
 
   @override
   void initState() {
     super.initState();
     _loadUserPrefs();
     _initializeVoiceService();
+    _loadAudioFiles();
   }
   
   void _initializeVoiceService() {
@@ -249,6 +257,39 @@ class _ModeScreenState extends State<ModeScreen> {
                 },
               ),
 
+              // 녹음된 파일 재생 버튼
+              const SizedBox(height: 16),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: ElevatedButton(
+                  onPressed: _playLatestRecording,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: panel,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: BorderSide(color: divider.withValues(alpha: 0.3)),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.play_arrow, color: Colors.white),
+                      const SizedBox(width: 8),
+                      const AccessibleText(
+                        '녹음된 파일 재생',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
               const SizedBox(height: 40),
             ],
           ),
@@ -324,6 +365,67 @@ class _ModeScreenState extends State<ModeScreen> {
   /// 음성 출력 함수
   void _speakText(String text) async {
     await VoiceUtils.speakWithService(_voiceService, text);
+  }
+
+  /// 오디오 파일 로드
+  Future<void> _loadAudioFiles() async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final files = directory.listSync()
+          .whereType<File>()
+          .where((file) => file.path.endsWith('.m4a'))
+          .toList();
+      
+      if (mounted) {
+        setState(() {
+          _audioFiles = files;
+        });
+      }
+      
+      debugPrint('🎵 발견된 오디오 파일: ${files.length}개');
+      for (final file in files) {
+        debugPrint('   - ${file.path.split('/').last}');
+      }
+    } catch (e) {
+      debugPrint('❌ 오디오 파일 로드 실패: $e');
+    }
+  }
+
+  /// 가장 최근 오디오 파일 재생
+  Future<void> _playLatestRecording() async {
+    if (_audioFiles.isEmpty) {
+      await _loadAudioFiles(); // 다시 로드 시도
+    }
+    
+    if (_audioFiles.isEmpty) {
+      _speakText('재생할 녹음 파일이 없습니다.');
+      return;
+    }
+    
+    try {
+      // 파일명 기준으로 가장 최근 파일 찾기 (타임스탬프 기준)
+      final latestFile = _audioFiles.reduce((a, b) {
+        final aName = a.path.split('/').last;
+        final bName = b.path.split('/').last;
+        return aName.compareTo(bName) > 0 ? a : b;
+      });
+      
+      await _audioPlayer.setAudioSource(AudioSource.file(latestFile.path));
+      await _audioPlayer.play();
+      
+      final fileName = latestFile.path.split('/').last;
+      _speakText('$fileName 파일을 재생합니다.');
+      debugPrint('🎵 오디오 재생 시작: $fileName');
+    } catch (e) {
+      debugPrint('❌ 오디오 재생 실패: $e');
+      _speakText('오디오 재생에 실패했습니다.');
+    }
+  }
+
+  @override
+  void dispose() {
+    _audioPlayer.dispose();
+    super.dispose();
   }
 }
 

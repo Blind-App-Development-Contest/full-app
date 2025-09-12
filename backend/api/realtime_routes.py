@@ -59,8 +59,6 @@ async def process_frame(request: FrameProcessRequest):
         result = await fastdepth_processor.process_frame_for_measurement(
             cv_image=dummy_image,
             user_id=request.user_id or "realtime_user",
-            imu_data=default_imu_data,
-            enable_advanced_fusion=False
         )
         
         if result:

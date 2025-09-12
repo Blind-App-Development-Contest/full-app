@@ -23,6 +23,7 @@ from models.step_models import (
 )
 from config.settings import get_settings
 from utils.fastdepth_processor import get_fastdepth_processor
+from utils.voice_speed_converter import convert_to_google_tts_speed
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -72,7 +73,7 @@ class CommandExecutor:
             "user_name": None,
             "step_length": None,
             "voice_gender": "F", 
-            "voice_speed": 1.0, # 0.5 ~ 2.0 배속
+            "voice_speed": 1.0, # Google TTS speaking_rate (0.25-4.0)
             "caregiver_name": None,
             "caregiver_phone": None,
             "preferred_mode": None
@@ -974,13 +975,13 @@ class CommandExecutor:
     async def _setup_voice_speed(self, command_text: str) -> CommandExecutionResult:
         """음성 속도 설정"""
         if "느리게" in command_text or "천천히" in command_text:
-            speed = 0.7
+            speed = convert_to_google_tts_speed(0.7, 'multiplier')
             speed_kr = "느리게"
         elif "빠르게" in command_text:
-            speed = 1.3
+            speed = convert_to_google_tts_speed(1.3, 'multiplier')
             speed_kr = "빠르게"
         elif "보통" in command_text or "기본" in command_text:
-            speed = 1.0
+            speed = convert_to_google_tts_speed(1.0, 'multiplier')
             speed_kr = "보통"
         else:
             return CommandExecutionResult(
@@ -990,7 +991,7 @@ class CommandExecutor:
                 actions=["tts_announce"]
             )
 
-        self.user_settings["voice_speed"] = speed  # 변수명 수정
+        self.user_settings["voice_speed"] = speed
         self.current_setup_step = SetupStep.CAREGIVER_INFO
 
         return CommandExecutionResult(

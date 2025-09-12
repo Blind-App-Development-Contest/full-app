@@ -10,6 +10,12 @@ import logging
 import asyncpg
 from asyncpg import exceptions as pg_exc
 from google.cloud import texttospeech
+from utils.voice_speed_converter import (
+    convert_to_google_tts_speed,
+    speed_float_to_int_percent,
+    int_percent_to_speed_float,
+    validate_google_tts_speed
+)
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -44,14 +50,6 @@ class UpdateVoiceRequest(BaseModel):
 # ─────────────────────────────────────────────────────────────
 def _media_type(enc: str) -> str:
     return "audio/mpeg" if enc == "MP3" else "audio/ogg"
-
-def _speed_float_to_int_percent(v: float) -> int:
-    # 1.0배속 -> 100 (DB speed는 INTEGER %로 저장)
-    return int(round(v * 100))
-
-def _int_percent_to_speed_float(v: Optional[int]) -> float:
-    # DB의 speed(INT, %) -> 배속 float (NULL이면 100%로 간주)
-    return (v if v is not None else 100) / 100.0
 
 # ─────────────────────────────────────────────────────────────
 # POST /api/users/voice : 선호 저장(업서트) + 합성  (Swagger에서 오디오로 표시)
@@ -96,9 +94,14 @@ async def synthesize_and_save(req: TTSRequest, request: Request):
                 logger.exception(f"사용자 자동 생성 중 DB 오류 발생: {e}")
                 raise HTTPException(status_code=500, detail="사용자 자동 생성 실패")
 
-    # 1) 선호 저장(UPSERT)
+    # 1) 속도 값 유효성 검증 및 정규화
+    normalized_speed = convert_to_google_tts_speed(req.speed, 'multiplier')
+    if not validate_google_tts_speed(normalized_speed):
+        raise HTTPException(status_code=400, detail=f"Invalid speed value: {req.speed}")
+    
+    # 2) 선호 저장(UPSERT)
     gender_char = "F" if req.gender == "female" else "M"
-    speed_int = _speed_float_to_int_percent(req.speed)
+    speed_int = speed_float_to_int_percent(normalized_speed)
 
     try:
         async with pool.acquire() as conn:
@@ -170,7 +173,7 @@ async def synthesize_and_save(req: TTSRequest, request: Request):
 
         audio_config = texttospeech.AudioConfig(
             audio_encoding=getattr(texttospeech.AudioEncoding, req.audio_encoding),
-            speaking_rate=req.speed,   # speed -> speaking_rate
+            speaking_rate=normalized_speed,   # 정규화된 속도 사용
             pitch=req.pitch,
         )
 
@@ -213,7 +216,7 @@ async def get_voice_by_query(request: Request, user_id: UUID = Query(...)):
             raise HTTPException(status_code=404, detail="voice settings not found for user_id")
 
     gender = "female" if row["gender"] == "F" else "male"
-    speed = _int_percent_to_speed_float(row["speed"])
+    speed = int_percent_to_speed_float(row["speed"])
     return VoiceSettings(user_id=user_id, gender=gender, speed=speed)
 
 # ─────────────────────────────────────────────────────────────
@@ -234,7 +237,7 @@ async def get_voice_by_path(user_id: UUID, request: Request):
             raise HTTPException(status_code=404, detail="voice settings not found for user_id")
 
     gender = "female" if row["gender"] == "F" else "male"
-    speed = _int_percent_to_speed_float(row["speed"])
+    speed = int_percent_to_speed_float(row["speed"])
     return VoiceSettings(user_id=user_id, gender=gender, speed=speed)
 
 # ─────────────────────────────────────────────────────────────
@@ -261,7 +264,14 @@ async def update_voice(user_id: UUID, req: UpdateVoiceRequest, request: Request)
             raise HTTPException(status_code=400, detail="Unknown user_id (users row not found)")
 
     gender_char = None if req.gender is None else ("F" if req.gender == "female" else "M")
-    speed_int = None if req.speed is None else int(round(req.speed * 100))
+    
+    # 속도 값이 제공된 경우 유효성 검증 및 변환
+    speed_int = None
+    if req.speed is not None:
+        normalized_speed = convert_to_google_tts_speed(req.speed, 'multiplier')
+        if not validate_google_tts_speed(normalized_speed):
+            raise HTTPException(status_code=400, detail=f"Invalid speed value: {req.speed}")
+        speed_int = speed_float_to_int_percent(normalized_speed)
 
     # 업서트 + 부분 업데이트 (NULL이면 기존값 유지)
     async with pool.acquire() as conn:

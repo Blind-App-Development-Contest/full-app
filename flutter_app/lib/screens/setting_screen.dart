@@ -183,17 +183,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (completionMessage != null && _voiceService != null) {
       try {
         // 음성 안내: 측정 완료 메시지
-        await _voiceService!.speak(completionMessage!, speed: 1.0);
+      await VoiceUtils.speakWithService(_voiceService, completionMessage!, speed: 1.0);
         
         // 1초 후 상세 안내
         await Future.delayed(const Duration(seconds: 1));
         
         if (mounted) {
-          await _voiceService!.speak(
+          await VoiceUtils.speakWithService(_voiceService,
             "보폭이 ${step_length_cm.toStringAsFixed(0)}센티미터로 측정되었습니다. "
             "다음 단계로 버튼을 눌러서 음성 설정을 진행할 수 있습니다.", 
-            speed: 0.9
-          );
+            speed: 0.9);
         }
       } catch (e) {
         debugPrint('❌ 측정 완료 음성 안내 실패: $e');
@@ -207,31 +206,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
     
     try {
       // 1단계: 측정 완료 알림
-      await _voiceService!.speak("보폭 측정이 완료되었습니다!", speed: 1.0);
+      await VoiceUtils.speakWithService(_voiceService, "보폭 측정이 완료되었습니다!", speed: 1.0);
       
       await Future.delayed(const Duration(milliseconds: 800));
       
       // 2단계: 측정 결과 안내
-      await _voiceService!.speak(
+      await VoiceUtils.speakWithService(_voiceService,
         "측정된 보폭은 $stepLengthCm 센티미터입니다.", 
-        speed: 0.9
-      );
+        speed: 0.9);
       
       await Future.delayed(const Duration(milliseconds: 600));
       
       // 3단계: 상태 변경 안내
-      await _voiceService!.speak(
+      await VoiceUtils.speakWithService(_voiceService,
         "설정 화면에서 보폭 항목이 측정 완료 상태로 변경되었습니다.", 
-        speed: 0.9
-      );
+        speed: 0.9);
       
       await Future.delayed(const Duration(milliseconds: 400));
       
       // 4단계: 다음 액션 안내
-      await _voiceService!.speak(
+      await VoiceUtils.speakWithService(_voiceService,
         "다른 설정을 변경하거나 음성 설정을 진행할 수 있습니다.", 
-        speed: 0.9
-      );
+        speed: 0.9);
       
     } catch (e) {
       debugPrint('❌ 보폭 측정 완료 음성 안내 실패: $e');
@@ -245,11 +241,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       await Future.delayed(const Duration(milliseconds: 500));
       
-      await _voiceService!.speak(
+      await VoiceUtils.speakWithService(_voiceService,
         "음성 설정이 업데이트되었습니다. "
         "현재 설정은 $voiceGender 음성, ${voiceSpeed.toStringAsFixed(1)}배속입니다.", 
-        speed: 0.9
-      );
+        speed: 0.9);
       
     } catch (e) {
       debugPrint('❌ 음성 설정 변경 안내 실패: $e');
@@ -267,7 +262,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ? "보호자 설정이 업데이트되었습니다. 현재 $guardians명의 보호자가 등록되어 있습니다."
         : "보호자 설정이 업데이트되었습니다. 현재 등록된 보호자가 없습니다.";
       
-      await _voiceService!.speak(guardianMessage, speed: 0.9);
+      await VoiceUtils.speakWithService(_voiceService, guardianMessage, speed: 0.9);
       
     } catch (e) {
       debugPrint('❌ 보호자 설정 변경 안내 실패: $e');
