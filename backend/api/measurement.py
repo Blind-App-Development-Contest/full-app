@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
 import logging
 # 중앙화된 데이터베이스 연결 사용
 from core.database import get_async_db
+from middleware.error_handler import ErrorLogger
 from models.database_models import User, Footstep, DashboardLog, Voice
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -19,7 +20,7 @@ from utils.fastdepth_processor import get_fastdepth_processor
 
 # 카메라 모드 통합을 위한 임포트
 from api.camera import manager as camera_manager
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, AliasChoices
 import os
 
 logger = logging.getLogger(__name__)
@@ -141,8 +142,7 @@ async def measurement_status(
         logger.error(f"사용자 상태 확인 오류: {e}")
         raise HTTPException(status_code=500, detail=f"사용자 상태 확인 중 오류가 발생했습니다: {str(e)}")
 
-# 싱글톤 서비스 인스턴스 사용 (카메라 측정용)
-from services.singleton import service_manager
+# 싱글톤 서비스 인스턴스는 상단에서 이미 import됨
 
 # 사용하지 않는 FastDepth 및 음성 명령 통합 처리 함수들 제거됨
 
@@ -152,7 +152,9 @@ from services.singleton import service_manager
 
 # API 전용 모델들 (측정 라우터 로컬)
 class MeasurementSessionRequest(BaseModel):
-    user_id: str
+    # Accept both 'uuid' and 'user_id' from clients
+    user_id: UUID = Field(validation_alias=AliasChoices('uuid', 'user_id'))
+    context: Optional[str] = Field("onboarding", description="측정 컨텍스트: onboarding, reset")
 
 class MeasurementResultSave(BaseModel):
     user_id: UUID
@@ -174,7 +176,9 @@ class MeasurementLogResponse(BaseModel):
 @router.post("/frame")
 async def process_measurement_frame(
     file: UploadFile = File(...),
-    user_id: str = Form('current_user'),
+    # Accept both 'uuid' and 'user_id' from form
+    uuid: str | None = Form(None),
+    user_id: str | None = Form(None),
     # 카메라 기반 거리 측정 전용
     frame_count: int = Form(default=1)
 ):
@@ -186,7 +190,8 @@ async def process_measurement_frame(
     2. 단순 거리 계산 (10m 측정용)
     """
     try:
-        logger.info(f'[카메라 거리 측정] 사용자: {user_id}, 프레임: {frame_count}')
+        uid = uuid or user_id or 'current_user'
+        logger.info(f'[카메라 거리 측정] 사용자: {uid}, 프레임: {frame_count}')
         
         # 1. 측정 세션 활성 상태 확인
         command_executor = service_manager.get_command_executor()
@@ -228,7 +233,7 @@ async def process_measurement_frame(
         # 4. 카메라 프레임만으로 거리 측정
         measurement_result = await processor.process_frame_for_measurement(
             cv_image=cv_image,
-            user_id=user_id
+            user_id=uid
         )
         
         # 5. 결과 로깅 및 반환
@@ -285,7 +290,7 @@ async def reset_measurement():
             }
         
     except Exception as e:
-        print(f"[오류] 측정 리셋 중 오류: {e}")
+        ErrorLogger.log_api_error("Measurement", "측정 리셋", e)
         raise HTTPException(status_code=500, detail=f"리셋 오류: {str(e)}")
 
 @router.post("/session/start")
@@ -409,21 +414,57 @@ async def stop_measurement_session(request: MeasurementSessionRequest):
         logger.info(f'측정 완료 - 결과 화면으로 진행: {user_id} ({last_measurement}cm)')
         
         
-        # 완료 정보 생성
-        completion_info = {
-            "success": True,
-            "status": "measurement_completed",
-            "message": f"보폭 측정이 완료되었습니다! 측정된 보폭은 {measurement_result['step_length_cm']}cm입니다.",
-            "session_active": False,
-            "user_id": user_id,
-            "measurement_result": measurement_result,
-            "next_step": {
+        # 컨텍스트에 따른 다음 단계 결정
+        context = getattr(request, 'context', 'onboarding')
+        
+        if context == "reset":
+            # 재설정: DB 업데이트 후 설정화면으로 복귀
+            next_step = {
+                "action": "return_to_settings",
+                "screen": "settings", 
+                "next_process": None,
+                "button_text": "설정으로 돌아가기"
+            }
+            # 카메라 모드를 realtime으로 즉시 복원
+            try:
+                if hasattr(camera_manager, 'set_user_mode'):
+                    camera_manager.set_user_mode(user_id, 'realtime')
+                elif user_id in camera_manager.active_connections:
+                    camera_manager.user_modes[user_id] = "realtime"
+                camera_mode_switched = True
+                logger.info(f'재설정 완료 - 카메라 모드 복원: realtime (user: {user_id})')
+            except Exception as e:
+                camera_error = str(e)
+                logger.warning(f'카메라 모드 복원 실패: {e}')
+            
+            # CommandExecutor에서 음성 메시지 가져오기
+            command_executor = service_manager.get_command_executor()
+            message = command_executor.get_voice_message("step_measurement_reset", step_length=measurement_result['step_length_cm'])
+            camera_mode = "realtime"
+        else:
+            # 온보딩: 결과 화면 표시 후 음성 설정으로 진행
+            next_step = {
                 "action": "show_result_screen",
                 "screen": "measurement_result", 
                 "next_process": "voice_settings",
                 "button_text": "다음 단계로"
-            },
-            "camera_mode": camera_manager.user_modes.get(user_id, "measurement"),  # 결과 화면을 위해 측정 모드 유지
+            }
+            # CommandExecutor에서 음성 메시지 가져오기
+            command_executor = service_manager.get_command_executor()
+            message = command_executor.get_voice_message("step_measurement_complete", step_length=measurement_result['step_length_cm'])
+            camera_mode = camera_manager.user_modes.get(user_id, "measurement")  # 결과 화면을 위해 측정 모드 유지
+
+        # 완료 정보 생성
+        completion_info = {
+            "success": True,
+            "status": "measurement_completed",
+            "message": message,
+            "session_active": False,
+            "user_id": user_id,
+            "measurement_result": measurement_result,
+            "context": context,
+            "next_step": next_step,
+            "camera_mode": camera_mode,
             "camera_connected": user_id in camera_manager.active_connections,
             "camera_mode_switched": camera_mode_switched
         }
@@ -580,4 +621,3 @@ async def get_user_measurement_history(
 # =========================
 # 간소화된 카메라 전용 측정 시스템
 # =========================
-

@@ -13,6 +13,7 @@ import asyncpg
 from datetime import datetime
 from ultralytics import YOLO
 from core.cache import latest_detection_results
+from utils.model_manager import get_midas_manager
 import torch
 import torch.nn as nn
 import tarfile
@@ -31,27 +32,9 @@ except Exception as e:
     logger.exception("Failed to load YOLO model.")
     yolo_model = None
 
-# FastDepth 모델은 사용하지 않음
-# MiDaS 모델 로드 (FastDepth 대체)
-midas_model: Optional[Any] = None
-midas_transform: Optional[Any] = None
-try:
-    # MiDaS 모델 로드 (DPT_Hybrid_384 사용)
-    # torch.hub를 사용하여 모델을 로드합니다.
-    # 필요한 경우 'intel-isl/MiDaS' 저장소를 로컬에 클론하거나, 인터넷 연결이 필요합니다.
-    midas_model_type = "MiDaS_small"  # 또는 "DPT_Hybrid", "DPT_Large"
-    midas_model = torch.hub.load("intel-isl/MiDaS", midas_model_type)
-    midas_model.eval()
-
-    # MiDaS 모델에 맞는 변환기 로드
-    midas_transforms: Any = torch.hub.load("intel-isl/MiDaS", "transforms")
-    midas_transform = midas_transforms.small_transform if midas_model_type == "MiDaS_small" else midas_transforms.dpt_transform
-
-    logger.info(f"MiDaS model ({midas_model_type}) loaded successfully.")
-except Exception as e:
-    logger.exception("Failed to load MiDaS model.")
-    midas_model = None
-    midas_transform = None
+# MiDaS 모델은 중앙 매니저를 통해 관리됨 (중복 로딩 방지)
+midas_manager = get_midas_manager()
+logger.info("MiDaS 중앙 매니저 연결 완료")
 
 
 router = APIRouter(prefix="/api/objects", tags=["objects"])
@@ -97,6 +80,8 @@ def load_image_from_upload(file_content: bytes) -> np.ndarray:
 
 def estimate_distance(image: np.ndarray, bbox: dict) -> Optional[float]:
     """MiDaS 모델로 객체까지의 거리 추정"""
+    # 중앙 관리자에서 모델 가져오기
+    midas_model, midas_transform, device = midas_manager.get_model()
     if midas_model is None or midas_transform is None:
         return None
 
@@ -118,7 +103,7 @@ def estimate_distance(image: np.ndarray, bbox: dict) -> Optional[float]:
         # MiDaS 모델 입력에 맞게 이미지 전처리
         # OpenCV 이미지를 PIL 이미지로 변환 (MiDaS transform은 PIL 이미지를 선호)
         object_img_rgb = cv2.cvtColor(object_img, cv2.COLOR_BGR2RGB)
-        input_batch = midas_transform(object_img_rgb).to("cpu") # Assuming CPU for now
+        input_batch = midas_transform(object_img_rgb).to(device)
 
         with torch.no_grad():
             prediction = midas_model(input_batch)

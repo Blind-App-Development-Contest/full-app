@@ -9,17 +9,14 @@ from models.recognition_schemas import (
     SpeechRecognitionResponse, 
     STTResponse
 )
-# Legacy execution schemas 제거됨 - 새로운 통합 스키마 사용
+
 from models.common_models import (
     UnifiedCommandResponse, SchemaConverter
 )
 from models.fastdepth_models import SpeechCommandRequest
 # CommandExecutionResult는 singleton을 통해 접근
 from config.settings import get_settings
-from api.measurement import (
-    get_current_context,
-    execute_command_conditionally
-)
+from middleware.error_handler import ErrorLogger
 # SpeechAnalyzer는 singleton을 통해 접근
 
 logger = logging.getLogger(__name__)
@@ -66,7 +63,9 @@ async def transcribe_audio(file: UploadFile = File(...)):
         # 후처리: 블랙리스트/패턴 필터 (광고/자막 고정문구 등)
         blacklist_patterns = [
             r"http[s]?://", r"www\.", r"uptitle", r"자막", r"subtitles?",
-            r"뉴스", r"mbc\s*뉴스", r"광고", r"channel"
+            r"뉴스", r"mbc\s*뉴스", r"광고", r"channel",
+            r"youtube", r"유튜브", r"subscribe", r"구독", r"좋아요", r"알림",
+            r"댓글", r"공유", r"bell", r"notification"
         ]
         import re
         is_blacklisted = any(re.search(pat, transcribed_text, flags=re.IGNORECASE) for pat in blacklist_patterns)
@@ -90,7 +89,7 @@ async def transcribe_audio(file: UploadFile = File(...)):
         # SpeechService에서 이미 처리된 HTTP 예외는 그대로 전달
         raise
     except Exception as e:
-        print(f"[STT] 예상치 못한 오류 발생: {e}")
+        ErrorLogger.log_api_error("Speech", "음성 파일 변환", e)
         return STTResponse(
             text="",
             success=False,
@@ -116,9 +115,8 @@ async def analyze_speech_recognition(request: SpeechRecognitionRequest):
     try:
         print(f"\n[명령 분석] 받은 명령: '{request.command_text}'")
         
-        # speech_analyzer 서비스 사용 - 컨텍스트 감지와 분석을 한번에 처리
-        context = get_current_context()
-        result = speech_analyzer.analyze_command(request.command_text, context)
+        # speech_analyzer 서비스 사용 - 기본 컨텍스트로 분석
+        result = speech_analyzer.analyze_command(request.command_text)
         
         print(f"[분석 결과] 의도: {result.intent}, 신뢰도: {result.confidence}")
         
@@ -127,7 +125,7 @@ async def analyze_speech_recognition(request: SpeechRecognitionRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        print(f"[오류] 명령 분석 중 오류 발생: {e}")
+        ErrorLogger.log_api_error("Speech", "명령 분석", e)
         raise HTTPException(status_code=500, detail=f"서버 오류: {str(e)}")
 
 @router.post("/commands", response_model=UnifiedCommandResponse)
@@ -147,15 +145,16 @@ async def execute_unified_speech_commands(request: SpeechCommandRequest):
         
         logger.info(f"통합 음성 명령 처리 시작: '{request.command_text}'")
         
-        # 1단계: 음성 명령 분석 - speech_analyzer 서비스 사용 (컨텍스트 자동 감지 포함)
-        context = get_current_context()
-        recognition_result = speech_analyzer.analyze_command(request.command_text, context)
+        # 1단계: 음성 명령 분석 - speech_analyzer 서비스 사용
+        recognition_result = speech_analyzer.analyze_command(request.command_text)
         logger.info(f"명령 분석 완료 - 의도: {recognition_result.intent}, 신뢰도: {recognition_result.confidence}")
         
-        # 2단계: CommandExecutor로 실행 위임 (Single Source of Truth) - 통합 실행 로직 사용
-        execution_result = await execute_command_conditionally(
-            recognition_result, 
-            request.execute_immediately
+        # 2단계: CommandExecutor로 실행 위임
+        executor = service_manager.get_command_executor(request.user_id)
+        execution_result = await executor.execute_command(
+            recognition_result.intent,
+            recognition_result.entities,
+            execute_immediately=request.execute_immediately
         )
         if request.execute_immediately:
             logger.info(f"명령 실행 완료 - 상태: {execution_result.status.value}")
@@ -165,7 +164,7 @@ async def execute_unified_speech_commands(request: SpeechCommandRequest):
         try:
             measurement_status = command_executor.get_step_measurement_status()
         except Exception as status_error:
-            logger.warning(f"측정 상태 조회 실패: {status_error}")
+            ErrorLogger.log_api_error("Speech", "측정 상태 조회", status_error)
         
         # 4단계: 통합 응답 생성
         execution_response = SchemaConverter.command_execution_result_to_response(execution_result)
@@ -187,7 +186,7 @@ async def execute_unified_speech_commands(request: SpeechCommandRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"통합 음성 명령 처리 오류: {e}")
+        ErrorLogger.log_api_error("Speech", "통합 음성 명령 처리", e)
         raise HTTPException(status_code=500, detail=f"서버 오류: {str(e)}")
 
 # Legacy 엔드포인트 제거됨 - /commands 엔드포인트 사용
@@ -195,12 +194,152 @@ async def execute_unified_speech_commands(request: SpeechCommandRequest):
 @router.get("/intents", tags=["Speech Processing"])
 def get_speech_intents():
     """
-    지원하는 의도 목록 반환 (칼만 필터 의도 포함)
+    지원하는 의도 목록 반환 - 프론트엔드에서 사용 가능한 모든 명령어
     """
     base_intents = speech_analyzer.get_supported_intents()
     return {
         "supported_intents": base_intents,
         "keyword_mapping": speech_analyzer.KEYWORD_MAPPING,
         "measurement_active": command_executor.is_measurement_active(),
-        "total_intents": len(base_intents)
+        "total_intents": len(base_intents),
+        "advanced_commands": {
+            "footstep_measurement": {
+                "start": speech_analyzer.KEYWORD_MAPPING.get('FOOTSTEP_MEASUREMENT_START', []),
+                "complete": speech_analyzer.KEYWORD_MAPPING.get('FOOTSTEP_MEASUREMENT_COMPLETE', []),
+                "cancel": speech_analyzer.KEYWORD_MAPPING.get('FOOTSTEP_MEASUREMENT_CANCEL', []),
+                "status": speech_analyzer.KEYWORD_MAPPING.get('FOOTSTEP_STATUS_CHECK', [])
+            },
+            "navigation": speech_analyzer.KEYWORD_MAPPING.get('NAVIGATION', []),
+            "camera": speech_analyzer.KEYWORD_MAPPING.get('CAMERA', []),
+            "emergency": speech_analyzer.KEYWORD_MAPPING.get('EMERGENCY_CALL', []),
+            "settings": speech_analyzer.KEYWORD_MAPPING.get('SETTINGS', []),
+            "scene_description": speech_analyzer.KEYWORD_MAPPING.get('DESCRIBE_SCENE', [])
+        }
     }
+
+@router.post("/advanced-command", response_model=UnifiedCommandResponse)
+async def execute_advanced_command(request: SpeechCommandRequest):
+    """
+    고급 음성 명령 처리 - 프론트엔드에서 고급 기능 활용
+    
+    지원하는 고급 명령:
+    - 보폭 측정 전체 플로우 (시작/완료/취소/상태확인)
+    - 네비게이션 및 길찾기
+    - 카메라 모드 전환
+    - 긴급 상황 처리
+    - 주변 환경 설명
+    - 설정 변경
+    """
+    try:
+        if not request.command_text or not request.command_text.strip():
+            raise HTTPException(status_code=400, detail="command_text는 필수입니다")
+        
+        logger.info(f"고급 음성 명령 처리: '{request.command_text}'")
+        
+        # 1단계: 고급 명령 분석
+        recognition_result = speech_analyzer.analyze_command(request.command_text)
+        logger.info(f"고급 명령 분석: {recognition_result.intent} (신뢰도: {recognition_result.confidence})")
+        
+        # 2단계: 고급 명령별 특별 처리
+        executor = service_manager.get_command_executor(request.user_id)
+        
+        # 보폭 측정 관련 고급 처리
+        if recognition_result.intent.startswith('FOOTSTEP_'):
+            execution_result = await _handle_advanced_footstep_command(
+                executor, recognition_result, request.execute_immediately
+            )
+        # 네비게이션 관련 고급 처리
+        elif recognition_result.intent == 'NAVIGATION':
+            execution_result = await _handle_navigation_command(
+                executor, recognition_result, request.execute_immediately
+            )
+        # 카메라 관련 고급 처리
+        elif recognition_result.intent == 'CAMERA':
+            execution_result = await _handle_camera_command(
+                executor, recognition_result, request.execute_immediately
+            )
+        # 긴급 상황 처리
+        elif recognition_result.intent == 'EMERGENCY_CALL':
+            execution_result = await _handle_emergency_command(
+                executor, recognition_result, request.execute_immediately
+            )
+        # 주변 설명 요청
+        elif recognition_result.intent == 'DESCRIBE_SCENE':
+            execution_result = await _handle_scene_description_command(
+                executor, recognition_result, request.execute_immediately
+            )
+        # 기본 명령 처리
+        else:
+            execution_result = await executor.execute_command(
+                recognition_result.intent,
+                recognition_result.entities,
+                execute_immediately=request.execute_immediately
+            )
+        
+        # 3단계: 통합 응답 생성
+        current_state = executor.get_current_measurement_status()
+        
+        # 고급 명령 처리 결과를 UnifiedCommandResponse로 변환
+        unified_response = SchemaConverter.to_unified_command_response(
+            recognition_result=recognition_result,
+            execution_result=execution_result,
+            measurement_status=current_state,
+            user_id=str(request.user_id),
+            advanced_features_enabled=True
+        )
+        
+        logger.info(f"고급 명령 처리 완료: {execution_result.status.value}")
+        return unified_response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        ErrorLogger.log_api_error("Speech", "고급 명령 처리", e)
+        raise HTTPException(status_code=500, detail=f"고급 명령 처리 오류: {str(e)}")
+
+# 고급 명령 처리 헬퍼 함수들 - 기존 CommandExecutor 메서드 활용
+async def _handle_advanced_footstep_command(executor, recognition_result, execute_immediately):
+    """보폭 측정 관련 고급 명령 처리 - 기존 메서드 활용"""
+    intent = recognition_result.intent
+    
+    # 기존 CommandExecutor의 보폭 측정 메서드들 직접 호출
+    if intent == 'FOOTSTEP_MEASUREMENT_START':
+        return await executor._execute_footstep_measurement_start(recognition_result.entities)
+    elif intent == 'FOOTSTEP_MEASUREMENT_COMPLETE':
+        return await executor._execute_footstep_measurement_complete(recognition_result.entities)
+    elif intent == 'FOOTSTEP_MEASUREMENT_CANCEL':
+        return await executor._execute_footstep_measurement_cancel(recognition_result.entities)
+    elif intent == 'FOOTSTEP_STATUS_CHECK':
+        # 현재 측정 상태 반환
+        status = executor.get_measurement_progress()
+        return executor.CommandExecutionResult(
+            status=executor.ExecutionStatus.SUCCESS,
+            message=f"측정 상태: {'진행 중' if status['active'] else '비활성'}",
+            data=status,
+            actions=["status_check", "tts_announce"]
+        )
+    else:
+        # 기본 명령 처리
+        return await executor.execute_command(
+            intent, recognition_result.entities, execute_immediately
+        )
+
+async def _handle_navigation_command(executor, recognition_result, execute_immediately):
+    """네비게이션 명령 고급 처리 - 기존 메서드 활용"""
+    # 기존 네비게이션 실행 메서드 호출
+    return await executor._execute_navigation(recognition_result.entities)
+
+async def _handle_camera_command(executor, recognition_result, execute_immediately):
+    """카메라 명령 고급 처리 - 기존 메서드 활용"""
+    # 기존 카메라 실행 메서드 호출
+    return await executor._execute_camera(recognition_result.entities)
+
+async def _handle_emergency_command(executor, recognition_result, execute_immediately):
+    """긴급 상황 명령 고급 처리 - 기존 메서드 활용"""
+    # 기존 긴급 전화 실행 메서드 호출
+    return await executor._execute_emergency_call(recognition_result.entities)
+
+async def _handle_scene_description_command(executor, recognition_result, execute_immediately):
+    """주변 환경 설명 명령 고급 처리 - 기존 메서드 활용"""
+    # 기존 주변 설명 실행 메서드 호출
+    return await executor._execute_describe_scene(recognition_result.entities)

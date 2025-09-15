@@ -151,16 +151,6 @@ class UnifiedCommandResponse(BaseModel):
     # 측정 상태 (필요시)
     measurement_status: Optional[RealTimeMeasurementStatus] = Field(None, description="현재 측정 상태")
 
-# ===== 성능 및 메트릭 모델 =====
-
-class PerformanceMetrics(BaseModel):
-    """시스템 성능 메트릭"""
-    fps: float = Field(ge=0.0, description="처리 속도 (FPS)")
-    frame_count: int = Field(ge=0, description="총 처리된 프레임 수")
-    left_confidence: float = Field(ge=0.0, le=1.0, description="왼발 추적 신뢰도")
-    right_confidence: float = Field(ge=0.0, le=1.0, description="오른발 추적 신뢰도")
-    step_consistency: float = Field(ge=0.0, le=1.0, description="보폭 일관성 점수")
-    elapsed_time: float = Field(ge=0.0, description="경과 시간 (초)")
 
 # ===== 이력 관리 모델 =====
 
@@ -183,28 +173,6 @@ class ExecutionHistoryResponse(BaseModel):
 class SchemaConverter:
     """기존 스키마와의 변환 유틸리티"""
     
-    @staticmethod
-    def fastdepth_frame_to_dict(frame) -> Dict[str, Any]:
-        """FastDepthFrame을 딕셔너리로 변환 (CommandExecutor 호환성)"""
-        result = {"timestamp": frame.timestamp}
-        
-        if frame.left_foot:
-            result["left_foot"] = {
-                "x": frame.left_foot.x,
-                "y": frame.left_foot.y,
-                "z": frame.left_foot.z,
-                "confidence": frame.left_foot.confidence
-            }
-        
-        if frame.right_foot:
-            result["right_foot"] = {
-                "x": frame.right_foot.x,
-                "y": frame.right_foot.y,
-                "z": frame.right_foot.z,
-                "confidence": frame.right_foot.confidence
-            }
-        
-        return result
     
     @staticmethod
     def command_execution_result_to_response(result, measurement_status=None) -> CommandExecutionResponse:

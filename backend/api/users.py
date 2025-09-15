@@ -7,7 +7,8 @@ from models.database_models import User, Voice, Caregiver, Footstep, UserSetting
 from core.database import get_async_db as get_session
 import logging
 from config.settings import get_settings
-from utils.voice_speed_converter import convert_to_google_tts_speed, speed_float_to_int_percent
+from api.voice import speed_float_to_int_percent
+from middleware.error_handler import ErrorLogger
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -107,7 +108,7 @@ async def register_user(
         if settings.DEBUG:
             logger.exception("register_user failed")
         else:
-            logger.error(f"register_user failed: {e}")
+            ErrorLogger.log_api_error("Users", "register_user", e)
         raise HTTPException(status_code=500, detail=str(e))
     
 # 이름 수정
@@ -139,7 +140,7 @@ async def update_name(
         if settings.DEBUG:
             logger.exception("update_name failed")
         else:
-            logger.error(f"update_name failed: {e}")
+            ErrorLogger.log_api_error("Users", "update_name", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 # 온보딩 완료 - 모든 사용자 정보를 한 번에 저장
@@ -163,9 +164,10 @@ async def complete_onboarding(
             {"uid": str(payload.app_uuid), "uname": payload.user_name}
         )
         
-        # 2. 음성 설정 저장 (속도 값 정규화)
-        normalized_speed = convert_to_google_tts_speed(payload.voice_speed, 'multiplier')
-        speed_db_value = speed_float_to_int_percent(normalized_speed)
+        # 2. 음성 설정 저장 (속도 값 유효성 검증)
+        if not (0.25 <= payload.voice_speed <= 4.0):
+            raise HTTPException(status_code=400, detail=f"Invalid voice speed: {payload.voice_speed}")
+        speed_db_value = speed_float_to_int_percent(payload.voice_speed)
         
         voice_result = await session.execute(
             text("""
@@ -267,5 +269,5 @@ async def complete_onboarding(
         if settings.DEBUG:
             logger.exception("complete_onboarding failed")
         else:
-            logger.error(f"complete_onboarding failed: {e}")
+            ErrorLogger.log_api_error("Users", "complete_onboarding", e)
         raise HTTPException(status_code=500, detail=f"온보딩 완료 처리 실패: {str(e)}")

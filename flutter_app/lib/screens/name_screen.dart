@@ -11,7 +11,9 @@ import '../widgets/next_button.dart';
 import '../widgets/accessible_text.dart';
 import '../services/voice_service.dart';
 import '../utils/voice_utils.dart';
+import '../utils/voice_recognition_helper.dart';
 import 'step_screen.dart';
+import 'package:flutter/services.dart';
 
 class NameScreen extends StatefulWidget {
   const NameScreen({super.key, this.initialName});
@@ -29,14 +31,15 @@ class _NameScreenState extends State<NameScreen> {
   late final TextEditingController _nameCtrl;
   bool _canNext = false;
   bool _loading = false;
-  
+
   // 음성인식 상태 관리
   bool _isListening = false;
   VoiceService? _voiceService;
-  
-  // 자동 음성 사이클 상태 관리
-  bool _autoVoiceCycleActive = false;
+
+  // 이름 인식 워크플로우 상태 관리
   bool _hasInitialVoiceGuidance = false;
+  bool _isConfirmingName = false;
+  String _recognizedName = '';
 
   @override
   void initState() {
@@ -46,20 +49,23 @@ class _NameScreenState extends State<NameScreen> {
     _nameCtrl.addListener(() {
       final ok = _nameCtrl.text.trim().isNotEmpty;
       if (ok != _canNext) setState(() => _canNext = ok);
-      
-      // 사용자가 직접 입력을 시작하면 자동 음성 사이클 중지
-      if (ok && _autoVoiceCycleActive) {
-        _stopAutoVoiceCycle();
+
+      // 사용자가 직접 입력을 시작하면 확인 상태 초기화
+      if (ok && _isConfirmingName) {
+        setState(() {
+          _isConfirmingName = false;
+          _recognizedName = '';
+        });
       }
     });
     _initializeVoiceService();
-    
+
     // 화면 로드 후 자동 음성 안내 시작
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _startInitialVoiceGuidance();
     });
   }
-  
+
   void _initializeVoiceService() {
     try {
       _voiceService = Provider.of<VoiceService>(context, listen: false);
@@ -72,7 +78,31 @@ class _NameScreenState extends State<NameScreen> {
   @override
   void dispose() {
     _nameCtrl.dispose();
-    _stopAutoVoiceCycle();
+    // VoiceService 자동 인식 중지
+    try {
+      _voiceService?.stopAutoRecognitionCycle();
+      debugPrint('✅ NameScreen: 자동 인식 사이클 중지 완료');
+    } catch (e) {
+      debugPrint('❌ NameScreen: 자동 인식 중지 실패: $e');
+    }
+
+    // 리스너 해제
+    try {
+      _voiceService?.removeListener(_onVoiceServiceUpdate);
+      debugPrint('✅ NameScreen: VoiceService 리스너 해제 완료');
+    } catch (e) {
+      debugPrint('❌ NameScreen: 리스너 해제 실패: $e');
+    }
+
+    // 음성 인식 상태 초기화
+    if (_isListening) {
+      try {
+        _voiceService?.stopListeningAndProcess();
+        debugPrint('✅ NameScreen: 진행 중인 음성 인식 중지 완료');
+      } catch (e) {
+        debugPrint('❌ NameScreen: 음성 인식 중지 실패: $e');
+      }
+    }
     super.dispose();
   }
 
@@ -105,8 +135,14 @@ class _NameScreenState extends State<NameScreen> {
     final name = _nameCtrl.text.trim();
     if (name.isEmpty || _loading) return;
 
-    // 클릭 음성 피드백
-    _speakText('다음');
+    // 클릭 음성 피드백 - 이름 포함
+    _speakText('$name님, 다음 설정으로 이동합니다.');
+
+    // 선해제: 음성 인식/리스너 정리 후 화면 전환 (레이스 방지)
+    try {
+      _voiceService?.stopAutoRecognitionCycle();
+      _voiceService?.removeListener(_onVoiceServiceUpdate);
+    } catch (_) {}
 
     setState(() => _loading = true);
 
@@ -134,7 +170,9 @@ class _NameScreenState extends State<NameScreen> {
       );
 
       if (resp.statusCode != 200 && resp.statusCode != 201) {
-        throw Exception('가입 실패: ${resp.statusCode} ${resp.reasonPhrase}\nURL: $uri\nBody: ${resp.body}');
+        throw Exception(
+          '가입 실패: ${resp.statusCode} ${resp.reasonPhrase}\nURL: $uri\nBody: ${resp.body}',
+        );
       }
 
       final body = jsonDecode(resp.body) as Map<String, dynamic>;
@@ -160,7 +198,7 @@ class _NameScreenState extends State<NameScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: AccessibleText('가입 처리 중 오류: $e')),
+        SnackBar(content: AccessibleText('$name님 가입 처리 중 오류: $e')),
       );
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -193,75 +231,77 @@ class _NameScreenState extends State<NameScreen> {
         child: SafeArea(
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const AeyeCard(
-                title: 'A:EYE',
-                subtitle: '사용자 정보 입력',
-              ),
-              Container(
-                padding: const EdgeInsets.all(18),
-                decoration: BoxDecoration(
-                  color: panel,
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: divider.withValues(alpha: 0.25)),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const AccessibleTitle('이름',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const AeyeCard(title: 'A:EYE', subtitle: '사용자 정보 입력'),
+                Container(
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    color: panel,
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: divider.withValues(alpha: 0.25)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const AccessibleTitle(
+                        '이름',
                         style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 10),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: field,
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: divider.withValues(alpha: 0.4)),
-                      ),
-                      child: TextField(
-                        controller: _nameCtrl,
-                        enabled: !_loading,
-                        style: const TextStyle(
                           color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700,
                         ),
-                        textInputAction: TextInputAction.done,
-                        onSubmitted: (_) {
-                          if (_canNext && !_loading) _goNext();
-                        },
-                        decoration: const InputDecoration(
-                          contentPadding: EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 16,
+                      ),
+                      const SizedBox(height: 10),
+                      Container(
+                        decoration: BoxDecoration(
+                          color: field,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: divider.withValues(alpha: 0.4),
                           ),
-                          border: InputBorder.none,
-                          hintText: '예: 홍길동',
-                          hintStyle: TextStyle(
-                            color: hint,
+                        ),
+                        child: TextField(
+                          controller: _nameCtrl,
+                          enabled: !_loading,
+                          style: const TextStyle(
+                            color: Colors.white,
                             fontSize: 16,
                             fontWeight: FontWeight.w600,
                           ),
+                          textInputAction: TextInputAction.done,
+                          onSubmitted: (_) {
+                            if (_canNext && !_loading) _goNext();
+                          },
+                          decoration: const InputDecoration(
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 16,
+                            ),
+                            border: InputBorder.none,
+                            hintText: '예: 홍길동',
+                            hintStyle: TextStyle(
+                              color: hint,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 14),
-                    AccessibleDescription(
-                      '입력하신 이름은 음성 안내 시 사용됩니다.',
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.75),
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
+                      const SizedBox(height: 14),
+                      AccessibleDescription(
+                        '입력하신 이름은 음성 안내 시 사용됩니다.',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.75),
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
             ),
           ),
         ),
@@ -276,14 +316,16 @@ class _NameScreenState extends State<NameScreen> {
           backgroundColor: Colors.transparent,
           elevation: 0,
           child: Icon(
-            _isListening ? Icons.mic : Icons.mic_none,
+            _isListening
+                ? Icons.mic
+                : (_isConfirmingName ? Icons.help_outline : Icons.mic_none),
             color: Colors.white,
           ),
         ),
       ),
     );
   }
-  
+
   /// 음성인식 토글 함수 - 실제 STT 연결
   void _toggleVoiceRecognition() async {
     if (_voiceService == null) return;
@@ -293,7 +335,8 @@ class _NameScreenState extends State<NameScreen> {
     });
 
     if (_isListening) {
-      _speakText('음성인식을 시작합니다. 이름을 말씀해주세요.');
+      // 효과음으로 시작 알림 (딜레이 없음)
+      SystemSound.play(SystemSoundType.click);
       // STT 시작
       try {
         await _voiceService!.startListening();
@@ -303,7 +346,8 @@ class _NameScreenState extends State<NameScreen> {
         setState(() => _isListening = false);
       }
     } else {
-      _speakText('음성인식을 중지합니다.');
+      // 효과음으로 중지 알림
+      SystemSound.play(SystemSoundType.alert);
       // STT 중지
       try {
         await _voiceService!.stopListeningAndProcess();
@@ -313,97 +357,22 @@ class _NameScreenState extends State<NameScreen> {
       }
     }
   }
-  
+
   /// 초기 음성 안내 시작
   void _startInitialVoiceGuidance() async {
     if (_hasInitialVoiceGuidance || _voiceService == null) return;
-    
+
     _hasInitialVoiceGuidance = true;
     await Future.delayed(const Duration(milliseconds: 500));
-    
-    _speakText('이름 입력 화면입니다. 이름을 음성으로 입력하시거나 직접 입력하실 수 있습니다. 음성 입력을 원하시면 마이크 버튼을 눌러주세요.');
-    
-    // 5초 후 자동 음성 사이클 시작
-    await Future.delayed(const Duration(seconds: 5));
-    if (mounted && !_isListening && _nameCtrl.text.trim().isEmpty) {
-      _startAutoVoiceCycle();
-    }
-  }
-  
-  /// 자동 음성 사이클 시작
-  void _startAutoVoiceCycle() async {
-    if (_autoVoiceCycleActive || _voiceService == null || !mounted) return;
-    
-    debugPrint('🔄 이름 화면 자동 음성 사이클 시작');
-    setState(() => _autoVoiceCycleActive = true);
-    
-    _speakText('자동 음성 인식을 시작합니다. 이름을 말씀해주세요.');
-    
-    while (_autoVoiceCycleActive && mounted) {
-      try {
-        await Future.delayed(const Duration(seconds: 2));
-        if (!_autoVoiceCycleActive || !mounted) break;
-        
-        debugPrint('🎤 자동 STT 시작 - 이름 입력');
-        setState(() => _isListening = true);
-        
-        await _voiceService!.startListening();
-        _voiceService!.addListener(_onAutoVoiceServiceUpdate);
-        
-        // STT 대기 (8초)
-        await Future.delayed(const Duration(seconds: 8));
-        
-        if (_autoVoiceCycleActive && mounted) {
-          await _voiceService!.stopListeningAndProcess();
-          _voiceService!.removeListener(_onAutoVoiceServiceUpdate);
-          setState(() => _isListening = false);
-          
-          // 처리 대기
-          await Future.delayed(const Duration(milliseconds: 500));
-        }
-        
-        // 사이클 간 대기
-        if (_autoVoiceCycleActive && mounted && _nameCtrl.text.trim().isEmpty) {
-          await Future.delayed(const Duration(seconds: 3));
-          if (_autoVoiceCycleActive && mounted) {
-            _speakText('다시 이름을 말씀해주세요.');
-          }
-        }
-        
-      } catch (e) {
-        debugPrint('❌ 자동 음성 사이클 오류: $e');
-        setState(() => _isListening = false);
-        await Future.delayed(const Duration(seconds: 2));
-      }
-    }
-  }
-  
-  /// 자동 음성 사이클 중지
-  void _stopAutoVoiceCycle() {
-    if (!_autoVoiceCycleActive) return;
-    
-    debugPrint('⏹️ 이름 화면 자동 음성 사이클 중지');
-    setState(() {
-      _autoVoiceCycleActive = false;
-      _isListening = false;
-    });
-    
-    if (_voiceService != null) {
-      _voiceService!.removeListener(_onAutoVoiceServiceUpdate);
-      _voiceService!.stopListeningAndProcess();
-    }
-  }
-  
-  /// 자동 음성 사이클용 VoiceService 상태 변경 리스너
-  void _onAutoVoiceServiceUpdate() {
-    if (_voiceService == null || !_autoVoiceCycleActive) return;
 
-    final recognizedText = _voiceService!.lastRecognizedText;
-    if (recognizedText.isNotEmpty) {
-      debugPrint('🎤 자동 사이클에서 인식된 텍스트: $recognizedText');
-      
-      _stopAutoVoiceCycle();
-      _processVoiceCommand(recognizedText);
+    // 기존에 입력된 이름이 있으면 포함하여 안내
+    final currentName = _nameCtrl.text.trim();
+    if (currentName.isNotEmpty) {
+      _speakText(
+        '이름 입력 화면입니다. 현재 $currentName이 입력되어 있습니다. 수정하시려면 마이크 버튼을 눌러 다시 말씀해주세요.',
+      );
+    } else {
+      _speakText('이름 입력 화면입니다. 마이크 버튼을 눌러 이름을 말씀해주세요.');
     }
   }
 
@@ -414,60 +383,60 @@ class _NameScreenState extends State<NameScreen> {
     final recognizedText = _voiceService!.lastRecognizedText;
     if (recognizedText.isNotEmpty && _isListening) {
       debugPrint('🎤 이름 화면에서 인식된 텍스트: $recognizedText');
-      
+
       setState(() => _isListening = false);
       _voiceService!.removeListener(_onVoiceServiceUpdate);
-      
+
       _processVoiceCommand(recognizedText);
     }
   }
 
-  /// 음성 명령 처리
+  /// 음성 명령 처리 - 이름 인식 → 확인 → 자동 전환
   void _processVoiceCommand(String command) async {
     final trimmedCommand = command.trim();
     debugPrint('🎯 이름 화면 음성 명령 처리: $trimmedCommand');
 
-    // 특수 명령어 처리
-    if (trimmedCommand.toLowerCase().contains('다음') || trimmedCommand.toLowerCase().contains('확인')) {
-      if (_canNext) {
-        _speakText('다음 단계로 진행합니다.');
+    // 확인 단계인 경우
+    if (_isConfirmingName) {
+      if (VoiceRecognitionHelper.isConfirmationCommand(command)) {
+        // 확인됨 - 자동으로 다음 단계로 전환
+        setState(() {
+          _nameCtrl.text = _recognizedName;
+          _isConfirmingName = false;
+        });
         _goNext();
-      } else {
-        _speakText('이름을 먼저 입력해주세요.');
-        // 자동 사이클 재시작
-        await Future.delayed(const Duration(seconds: 2));
-        if (mounted && _nameCtrl.text.trim().isEmpty) {
-          _startAutoVoiceCycle();
-        }
+        return;
+      } else if (VoiceRecognitionHelper.isRejectionCommand(command)) {
+        // 다시 인식
+        setState(() {
+          _isConfirmingName = false;
+          _recognizedName = '';
+        });
+        await _speakText('다시 이름을 말씀해주세요.');
+        return;
       }
-      return;
     }
 
-    // 일반 텍스트를 이름으로 처리
+    // 이름 인식 단계
     if (trimmedCommand.isNotEmpty && trimmedCommand.length <= 20) {
       setState(() {
-        _nameCtrl.text = trimmedCommand;
+        _recognizedName = trimmedCommand;
+        _isConfirmingName = true;
       });
-      _speakText('이름이 $trimmedCommand 로 입력되었습니다. 다음이라고 말씀하시면 계속 진행됩니다.');
+      await _speakText('$trimmedCommand님이 맞습니까? 맞으면 네, 틀리면 아니오라고 말씀해주세요.');
     } else if (trimmedCommand.length > 20) {
-      _speakText('이름이 너무 깁니다. 다시 말씀해주세요.');
-      // 자동 사이클 재시작
-      await Future.delayed(const Duration(seconds: 2));
-      if (mounted) {
-        _startAutoVoiceCycle();
-      }
+      await _speakText('이름이 너무 깁니다. 다시 말씀해주세요.');
     } else {
-      _speakText('이름을 다시 말씀해주세요.');
-      // 자동 사이클 재시작
-      await Future.delayed(const Duration(seconds: 2));
-      if (mounted) {
-        _startAutoVoiceCycle();
-      }
+      await _speakText('이름을 다시 말씀해주세요.');
     }
   }
 
   /// 음성 출력 함수
-  void _speakText(String text) async {
-    await VoiceUtils.speakWithService(_voiceService, text);
+  Future<void> _speakText(String text) async {
+    await VoiceUtils.speakWithService(
+      _voiceService,
+      text,
+      speed: _voiceService?.getCurrentSpeed() ?? 1.0,
+    );
   }
 }

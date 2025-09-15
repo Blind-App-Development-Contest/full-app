@@ -54,7 +54,7 @@ class VoiceService with ChangeNotifier {
 
   // === 음성 속도 설정 ===
   double? _currentVoiceSpeed; // 사용자가 설정한 음성 속도
-  static const double _defaultSpeed = 0.9; // 기본 속도 (사용자 설정 전)
+  static const double _defaultSpeed = 1.0; // 기본 속도 (UI 범위 0.5-2.0 내)
 
   // === 음성 성별 설정 ===
   String _currentVoiceGender = 'female'; // 사용자가 설정한 음성 성별
@@ -65,16 +65,20 @@ class VoiceService with ChangeNotifier {
   String get statusMessage => _statusMessage;
   List<String> get debugLogs => _debugLogs;
 
-  /// 현재 음성 속도 반환
-  /// 사용자가 설정한 속도가 있으면 해당 속도, 없으면 기본 속도 0.9 반환
+  /// 현재 음성 속도 반환 (UI 범위 0.5-2.0으로 클램핑)
+  /// 사용자가 설정한 속도가 있으면 해당 속도, 없으면 기본 속도 1.0 반환
   double getCurrentSpeed() {
-    return _currentVoiceSpeed ?? _defaultSpeed;
+    final speed = _currentVoiceSpeed ?? _defaultSpeed;
+    return speed.clamp(0.5, 2.0); // UI 범위로 클램핑
   }
+
+  /// 현재 음성 출력 중인지 확인
+  bool get isSpeaking => _isSpeaking;
 
   /// 음성 속도 설정 (사용자가 VoiceScreen에서 설정)
   void setVoiceSpeed(double speed) {
-    _currentVoiceSpeed = speed;
-    debugPrint('🔊 음성 속도 설정됨: ${speed}x');
+    _currentVoiceSpeed = speed.clamp(0.5, 2.0); // UI 범위로 클램핑
+    debugPrint('🔊 음성 속도 설정됨: ${_currentVoiceSpeed}x (UI 범위 0.5-2.0)');
   }
 
   /// 음성 성별 설정 (사용자가 VoiceScreen에서 설정)
@@ -234,7 +238,7 @@ class VoiceService with ChangeNotifier {
             .onAmplitudeChanged(const Duration(milliseconds: 200))
             .listen((amp) {
               // record 패키지의 Amplitude.current는 보통 dBFS(음수)로 제공됩니다.
-              final currentDb = (amp.current ?? 0).toDouble();
+              final currentDb = amp.current.toDouble();
               if (currentDb > _vadThresholdDb) {
                 _vadSpeechDetected = true;
               }
@@ -553,11 +557,13 @@ class VoiceService with ChangeNotifier {
         if (settings.containsKey('voice_speed') &&
             settings['voice_speed'] != null) {
           final int serverSpeed = settings['voice_speed'];
-          // 서버 값(퍼센트)을 배속으로 변환 (백엔드와 동일한 로직)
-          final double appSpeed = serverSpeed / 400.0;
+          // 서버 값(퍼센트 정수)을 배속으로 변환 (backend voice.py _int_percent_to_speed_float()와 동일)
+          double appSpeed = serverSpeed / 100.0;
+          // UI 범위(0.5-2.0)로 클램핑
+          appSpeed = appSpeed.clamp(0.5, 2.0);
           _currentVoiceSpeed = appSpeed;
           _addDebugLog(
-            '✅ 서버에서 음성 속도 로드: $serverSpeed% -> ${appSpeed.toStringAsFixed(2)}x',
+            '✅ 서버에서 음성 속도 로드: $serverSpeed% -> ${appSpeed.toStringAsFixed(2)}x (UI 범위로 조정)',
           );
         }
 
@@ -770,7 +776,7 @@ class VoiceService with ChangeNotifier {
             Uri.parse('$baseUrl/api/users/voice'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
-              'user_id': uuid,
+              'uuid': uuid,
               'text': text,
               'gender': currentGender,
               'speed': currentSpeed,
@@ -888,29 +894,28 @@ class VoiceService with ChangeNotifier {
     }
   }
 
-  /// 주기적 파일 정리 (메모리 누수 방지)
+  /// 주기적 파일 정리 (메모리/저장소 누수 방지)
   void _startPeriodicCleanup() {
     _cleanupTimer?.cancel();
     _cleanupTimer = Timer.periodic(const Duration(minutes: 5), (_) async {
       final directory = await getApplicationDocumentsDirectory();
-      final files =
-          directory
-              .listSync()
-              .where((entity) => entity is File && entity.path.contains('tts_'))
-              .cast<File>();
+      final files = directory
+          .listSync()
+          .whereType<File>()
+          .where((file) => file.path.contains('tts_') || file.path.contains('voice_test_') || file.path.contains('audio_'));
 
       for (final file in files) {
         try {
           final stats = await file.stat();
           final age = DateTime.now().difference(stats.modified);
 
-          // 10분 이상 된 TTS 파일 삭제
+          // 10분 이상 된 음성 관련 임시 파일 삭제
           if (age.inMinutes > 10) {
             await file.delete();
-            debugPrint('🗑️ 오래된 TTS 파일 정리: ${file.path}');
+            debugPrint('🗑️ 오래된 음성 임시 파일 정리: ${file.path}');
           }
         } catch (e) {
-          debugPrint('⚠️ TTS 파일 정리 중 오류: $e');
+          debugPrint('⚠️ 음성 임시 파일 정리 중 오류: $e');
         }
       }
     });

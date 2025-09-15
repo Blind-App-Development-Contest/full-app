@@ -45,4 +45,24 @@ class VoiceUtils {
       // 로그 제거로 속도 향상
     }
   }
+
+  /// 걸음수 측정 시작 안내 (공통)
+  static Future<void> announceStepMeasurementStart(VoiceService? voiceService) async {
+    if (voiceService == null) return;
+    
+    await speakWithService(voiceService, "보폭 측정을 시작합니다. 직선으로 자연스럽게 걸어주세요.");
+    await Future.delayed(const Duration(milliseconds: 600));
+    await speakWithService(voiceService, "10미터 거리를 걸으면 자동으로 측정이 완료되고, 걸음 수를 물어보겠습니다.");
+  }
+
+  /// 거리 측정 완료 안내 (공통)
+  static Future<void> announceDistanceMeasured(VoiceService? voiceService, double distanceMeters) async {
+    if (voiceService == null) return;
+    
+    await speakWithService(voiceService, "거리 측정이 완료되었습니다!");
+    await Future.delayed(const Duration(milliseconds: 500));
+    await speakWithService(voiceService, "정확히 ${distanceMeters.toStringAsFixed(1)}미터를 측정했습니다.");
+    await Future.delayed(const Duration(milliseconds: 500));
+    await speakWithService(voiceService, "측정 완료. ${distanceMeters.toStringAsFixed(0)}미터 걸으며 센 걸음 수를 말씀해주세요.");
+  }
 }

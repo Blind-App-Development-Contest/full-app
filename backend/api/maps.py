@@ -17,6 +17,7 @@ from models.database_models import DashboardLog
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import Depends
 from config.settings import get_settings, Settings
+from middleware.error_handler import ErrorLogger
 
 router = APIRouter(prefix="/maps", tags=["maps"])
 
@@ -54,7 +55,7 @@ async def _ncloud_get(url: str, params: dict, cid: str, csec: str, *, strict: bo
         async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
             r = await client.get(url, params=params, headers=headers)
     except httpx.RequestError as e:
-        print(f"[NCloud GET] Request error: {e!s}")
+        ErrorLogger.log_external_api_error("NCloud", 0, str(e))
         if not strict:
             return {"_status": 503, "error": f"Request error: {e!s}"}
         raise HTTPException(502, f"Naver upstream request error: {e!s}")
@@ -65,7 +66,7 @@ async def _ncloud_get(url: str, params: dict, cid: str, csec: str, *, strict: bo
         try:
             return r.json()
         except Exception as e:
-            print(f"[NCloud GET] JSON parse error: {e!s}, content: {r.text[:200]}")
+            ErrorLogger.log_external_api_error("NCloud", r.status_code, f"JSON parse error: {e!s}, content: {r.text[:200]}")
             if not strict:
                 return {"_status": 200, "error": f"Non-JSON response", "raw": r.text[:500]}
             raise HTTPException(502, "Naver upstream returned non-JSON response")
@@ -143,9 +144,9 @@ async def _geocode_nominatim(
             else:
                 print(f"[Nominatim Geocoding] No results for '{q}'")
         else:
-            print(f"[Nominatim Geocoding] HTTP error: {r.status_code} {r.text[:200]}")
+            ErrorLogger.log_external_api_error("Nominatim Geocoding", r.status_code, r.text[:200])
     except Exception as e:
-        print(f"[Nominatim Geocoding] Request error: {e}")
+        ErrorLogger.log_external_api_error("Nominatim Geocoding", 0, str(e))
     
     raise HTTPException(404, f"Nominatim geocoding failed for: {q}")
 
@@ -481,7 +482,7 @@ async def places_autocomplete(
         predictions = []
         if isinstance(pdata, dict):
             if "_status" in pdata:
-                print(f"[Places autocomplete] API 에러 상태: {pdata.get('_status')}, {pdata.get('error', '')}")
+                ErrorLogger.log_external_api_error("Places API", pdata.get('_status', 0), pdata.get('error', ''))
                 # 에러가 있어도 fallback으로 geocoding 시도
                 try:
                     print(f"[Places autocomplete] Geocoding fallback 시도: {q}")
@@ -587,7 +588,7 @@ async def places_detail(
         
         return {"result": None, "status": "NOT_FOUND"}
     except Exception as e:
-        print(f"[Places detail] Error: {e}")
+        ErrorLogger.log_api_error("Maps", "Places detail", e)
         return {"result": None, "status": "UNKNOWN_ERROR"}
 
 async def _log_directions_request(user_id: str, req: DirectionsReq, result: dict, session: AsyncSession):

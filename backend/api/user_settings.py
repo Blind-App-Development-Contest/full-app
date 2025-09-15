@@ -13,11 +13,7 @@ import logging
 
 from models.database_models import UserSetting, Voice, Caregiver, Footstep
 from core.database import get_async_db
-from utils.voice_speed_converter import (
-    convert_to_google_tts_speed,
-    speed_float_to_int_percent,
-    int_percent_to_speed_float
-)
+from api.voice import speed_float_to_int_percent, int_percent_to_speed_float
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/users", tags=["User Settings"])
@@ -149,8 +145,9 @@ async def update_user_settings(
                 params["gender"] = settings.voice_gender
                 
             if settings.voice_speed is not None:
-                normalized_speed = convert_to_google_tts_speed(settings.voice_speed, 'multiplier')
-                speed_db_value = speed_float_to_int_percent(normalized_speed)
+                if not (0.25 <= settings.voice_speed <= 4.0):
+                    raise HTTPException(status_code=400, detail=f"Invalid voice speed: {settings.voice_speed}")
+                speed_db_value = speed_float_to_int_percent(settings.voice_speed)
                 voice_updates.append("speed = :speed")
                 params["speed"] = str(speed_db_value)
             

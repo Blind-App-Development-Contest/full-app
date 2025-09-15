@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import '../models/step_measurement_result.dart';
 import '../services/api_service.dart';
 import '../services/voice_service.dart';
 import '../widgets/accessible_text.dart';
 import '../utils/voice_utils.dart';
+import '../utils/voice_recognition_helper.dart';
 import 'step_screen.dart';
 import 'voice_screen.dart';
 import 'guardian_screen.dart';
@@ -19,9 +20,9 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   // 백엔드와 동일한 변수명 사용
   // ignore: non_constant_identifier_names
-  double step_length_cm = StepMeasurementResult.defaultStepLengthCm; // 보폭 (cm)
+  double step_length_cm = 75.0; // 기본 보폭 (cm) - 온보딩 음성 측정으로 대체
   String voiceGender = '여성'; // '여성' | '남성'
-  double voiceSpeed = 1.0; // 0.5 ~ 2.0
+  double voiceSpeed = 1.0; // UI 범위: 0.5 ~ 2.0 (backend 호환)
   int guardians = 0; // 등록된 보호자 수
 
   // 측정 완료 상태 관리
@@ -42,6 +43,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.initState();
     _initializeVoiceService();
     _handleMeasurementCompletion();
+
+    // VoiceService의 실제 현재 속도를 UI에 반영
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_voiceService != null) {
+        setState(() {
+          voiceSpeed = _voiceService!.getCurrentSpeed();
+        });
+      }
+    });
+
     _loadUserSettings(); // 사용자 설정 불러오기
   }
 
@@ -117,20 +128,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
             );
           }
 
-          // 음성 설정 로드 (서버 필드명: voice_speed, voice_gender)
+          // 음성 설정 로드 (backend voice.py VoiceSettings 기준)
           if (settings.containsKey('voice_speed') &&
               settings['voice_speed'] != null) {
             final dynamic serverSpeed = settings['voice_speed'];
-            if (serverSpeed is int) {
-              // 서버 값(퍼센트)을 배속으로 변환 (백엔드와 동일한 로직)
-              voiceSpeed = serverSpeed / 400.0;
+            if (serverSpeed is num) {
+              // 서버 값(퍼센트 정수)을 배속으로 변환 (backend voice.py _int_percent_to_speed_float()와 동일)
+              double convertedSpeed = serverSpeed.toDouble() / 100.0;
+              voiceSpeed = convertedSpeed.clamp(0.5, 2.0); // UI 범위로 클램핑
               debugPrint(
-                '✅ 서버에서 음성 속도 로드: $serverSpeed% -> ${voiceSpeed.toStringAsFixed(2)}x',
-              );
-            } else if (serverSpeed is double) {
-              voiceSpeed = serverSpeed;
-              debugPrint(
-                '✅ 서버에서 음성 속도 로드 (직접): ${voiceSpeed.toStringAsFixed(2)}x',
+                '✅ 서버에서 음성 속도 로드: ${voiceSpeed.toStringAsFixed(2)}x (UI 범위 0.5-2.0로 조정)',
               );
             }
           }
@@ -168,11 +175,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
         // null 값들이 많은 경우 로그로 알림
         final nullFields = <String>[];
-        if (settings['voice_speed'] == null) nullFields.add('voice_speed');
-        if (settings['voice_gender'] == null) nullFields.add('voice_gender');
-        if (settings['step_length'] == null) nullFields.add('step_length');
-        if (settings['caregiver_name'] == null)
+        if (settings['voice_speed'] == null) {
+          nullFields.add('voice_speed');
+        }
+        if (settings['voice_gender'] == null) {
+          nullFields.add('voice_gender');
+        }
+        if (settings['step_length'] == null) {
+          nullFields.add('step_length');
+        }
+        if (settings['caregiver_name'] == null) {
           nullFields.add('caregiver_name');
+        }
 
         if (nullFields.isNotEmpty) {
           debugPrint('⚠️ 서버에서 null인 필드들: ${nullFields.join(', ')} - 기본값 유지');
@@ -201,9 +215,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // 서버 연결 실패 시 로컬 기본값 설정
   void _loadLocalDefaultSettings() {
     setState(() {
-      step_length_cm = StepMeasurementResult.defaultStepLengthCm;
+      step_length_cm = 75.0; // 기본 보폭 (cm)
       voiceGender = '여성';
-      voiceSpeed = 1.0;
+      voiceSpeed = 1.0; // UI 범위: 0.5-2.0 (backend 호환)
       guardians = 0;
     });
     debugPrint(
@@ -215,23 +229,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (completionMessage != null && _voiceService != null) {
       try {
         // 음성 안내: 측정 완료 메시지
-        await VoiceUtils.speakWithService(
-          _voiceService,
-          completionMessage!,
-          speed: 1.0,
-        );
-
-        // 1초 후 상세 안내
-        await Future.delayed(const Duration(seconds: 1));
-
-        if (mounted) {
-          await VoiceUtils.speakWithService(
-            _voiceService,
-            "보폭이 ${step_length_cm.toStringAsFixed(0)}센티미터로 측정되었습니다. "
-            "다음 단계로 버튼을 눌러서 음성 설정을 진행할 수 있습니다.",
-            speed: 0.9,
-          );
-        }
+        await _speakText("보폭 ${step_length_cm.toStringAsFixed(0)}센티미터로 측정 완료.");
       } catch (e) {
         debugPrint('❌ 측정 완료 음성 안내 실패: $e');
       }
@@ -243,39 +241,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (_voiceService == null) return;
 
     try {
-      // 1단계: 측정 완료 알림
-      await VoiceUtils.speakWithService(
-        _voiceService,
-        "보폭 측정이 완료되었습니다!",
-        speed: 1.0,
-      );
-
-      await Future.delayed(const Duration(milliseconds: 800));
-
-      // 2단계: 측정 결과 안내
-      await VoiceUtils.speakWithService(
-        _voiceService,
-        "측정된 보폭은 $stepLengthCm 센티미터입니다.",
-        speed: 0.9,
-      );
-
-      await Future.delayed(const Duration(milliseconds: 600));
-
-      // 3단계: 상태 변경 안내
-      await VoiceUtils.speakWithService(
-        _voiceService,
-        "설정 화면에서 보폭 항목이 측정 완료 상태로 변경되었습니다.",
-        speed: 0.9,
-      );
-
-      await Future.delayed(const Duration(milliseconds: 400));
-
-      // 4단계: 다음 액션 안내
-      await VoiceUtils.speakWithService(
-        _voiceService,
-        "다른 설정을 변경하거나 음성 설정을 진행할 수 있습니다.",
-        speed: 0.9,
-      );
+      await _speakText("보폭 $stepLengthCm센티미터로 설정됨.");
     } catch (e) {
       debugPrint('❌ 보폭 측정 완료 음성 안내 실패: $e');
     }
@@ -286,13 +252,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (_voiceService == null) return;
 
     try {
-      await Future.delayed(const Duration(milliseconds: 500));
-
-      await VoiceUtils.speakWithService(
-        _voiceService,
-        "음성 설정이 업데이트되었습니다. "
-        "현재 설정은 $voiceGender 음성, ${voiceSpeed.toStringAsFixed(1)}배속입니다.",
-        speed: 0.9,
+      await _speakText(
+        "음성 설정 업데이트됨. $voiceGender ${voiceSpeed.toStringAsFixed(1)}배속.",
       );
     } catch (e) {
       debugPrint('❌ 음성 설정 변경 안내 실패: $e');
@@ -304,18 +265,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (_voiceService == null) return;
 
     try {
-      await Future.delayed(const Duration(milliseconds: 500));
-
       final guardianMessage =
-          guardians > 0
-              ? "보호자 설정이 업데이트되었습니다. 현재 $guardians명의 보호자가 등록되어 있습니다."
-              : "보호자 설정이 업데이트되었습니다. 현재 등록된 보호자가 없습니다.";
-
-      await VoiceUtils.speakWithService(
-        _voiceService,
-        guardianMessage,
-        speed: 0.9,
-      );
+          guardians > 0 ? "보호자 $guardians명 등록됨." : "보호자 등록 안됨.";
+      await _speakText(guardianMessage);
     } catch (e) {
       debugPrint('❌ 보호자 설정 변경 안내 실패: $e');
     }
@@ -330,7 +282,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
 
     if (_isListening) {
-      _speakText('음성인식을 시작합니다.');
+      SystemSound.play(SystemSoundType.click);
       // STT 시작
       try {
         await _voiceService!.startListening();
@@ -342,7 +294,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         setState(() => _isListening = false);
       }
     } else {
-      _speakText('음성인식을 중지합니다.');
+      SystemSound.play(SystemSoundType.alert);
       // STT 중지
       try {
         await _voiceService!.stopListeningAndProcess();
@@ -377,7 +329,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     debugPrint('🎯 설정 화면 음성 명령 처리: $lowerCommand');
 
     if (lowerCommand.contains('보폭') || lowerCommand.contains('측정')) {
-      _speakText('보폭 설정 화면으로 이동합니다.');
+      _speakText('보폭 설정');
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -389,7 +341,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       );
     } else if (lowerCommand.contains('음성') || lowerCommand.contains('목소리')) {
-      _speakText('음성 설정 화면으로 이동합니다.');
+      _speakText('음성 설정');
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -397,24 +349,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       );
     } else if (lowerCommand.contains('보호자') || lowerCommand.contains('가족')) {
-      _speakText('보호자 설정 화면으로 이동합니다.');
+      _speakText('보호자 설정');
       Navigator.push(
         context,
         MaterialPageRoute(
           builder: (_) => const GuardianScreen(fromSettings: true),
         ),
       );
-    } else if (lowerCommand.contains('뒤로') || lowerCommand.contains('돌아가')) {
-      _speakText('이전 화면으로 돌아갑니다.');
+    } else if (VoiceRecognitionHelper.isBackCommand(command)) {
+      // AppBar에서 이미 안내하므로 중복 제거
       Navigator.pop(context);
     } else {
-      _speakText('설정 화면입니다. 보폭 설정, 음성 설정, 보호자 설정 중 하나를 말씀해주세요.');
+      _speakText('보폭, 음성, 보호자 설정 중 하나를 말씀해주세요.');
     }
   }
 
   /// 음성 출력 함수
-  void _speakText(String text) async {
-    await VoiceUtils.speakWithService(_voiceService, text);
+  Future<void> _speakText(String text) async {
+    await VoiceUtils.speakWithService(
+      _voiceService,
+      text,
+      speed: _voiceService?.getCurrentSpeed() ?? 1.0,
+    );
   }
 
   @override
@@ -493,6 +449,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     // 클릭 음성 피드백
                     _speakText('보폭 설정');
 
+                    try {
+                      _voiceService?.stopAutoRecognitionCycle();
+                      _voiceService?.removeListener(_onVoiceServiceUpdate);
+                    } catch (_) {}
+
                     final result = await Navigator.push<int>(
                       context,
                       MaterialPageRoute(
@@ -536,6 +497,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   // 클릭 음성 피드백
                   _speakText('음성 설정');
 
+                  try {
+                    _voiceService?.stopAutoRecognitionCycle();
+                    _voiceService?.removeListener(_onVoiceServiceUpdate);
+                  } catch (_) {}
+
                   await Navigator.push(
                     context,
                     MaterialPageRoute(
@@ -565,6 +531,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   // 클릭 음성 피드백
                   _speakText('보호자 설정');
 
+                  try {
+                    _voiceService?.stopAutoRecognitionCycle();
+                    _voiceService?.removeListener(_onVoiceServiceUpdate);
+                  } catch (_) {}
+
                   await Navigator.push(
                     context,
                     MaterialPageRoute(
@@ -593,9 +564,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     child: ElevatedButton.icon(
                       onPressed: () {
                         // 클릭 음성 피드백
-                        _speakText('다음 단계로 이동합니다.');
+                        _speakText('다음 단계');
 
                         // 온보딩 플로우 음성 설정 화면으로 이동 (fromSettings: false)
+                        try {
+                          _voiceService?.stopAutoRecognitionCycle();
+                          _voiceService?.removeListener(_onVoiceServiceUpdate);
+                        } catch (_) {}
                         Navigator.push(
                           context,
                           MaterialPageRoute(

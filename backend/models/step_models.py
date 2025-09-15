@@ -19,13 +19,8 @@ class StepTrackingQuality(str, Enum):
 
 class StepMeasurementMethod(str, Enum):
     """보폭 측정 방식"""
-    DISTANCE_BASED = "distance_based"      # 거리/걸음수 기반 (FastDepth)
-    KALMAN_FILTER = "kalman_filter"        # 칼만 필터 실시간 추적
-    MANUAL_INPUT = "manual_input"          # 수동 입력
-    HYBRID = "hybrid"                      # 복합 방식
-    COMPUTER_VISION = "computer_vision"    # 컴퓨터 비전 기반
-    POSE_ESTIMATION = "pose_estimation"    # 포즈 추정 기반
-    IMU_SENSOR = "imu_sensor"             # IMU 센서 기반
+    DISTANCE_BASED = "distance_based"      # 거리/걸음수 기반 (실제 사용)
+    MANUAL_INPUT = "manual_input"          # 수동 입력 (실제 사용)
 
 class AccuracyLevel(str, Enum):
     """정확도 수준 - 기존 한국어 문자열 표준화"""
@@ -34,6 +29,55 @@ class AccuracyLevel(str, Enum):
     LOW = "낮음"     # 낮은 정확도
 
 # ===== 유틸리티 클래스 =====
+
+class StepCalculationUtils:
+    """보폭 계산 유틸리티 - 모든 계산 로직 중앙화"""
+    
+    @staticmethod
+    def calculate_step_length_cm(distance_meters: float, step_count: int) -> float:
+        """거리와 걸음수로 보폭 계산 (cm)
+        
+        Args:
+            distance_meters: 측정된 거리 (미터)
+            step_count: 걸음 수
+            
+        Returns:
+            보폭 길이 (센티미터)
+        """
+        if step_count == 0:
+            raise ValueError("걸음 수는 0일 수 없습니다")
+        return (distance_meters * 100) / step_count
+    
+    @staticmethod
+    def is_valid_step_length(step_length_cm: float) -> bool:
+        """보폭 길이 유효성 검사
+        
+        Args:
+            step_length_cm: 보폭 길이 (센티미터)
+            
+        Returns:
+            유효 여부
+        """
+        return 30 <= step_length_cm <= 150
+    
+    @staticmethod
+    def get_confidence_from_distance(distance_meters: float) -> float:
+        """측정 거리에 따른 신뢰도 계산
+        
+        Args:
+            distance_meters: 측정 거리 (미터)
+            
+        Returns:
+            신뢰도 (0.0-1.0)
+        """
+        if distance_meters >= 5.0:
+            return 0.9
+        elif distance_meters >= 3.0:
+            return 0.7
+        elif distance_meters >= 2.0:
+            return 0.5
+        else:
+            return 0.3
 
 class AccuracyConverter:
     """정확도 표현 방식 간 변환 유틸리티"""
@@ -100,21 +144,29 @@ class StepCalculationInput(BaseModel):
         return v
 
 class StepMeasurementRequest(BaseModel):
-    """통합 보폭 측정 요청 모델 - FootstepDepthMeasurementRequest 대체"""
+    """통합형 음성+프레임 보폭 측정 요청 모델"""
     
-    # 기본 측정 데이터
-    distance_meters: Optional[float] = Field(
+    # 프레임 기반 거리 측정 (프레임 데이터로 거리 계산)
+    frame_data: Optional[Any] = Field(
         None,
-        description="측정된 거리 (미터)",
-        gt=0.1,  # 최소 10cm
-        le=100.0  # 최대 100미터
+        description="거리 측정용 프레임 데이터 (OpenCV 이미지)"
     )
+    
+    # 음성 기반 걸음수 추출 (둘 중 하나는 필수)
+    voice_data: Optional[bytes] = Field(
+        None,
+        description="걸음수 추출용 음성 데이터 (오디오 파일)"
+    )
+    
+    # 직접 입력된 걸음수 (음성 처리 실패시 백업용)
     step_count: Optional[int] = Field(
         None,
-        description="걸음 수",
+        description="직접 입력된 걸음 수 (음성 처리 백업용)",
         gt=0,
         le=1000
     )
+    
+    # distance_meters는 더 이상 입력받지 않음 (프레임으로 계산)
     
     # 측정 방식 및 설정
     measurement_method: StepMeasurementMethod = Field(
@@ -133,20 +185,18 @@ class StepMeasurementRequest(BaseModel):
     context: Optional[str] = Field(None, description="측정 컨텍스트")
     notes: Optional[str] = Field(None, description="측정 메모")
     
-    @field_validator('distance_meters', 'step_count')
+    @field_validator('step_count')
     @classmethod
     def validate_measurement_data(cls, v, info):
         """측정 데이터 유효성 검증"""
-        # Pydantic v2에서는 info.data로 다른 필드 접근
+        # frame_data나 voice_data 또는 step_count 중 하나는 있어야 함
         if info.data:
-            method = info.data.get('measurement_method')
-            field_name = info.field_name
+            frame_data = info.data.get('frame_data')
+            voice_data = info.data.get('voice_data')
+            step_count = info.data.get('step_count')
             
-            if method == StepMeasurementMethod.DISTANCE_BASED:
-                if field_name == 'distance_meters' and v is None:
-                    raise ValueError("거리 기반 측정에는 distance_meters가 필요합니다")
-                if field_name == 'step_count' and v is None:
-                    raise ValueError("거리 기반 측정에는 step_count가 필요합니다")
+            if not frame_data and not voice_data and not step_count:
+                raise ValueError("frame_data, voice_data, step_count 중 적어도 하나는 필요합니다")
         
         return v
 
@@ -494,21 +544,18 @@ def validate_step_measurement_inputs(
             "minimum_check": "passed" if step_count >= 5 else "failed"
         }
     
-    # 예상 보폭 계산 및 검증 - 간단한 거리/걸음수 계산
+    # 예상 보폭 계산 및 검증 - 중앙화된 계산 로직 사용
     expected_step_length = None
     if distance_meters and step_count:
-        # 간단한 거리 기반 보폭 계산 (cm 단위)
-        expected_step_length = (distance_meters * 100) / step_count
+        expected_step_length = StepCalculationUtils.calculate_step_length_cm(distance_meters, step_count)
         
-        step_length_valid = True
-        if expected_step_length < 30:
-            warnings.append("계산될 보폭이 너무 짧습니다")
+        step_length_valid = StepCalculationUtils.is_valid_step_length(expected_step_length)
+        if not step_length_valid:
+            if expected_step_length < 30:
+                warnings.append("계산될 보폭이 너무 짧습니다")
+            elif expected_step_length > 150:
+                warnings.append("계산될 보폭이 너무 깁니다")
             recommendations.append("거리 측정값이나 걸음 수를 확인해주세요")
-            step_length_valid = False
-        elif expected_step_length > 150:
-            warnings.append("계산될 보폭이 너무 깁니다") 
-            recommendations.append("거리 측정값이나 걸음 수를 확인해주세요")
-            step_length_valid = False
         
         validations["step_length_validation"] = {
             "valid": step_length_valid,

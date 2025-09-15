@@ -222,4 +222,50 @@ class VoiceRecognitionHelper {
   void dispose() {
     stopListening();
   }
+
+  // ===== 정적 유틸리티 메서드들 =====
+  
+  /// 확인 명령어 체크 (네, 예, 맞음, 확인, 좋아 등)
+  static bool isConfirmationCommand(String command) {
+    final lowerCommand = command.toLowerCase().trim();
+    final positiveKeywords = ['네', '예', '맞', '확인', '좋', '그래', '오케이'];
+    return positiveKeywords.any((keyword) => lowerCommand.contains(keyword));
+  }
+  
+  /// 거부 명령어 체크 (아니오, 다시, 틀렸음 등)
+  static bool isRejectionCommand(String command) {
+    final lowerCommand = command.toLowerCase().trim();
+    final negativeKeywords = ['아니', '다시', '틀렸', '안돼', '재'];
+    return negativeKeywords.any((keyword) => lowerCommand.contains(keyword));
+  }
+  
+  /// 완료/저장/다음 명령어 체크
+  static bool isCompletionCommand(String command) {
+    final lowerCommand = command.toLowerCase().trim();
+    return lowerCommand.contains('완료') ||
+           lowerCommand.contains('저장') ||
+           lowerCommand.contains('다음');
+  }
+  
+  /// 뒤로가기 명령어 체크
+  static bool isBackCommand(String command) {
+    final lowerCommand = command.toLowerCase().trim();
+    return lowerCommand.contains('뒤로') ||
+           lowerCommand.contains('취소') ||
+           lowerCommand.contains('돌아가');
+  }
+  
+  /// 측정/시작 명령어 체크
+  static bool isStartCommand(String command) {
+    final lowerCommand = command.toLowerCase().trim();
+    return lowerCommand.contains('측정') ||
+           lowerCommand.contains('시작');
+  }
+  
+  /// 재측정/다시 명령어 체크
+  static bool isRetryCommand(String command) {
+    final lowerCommand = command.toLowerCase().trim();
+    return lowerCommand.contains('다시') ||
+           lowerCommand.contains('재측정');
+  }
 }

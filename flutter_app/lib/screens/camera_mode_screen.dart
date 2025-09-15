@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:camera/camera.dart';
 import 'package:image/image.dart' as img;
@@ -26,7 +27,7 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
 
   CameraController? _mobileController;
   bool _isProcessingFrame = false;
-  
+
   // 음성인식 상태 관리
   bool _isListening = false;
   VoiceService? _voiceService;
@@ -37,7 +38,7 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
     _initializeMobileCamera();
     _initializeVoiceService();
   }
-  
+
   void _initializeVoiceService() {
     try {
       _voiceService = Provider.of<VoiceService>(context, listen: false);
@@ -137,10 +138,12 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
           final List<int> jpeg = img.encodeJpg(image, quality: 75);
           final String base64String = base64Encode(jpeg);
 
-          _channel?.sink.add(json.encode({
-            'frame': base64String,
-            'timestamp': DateTime.now().toIso8601String(),
-          }));
+          _channel?.sink.add(
+            json.encode({
+              'frame': base64String,
+              'timestamp': DateTime.now().toIso8601String(),
+            }),
+          );
         } catch (e) {
           debugPrint('모바일 프레임 처리 오류: $e');
         } finally {
@@ -152,9 +155,37 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
 
   @override
   void dispose() {
+    // VoiceService 자동 인식 중지
+    try {
+      _voiceService?.stopAutoRecognitionCycle();
+      debugPrint('✅ CameraModeScreen: 자동 인식 사이클 중지 완료');
+    } catch (e) {
+      debugPrint('❌ CameraModeScreen: 자동 인식 중지 실패: $e');
+    }
+
+    // 리스너 해제
+    try {
+      _voiceService?.removeListener(_onVoiceServiceUpdate);
+      debugPrint('✅ CameraModeScreen: VoiceService 리스너 해제 완료');
+    } catch (e) {
+      debugPrint('❌ CameraModeScreen: 리스너 해제 실패: $e');
+    }
+
+    // 음성 인식 상태 초기화
+    if (_isListening) {
+      try {
+        _voiceService?.stopListeningAndProcess();
+        debugPrint('✅ CameraModeScreen: 진행 중인 음성 인식 중지 완료');
+      } catch (e) {
+        debugPrint('❌ CameraModeScreen: 음성 인식 중지 실패: $e');
+      }
+    }
+
+    // 카메라 및 웹소켓 정리
     _mobileController?.stopImageStream();
     _mobileController?.dispose();
     _channel?.sink.close();
+
     super.dispose();
   }
 
@@ -166,12 +197,14 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
         backgroundColor: Colors.black.withValues(alpha: 0.7),
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(
-            Icons.arrow_back_ios_new,
-            color: Colors.white,
-          ),
+          icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white),
           onPressed: () {
             _speakText('뒤로가기');
+            try {
+              _voiceService?.stopAutoRecognitionCycle();
+              _voiceService?.removeListener(_onVoiceServiceUpdate);
+            } catch (_) {}
+            if (!mounted) return;
             Navigator.pop(context);
           },
           tooltip: '뒤로가기',
@@ -197,10 +230,15 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
                 if (snapshot.connectionState == ConnectionState.done &&
                     !snapshot.hasError) {
                   final previewSize = _mobileController!.value.previewSize;
-                  final videoSize = Size(previewSize!.height, previewSize.width);
+                  final videoSize = Size(
+                    previewSize!.height,
+                    previewSize.width,
+                  );
                   return CustomPaint(
                     painter: ObjectPainter(
-                        objects: _detectedObjects, videoSize: videoSize),
+                      objects: _detectedObjects,
+                      videoSize: videoSize,
+                    ),
                   );
                 }
                 return Container();
@@ -231,12 +269,15 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
             const Positioned(
               top: 20,
               left: 20,
-              child: Text('카메라 모드',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      shadows: [Shadow(blurRadius: 5.0, color: Colors.black)])),
+              child: Text(
+                '카메라 모드',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  shadows: [Shadow(blurRadius: 5.0, color: Colors.black)],
+                ),
+              ),
             ),
             Positioned(
               bottom: 20,
@@ -245,11 +286,12 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
               child: Container(
                 padding: const EdgeInsets.all(16.0),
                 decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.7),
-                    borderRadius: BorderRadius.circular(20)),
+                  color: Colors.black.withValues(alpha: 0.7),
+                  borderRadius: BorderRadius.circular(20),
+                ),
                 child: ElevatedButton.icon(
                   onPressed: () {
-                    _speakText(_isListening ? '음성인식 중지' : '음성인식 시작');
+                    SystemSound.play(_isListening ? SystemSoundType.alert : SystemSoundType.click);
                     _toggleVoiceRecognition();
                   },
                   icon: Icon(_isListening ? Icons.mic : Icons.mic_none),
@@ -257,7 +299,10 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: _isListening ? Colors.red : Colors.blue,
                     foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 12,
+                      horizontal: 16,
+                    ),
                   ),
                 ),
               ),
@@ -267,7 +312,7 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
       ),
     );
   }
-  
+
   /// 음성인식 토글 함수 - 실제 STT 연결
   void _toggleVoiceRecognition() async {
     if (_voiceService == null) return;
@@ -277,7 +322,7 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
     });
 
     if (_isListening) {
-      _speakText('음성인식을 시작합니다. 물체 찾기, 뒤로가기 등의 명령을 말씀해주세요.');
+      SystemSound.play(SystemSoundType.click);
       // STT 시작
       try {
         await _voiceService!.startListening();
@@ -287,7 +332,7 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
         setState(() => _isListening = false);
       }
     } else {
-      _speakText('음성인식을 중지합니다.');
+      SystemSound.play(SystemSoundType.alert);
       // STT 중지
       try {
         await _voiceService!.stopListeningAndProcess();
@@ -305,10 +350,10 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
     final recognizedText = _voiceService!.lastRecognizedText;
     if (recognizedText.isNotEmpty && _isListening) {
       debugPrint('🎤 카메라 화면에서 인식된 텍스트: $recognizedText');
-      
+
       setState(() => _isListening = false);
       _voiceService!.removeListener(_onVoiceServiceUpdate);
-      
+
       _processVoiceCommand(recognizedText);
     }
   }
@@ -318,20 +363,27 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
     final lowerCommand = command.toLowerCase().trim();
     debugPrint('🎯 카메라 화면 음성 명령 처리: $lowerCommand');
 
-    if (lowerCommand.contains('물체') || lowerCommand.contains('찾기') || lowerCommand.contains('탐지')) {
+    if (lowerCommand.contains('물체') ||
+        lowerCommand.contains('찾기') ||
+        lowerCommand.contains('탐지')) {
       if (_detectedObjects.isNotEmpty) {
-        final objectNames = _detectedObjects.map((obj) => obj['name'] as String).join(', ');
+        final objectNames = _detectedObjects
+            .map((obj) => obj['name'] as String)
+            .join(', ');
         _speakText('현재 화면에서 $objectNames 을(를) 발견했습니다.');
       } else {
         _speakText('현재 화면에서 감지된 물체가 없습니다.');
       }
-    } else if (lowerCommand.contains('뒤로') || lowerCommand.contains('돌아가') || lowerCommand.contains('나가기')) {
+    } else if (lowerCommand.contains('뒤로') ||
+        lowerCommand.contains('돌아가') ||
+        lowerCommand.contains('나가기')) {
       _speakText('이전 화면으로 돌아갑니다.');
       Navigator.pop(context);
     } else if (lowerCommand.contains('설명') || lowerCommand.contains('화면')) {
-      final statusText = _detectedObjects.isEmpty 
-        ? '카메라 화면입니다. 현재 감지된 물체가 없습니다.' 
-        : '카메라 화면입니다. ${_detectedObjects.length}개의 물체가 감지되었습니다.';
+      final statusText =
+          _detectedObjects.isEmpty
+              ? '카메라 화면입니다. 현재 감지된 물체가 없습니다.'
+              : '카메라 화면입니다. ${_detectedObjects.length}개의 물체가 감지되었습니다.';
       _speakText(statusText);
     } else {
       _speakText('카메라 화면입니다. 물체 찾기, 화면 설명, 뒤로가기 등의 명령을 사용할 수 있습니다.');
@@ -339,10 +391,9 @@ class _CameraModeScreenState extends State<CameraModeScreen> {
   }
 
   /// 음성 출력 함수
-  void _speakText(String text) async {
-    await VoiceUtils.speakWithService(_voiceService, text);
+  Future<void> _speakText(String text) async {
+    await VoiceUtils.speakWithService(_voiceService, text, speed: _voiceService?.getCurrentSpeed() ?? 1.0);
   }
-
 }
 
 class ObjectPainter extends CustomPainter {
@@ -362,13 +413,17 @@ class ObjectPainter extends CustomPainter {
     final double offsetX = (size.width - videoSize.width * scale) / 2;
     final double offsetY = (size.height - videoSize.height * scale) / 2;
 
-    final paint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0
-      ..color = Colors.red;
+    final paint =
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.0
+          ..color = Colors.red;
 
     final textStyle = const TextStyle(
-        color: Colors.white, fontSize: 14.0, backgroundColor: Colors.black54);
+      color: Colors.white,
+      fontSize: 14.0,
+      backgroundColor: Colors.black54,
+    );
 
     for (var obj in objects) {
       if (obj is! Map || obj['box'] is! List || obj['box'].length != 4) {
@@ -396,8 +451,11 @@ class ObjectPainter extends CustomPainter {
       canvas.drawRect(screenRect, paint);
 
       final textSpan = TextSpan(text: obj['name'], style: textStyle);
-      final textPainter =
-          TextPainter(text: textSpan, textAlign: TextAlign.left, textDirection: TextDirection.ltr);
+      final textPainter = TextPainter(
+        text: textSpan,
+        textAlign: TextAlign.left,
+        textDirection: TextDirection.ltr,
+      );
       textPainter.layout();
       textPainter.paint(canvas, screenRect.topLeft + const Offset(4, 4));
     }

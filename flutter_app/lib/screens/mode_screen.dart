@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:provider/provider.dart';
 
@@ -83,6 +84,11 @@ class _ModeScreenState extends State<ModeScreen> {
   }
 
   Future<void> _openCameraMode(BuildContext context) async {
+    // 선해제: 음성 인식/리스너 정리 후 화면 전환
+    try {
+      _voiceService?.stopAutoRecognitionCycle();
+      _voiceService?.removeListener(_onVoiceServiceUpdate);
+    } catch (_) {}
     setState(() => _preferred = AppPreferredMode.camera);
     _savePreferredInBackground(AppPreferredMode.camera);
     final pushed = await _tryPushNamed(context, '/camera');
@@ -95,6 +101,10 @@ class _ModeScreenState extends State<ModeScreen> {
   }
 
   Future<void> _openNavigationMode(BuildContext context) async {
+    try {
+      _voiceService?.stopAutoRecognitionCycle();
+      _voiceService?.removeListener(_onVoiceServiceUpdate);
+    } catch (_) {}
     setState(() => _preferred = AppPreferredMode.navigation);
     _savePreferredInBackground(AppPreferredMode.navigation);
     final pushed = await _tryPushNamed(context, '/navigation');
@@ -109,6 +119,10 @@ class _ModeScreenState extends State<ModeScreen> {
   }
 
   void _openSettings(BuildContext context) {
+    try {
+      _voiceService?.stopAutoRecognitionCycle();
+      _voiceService?.removeListener(_onVoiceServiceUpdate);
+    } catch (_) {}
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const SettingsScreen()),
@@ -263,6 +277,63 @@ class _ModeScreenState extends State<ModeScreen> {
                 },
               ),
 
+              const SizedBox(height: 16),
+
+              // 도움말 버튼
+              Container(
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  color: panel,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: divider.withValues(alpha: 0.25)),
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.help_outline,
+                          color: Colors.white,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        const AccessibleTitle(
+                          '음성 명령어 도움말',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    ElevatedButton.icon(
+                      onPressed: _showVoiceCommandHelp,
+                      icon: const Icon(Icons.volume_up, color: Colors.white),
+                      label: const AccessibleText(
+                        '사용 가능한 음성 명령어 듣기',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF3A465B),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 12,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
               const SizedBox(height: 40),
             ],
           ),
@@ -280,7 +351,7 @@ class _ModeScreenState extends State<ModeScreen> {
     });
 
     if (_isListening) {
-      _speakText('음성인식을 시작합니다.');
+      SystemSound.play(SystemSoundType.click);
       // STT 시작
       try {
         await _voiceService!.startListening();
@@ -290,7 +361,7 @@ class _ModeScreenState extends State<ModeScreen> {
         setState(() => _isListening = false);
       }
     } else {
-      _speakText('음성인식을 중지합니다.');
+      SystemSound.play(SystemSoundType.alert);
       // STT 중지
       try {
         await _voiceService!.stopListeningAndProcess();
@@ -332,14 +403,44 @@ class _ModeScreenState extends State<ModeScreen> {
     } else if (lowerCommand.contains('설정')) {
       _speakText('설정 화면으로 이동합니다.');
       _openSettings(context);
+    } else if (lowerCommand.contains('도움말') ||
+        lowerCommand.contains('help') ||
+        lowerCommand.contains('사용법')) {
+      _showVoiceCommandHelp();
     } else {
-      _speakText('모드 선택 화면입니다. 카메라, 길찾기, 또는 설정을 말씀해주세요.');
+      _speakText('모드 선택 화면입니다. 카메라, 길찾기, 설정을 말씀하시거나 도움말을 요청하세요.');
     }
   }
 
+  /// 도움말 음성 안내
+  void _showVoiceCommandHelp() async {
+    _speakText('도움말 안내!');
+
+    await Future.delayed(const Duration(milliseconds: 800));
+
+    await _speakText('모드 선택 화면에서 사용 가능한 음성 명령어입니다.');
+    await Future.delayed(const Duration(milliseconds: 600));
+
+    await _speakText('카메라 모드로 이동하려면 "카메라" 또는 "사진"이라고 말하세요.');
+    await Future.delayed(const Duration(milliseconds: 600));
+
+    await _speakText('길찾기 모드로 이동하려면 "길찾기", "지도", 또는 "네비게이션"이라고 말하세요.');
+    await Future.delayed(const Duration(milliseconds: 600));
+
+    await _speakText('설정 화면으로 이동하려면 "설정"이라고 말하세요.');
+    await Future.delayed(const Duration(milliseconds: 600));
+
+    await _speakText('마이크 버튼을 눌러서 음성 명령을 시작할 수 있습니다.');
+    await Future.delayed(const Duration(milliseconds: 600));
+  }
+
   /// 음성 출력 함수
-  void _speakText(String text) async {
-    await VoiceUtils.speakWithService(_voiceService, text);
+  Future<void> _speakText(String text) async {
+    await VoiceUtils.speakWithService(
+      _voiceService,
+      text,
+      speed: _voiceService?.getCurrentSpeed() ?? 1.0,
+    );
   }
 }
 
@@ -402,6 +503,7 @@ class _ModeCard extends StatelessWidget {
                       fontSize: 20,
                       fontWeight: FontWeight.w900,
                     ),
+                    enableVoiceOutput: false,
                   ),
                   const SizedBox(height: 6),
                   AccessibleDescription(
@@ -411,6 +513,7 @@ class _ModeCard extends StatelessWidget {
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
                     ),
+                    enableVoiceOutput: false,
                   ),
                 ],
               ),

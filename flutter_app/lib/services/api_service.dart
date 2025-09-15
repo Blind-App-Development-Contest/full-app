@@ -230,7 +230,7 @@ class ApiService {
       }
 
       final payload = {
-        'user_id': uuid,
+        'uuid': uuid,
         'step_length_cm': stepLenCm,
         if (result['sessionDurationSeconds'] != null)
           'session_duration_seconds': result['sessionDurationSeconds'],
@@ -263,7 +263,7 @@ class ApiService {
         Uri.parse('$baseUrl/api/users/footstep/update'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'user_id': uuid,
+          'uuid': uuid,
           'step_length_cm': step_length_cm.toInt(),
         }),
       ).timeout(const Duration(seconds: 30)); // Azure 서버를 위해 타임아웃 증가
@@ -290,7 +290,7 @@ class ApiService {
         Uri.parse('$baseUrl/api/users/voice'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'user_id': uuid,
+          'uuid': uuid,
           'text': '음성 설정이 저장되었습니다.',
           'gender': settings['gender'] ?? 'F',
           'speed': settings['speed'] ?? 1.0,
