@@ -1,9 +1,11 @@
 import re
-from typing import Dict, List, Any, Tuple
+import logging
+from typing import Dict, List, Any, Tuple, Optional
 from models.recognition_schemas import SpeechRecognitionResponse
 from config.settings import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 class SpeechAnalyzer:
     """음성 명령 분석 클래스"""
@@ -465,25 +467,45 @@ class SpeechAnalyzer:
                 'response_type': 'measurement_input',
                 'category': 'voice_guidance_response'
             })
-            
+
             # 숫자 추출
             import re
             numbers = re.findall(r'\d+(?:\.\d+)?', text)
-            
-            if intent == 'DISTANCE_RESPONSE' and numbers:
-                entities['distance_meters'] = float(numbers[0])
-                entities['action'] = 'input_distance'
-                
+
+            if intent == 'DISTANCE_RESPONSE':
+                if numbers:
+                    try:
+                        distance_value = float(numbers[0])
+                        entities['distance_meters'] = distance_value
+                        entities['action'] = 'input_distance'
+                    except (ValueError, IndexError) as e:
+                        logger.warning(f"Distance 숫자 변환 실패: {numbers[0]}, 오류: {e}")
+                else:
+                    # 한국어 숫자 변환 시도
+                    korean_number = self._convert_korean_to_number(text)
+                    if korean_number is not None:
+                        entities['distance_meters'] = float(korean_number)
+                        entities['action'] = 'input_distance'
+
             elif intent == 'STEP_COUNT_RESPONSE':
                 if numbers:
-                    entities['step_count'] = int(numbers[0])  
-                    entities['action'] = 'input_step_count'
+                    try:
+                        step_count_value = int(numbers[0])
+                        entities['step_count'] = step_count_value
+                        entities['action'] = 'input_step_count'
+                    except (ValueError, IndexError) as e:
+                        logger.warning(f"Step count 숫자 변환 실패: {numbers[0]}, 오류: {e}")
                 else:
                     # 한국어 숫자 변환 시도
                     korean_number = self._convert_korean_to_number(text)
                     if korean_number is not None:
                         entities['step_count'] = korean_number
                         entities['action'] = 'input_step_count'
+                    else:
+                        # 걸음수를 추출할 수 없는 경우 에러 처리
+                        logger.warning(f"걸음수 추출 실패: '{text}' - 숫자나 한국어 숫자를 찾을 수 없음")
+                        entities['action'] = 'input_step_count_failed'
+                        entities['error'] = 'step_count_extraction_failed'
                 
         elif intent in ['CONFIRMATION_RESPONSE', 'CORRECTION_RESPONSE', 'READY_RESPONSE']:
             entities.update({
@@ -758,7 +780,7 @@ class SpeechAnalyzer:
             'context_support': len(self.CONTEXT_PRIORITY)
         }
     
-    def _convert_korean_to_number(self, text: str) -> int:
+    def _convert_korean_to_number(self, text: str) -> Optional[int]:
         """한국어 숫자를 아라비아 숫자로 변환"""
         # 한국어 숫자 매핑 (순우리말)
         korean_numbers = {

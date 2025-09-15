@@ -60,7 +60,7 @@ class SpeechService:
         file_size_mb = total_bytes / (1024 * 1024)
         
         if file_size_mb > settings.MAX_FILE_SIZE_MB:
-            ErrorLogger.log_service_error("SpeechService", "파일 크기 검증", Exception(f"파일 크기 초과: {file_size_mb:.2f}MB"), {"file_size_mb": file_size_mb, "max_size": MAX_AUDIO_SIZE_MB})
+            ErrorLogger.log_service_error("SpeechService", "파일 크기 검증", Exception(f"파일 크기 초과: {file_size_mb:.2f}MB"), {"file_size_mb": file_size_mb, "max_size": settings.MAX_FILE_SIZE_MB})
             raise HTTPException(
                 status_code=413,
                 detail=f"파일 크기가 너무 큽니다. 최대 {settings.MAX_FILE_SIZE_MB}MB"

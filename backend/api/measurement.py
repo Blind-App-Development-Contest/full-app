@@ -33,9 +33,9 @@ os.makedirs(DEBUG_FRAMES_DIR, exist_ok=True)
 async def save_debug_frame(cv_image, frame_count: int, user_id: str):
     """진단용 프레임 저장 - 카메라 입력을 시각적으로 검사하기 위함"""
     try:
+        import cv2
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{DEBUG_FRAMES_DIR}/debug_{user_id}_{timestamp}_frame_{frame_count:03d}.jpg"
-        
         # 이미지를 파일로 저장
         success = cv2.imwrite(filename, cv_image)
         if success:
@@ -225,7 +225,7 @@ async def process_measurement_frame(
         logger.info(f'[이미지 처리] 크기: {cv_image.shape}, 프레임: {frame_count}')
         
         # 2.5. DEBUG: 프레임 저장 (진단용)
-        await save_debug_frame(cv_image, frame_count, user_id)
+        await save_debug_frame(cv_image, frame_count, uid)
         
         # 3. 카메라 기반 간단 측정 프로세서
         processor = get_fastdepth_processor()
@@ -275,6 +275,7 @@ async def reset_measurement():
     진행 중인 보폭 측정 리셋
     """
     try:
+        command_executor = service_manager.get_command_executor()
         if command_executor.is_measurement_active():
             # 측정 취소 실행
             await command_executor._execute_footstep_measurement_cancel({})
@@ -305,9 +306,10 @@ async def start_measurement_session(request: MeasurementSessionRequest):
         측정 세션 시작 결과 및 카메라 모드 상태
     """
     try:
-        user_id = request.user_id
+        user_id = str(request.user_id)  # UUID를 문자열로 변환
         logger.info(f"측정 세션 시작 요청 - 사용자: {user_id}")
-        
+
+        command_executor = service_manager.get_command_executor()
         # 이미 측정이 활성화되어 있는지 확인
         if command_executor.is_measurement_active():
             return {
@@ -384,9 +386,10 @@ async def stop_measurement_session(request: MeasurementSessionRequest):
         측정 세션 완료 결과 및 카메라 모드 상태
     """
     try:
-        user_id = request.user_id
+        user_id = str(request.user_id)  # UUID를 문자열로 변환
         logger.info(f"측정 세션 중지 요청 - 사용자: {user_id}")
-        
+
+        command_executor = service_manager.get_command_executor()
         # 현재 측정 상태 확인
         if not command_executor.is_measurement_active():
             return {

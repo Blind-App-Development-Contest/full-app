@@ -1,6 +1,6 @@
 """표준화된 보폭 측정 Pydantic 모델들 - 기존 중복 데이터 구조 통합"""
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, Dict, Any, List, Union
 from datetime import datetime
 from enum import Enum
@@ -185,20 +185,14 @@ class StepMeasurementRequest(BaseModel):
     context: Optional[str] = Field(None, description="측정 컨텍스트")
     notes: Optional[str] = Field(None, description="측정 메모")
     
-    @field_validator('step_count')
-    @classmethod
-    def validate_measurement_data(cls, v, info):
+    @model_validator(mode='after')
+    def validate_measurement_data(self):
         """측정 데이터 유효성 검증"""
         # frame_data나 voice_data 또는 step_count 중 하나는 있어야 함
-        if info.data:
-            frame_data = info.data.get('frame_data')
-            voice_data = info.data.get('voice_data')
-            step_count = info.data.get('step_count')
-            
-            if not frame_data and not voice_data and not step_count:
-                raise ValueError("frame_data, voice_data, step_count 중 적어도 하나는 필요합니다")
-        
-        return v
+        if not self.frame_data and not self.voice_data and not self.step_count:
+            raise ValueError("frame_data, voice_data, step_count 중 적어도 하나는 필요합니다")
+
+        return self
 
 class StepUpdateRequest(BaseModel):
     """보폭 업데이트 요청 모델 - FootstepUpdateRequest 개선"""
@@ -457,15 +451,14 @@ class StepModelConverter:
         step_count: int,
         user_id: Optional[str] = None
     ) -> StepMeasurementRequest:
-        """기존 FootstepDepthMeasurementRequest에서 변환"""
+        """기존 FootstepDepthMeasurementRequest에서 변환 - distance_meters는 legacy 매개변수로만 받고 내부에서 처리"""
         return StepMeasurementRequest(
-            distance_meters=distance_meters,
             step_count=step_count,
             measurement_method=StepMeasurementMethod.DISTANCE_BASED,
             user_id=user_id,
             manual_step_length_cm=None,
-            context=None,
-            notes=None
+            context=f"legacy_distance_{distance_meters}m",  # distance 정보를 context에 저장
+            notes=f"Converted from legacy request with {distance_meters}m distance"
         )
     
     @staticmethod

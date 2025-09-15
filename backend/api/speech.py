@@ -277,7 +277,7 @@ async def execute_advanced_command(request: SpeechCommandRequest):
             )
         
         # 3단계: 통합 응답 생성
-        current_state = executor.get_current_measurement_status()
+        current_state = executor.get_step_measurement_status()
         
         # 고급 명령 처리 결과를 UnifiedCommandResponse로 변환
         unified_response = SchemaConverter.to_unified_command_response(

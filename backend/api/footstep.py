@@ -89,7 +89,7 @@ async def _extract_step_count_from_voice(voice_file: UploadFile) -> int:
     """음성 파일에서 걸음수 추출"""
     try:
         # 음성을 텍스트로 변환
-        transcribed_text = await speech_service.transcribe_from_uploadfile(voice_file)
+        transcribed_text = await speech_service.transcribe_from_file(voice_file)
         print(f"[음성인식] 변환된 텍스트: '{transcribed_text}'")
         
         # 텍스트에서 의도 분석
@@ -100,10 +100,13 @@ async def _extract_step_count_from_voice(voice_file: UploadFile) -> int:
         
         # 걸음수 추출
         if speech_result.intent == "STEP_COUNT_RESPONSE":
-            if "step_count" in speech_result.entities:
+            if "step_count" in speech_result.entities and speech_result.entities["step_count"] is not None:
                 step_count = speech_result.entities["step_count"]
                 print(f"[음성분석] 걸음수 추출 성공: {step_count}걸음")
                 return int(step_count)
+            elif speech_result.entities.get("action") == "input_step_count_failed":
+                print(f"[음성분석] 걸음수 추출 실패: {speech_result.entities.get('error', '알 수 없는 오류')}")
+                raise ValueError("음성에서 걸음수를 명확히 인식할 수 없습니다")
         
         # 직접 숫자 추출 시도
         import re

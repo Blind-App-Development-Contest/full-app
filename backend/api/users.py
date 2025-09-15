@@ -254,7 +254,7 @@ async def complete_onboarding(
                 "user_name": payload.user_name,
                 "voice_settings": {
                     "gender": payload.voice_gender,
-                    "speed": normalized_speed  # 정규화된 속도 반환
+                    "speed": payload.voice_speed  # 정규화된 속도 반환
                 },
                 "step_length_cm": payload.step_length_cm,
                 "caregiver": {

@@ -92,16 +92,16 @@ class CommandExecutor:
         
         # 음성 안내 메시지 정의 (중앙화)
         self.voice_messages = {
-            "step_measurement_complete": "보폭 측정이 완료되었습니다! 측정된 보폭은 {step_length}cm입니다.",
+            "step_measurement_complete": "보폭 계산 완료! 계산된 보폭은 {step_length}cm입니다.",
             "step_measurement_reset": "보폭이 {step_length}cm로 재설정되었습니다.",
-            "voice_setting_complete_onboarding": "음성 설정이 완료되었습니다. 다음으로 보호자 정보를 설정해주세요.",
+            "voice_setting_complete_onboarding": "음성 설정 완료. 다음으로 보호자 정보를 설정해주세요.",
             "voice_setting_complete_reset": "음성 설정이 변경되었습니다.",
-            "caregiver_create_onboarding": "보호자 정보가 등록되었습니다. 모든 온보딩 과정이 완료되었습니다! 이제 앱 사용을 시작하실 수 있습니다.",
+            "caregiver_create_onboarding": "보호자 설정 완료. 앱을 시작합니다",
             "caregiver_create_reset": "보호자 정보가 등록되었습니다.",
-            "caregiver_update_onboarding": "보호자 정보가 수정되었습니다. 모든 온보딩 과정이 완료되었습니다!",
+            "caregiver_update_onboarding": "보호자 정보가 수정되었습니다.",
             "caregiver_update_reset": "보호자 정보가 변경되었습니다.",
             "setup_complete": "모든 설정이 완료되었습니다!",
-            "settings_menu_open": "설정 메뉴를 열었습니다. 음성 안내를 듣고 설정을 변경하세요."
+            "settings_menu_open": "설정. 음성 안내를 듣고 설정을 변경하세요."
         }
 
     def get_voice_message(self, message_key: str, **kwargs) -> str:
@@ -247,18 +247,7 @@ class CommandExecutor:
             return await self._setup_start()
 
         elif self.current_setup_step == SetupStep.USER_NAME:
-            # NAME_INPUT intent가 있으면 엔티티에서 이름 추출
-            if intent == "NAME_INPUT" and "user_name" in entities:
-                return await self._setup_user_name(entities["user_name"])
-            # UNKNOWN이나 기타 intent도 이름으로 처리 (이름 입력 단계에서)
-            elif intent in ["UNKNOWN", "OTHER"] or len(command_text.strip()) > 0:
-                return await self._setup_user_name(command_text)
-            else:
-                return CommandExecutionResult(
-                    status=ExecutionStatus.PENDING,
-                    message="이름을 다시 말씀해주세요.",
-                    actions=["tts_announce"]
-                )
+            return await self._setup_user_name(command_text)
 
         elif self.current_setup_step == SetupStep.STEP_LENGTH:
             return await self._setup_step_length(intent, entities)  
@@ -297,8 +286,7 @@ class CommandExecutor:
         # 이름 추출 (더 정교한 처리)
         name = command_text.replace("내 이름은", "").replace("이름은", "").replace("저는", "").replace("입니다", "").replace("예요", "").replace("에요", "").strip()
         
-        # 이름 유효성 검사 완화 (한 글자 이름도 허용)
-        if len(name) >= 1 and name.replace(" ", "").isalpha():
+        if len(name) > 1:
             self.user_settings["user_name"] = name
             self.current_setup_step = SetupStep.STEP_LENGTH
             
@@ -407,25 +395,20 @@ class CommandExecutor:
                 )
             
             # 현재 측정 상태 반환 (CommandExecutor 상태를 전달)
-            step_result = self.step_tracker.get_current_step_result()
-            performance_metrics = self.step_tracker.get_performance_metrics(
-                frame_count=self.frame_count,
-                start_time=self.measurement_start_time or time.time()
-            )
             
             return CommandExecutionResult(
                 status=ExecutionStatus.SUCCESS,
-                message=f"측정이 진행 중입니다. 현재까지 {step_result.step_count}걸음 측정되었습니다. 계속 걸어주세요.",
+                message="측정이 진행 중입니다. 계속 걸어주세요.",
                 data={
                     "mode": "footstep_walking",
                     "measurement_status": "측정중",
-                    "measurement_type": "kalman_filter",
-                    "current_step_cm": step_result.step_length_cm,
-                    "step_count": step_result.step_count,
-                    "confidence": step_result.confidence,
-                    "tracking_quality": step_result.tracking_quality,
+                    "measurement_type": "distance_based",
+                    "current_step_cm": self.user_settings.get("step_length", 60),
+                    "step_count": 0,  # 레거시 호환성
+                    "confidence": 0.7,  # 기본값
+                    "tracking_quality": "good",  # 기본값
                     "measurement_duration": round(time.time() - self.measurement_start_time if self.measurement_start_time else 0, 1),
-                    "fps": performance_metrics["fps"]
+                    "fps": 0  # 기본값
                 },
                 actions=["footstep_walking_start", "tts_announce"]
             )
@@ -793,13 +776,8 @@ class CommandExecutor:
             # 프레임 데이터를 UnifiedStepCalculator용으로 저장
             self._collect_frame_data_for_calculation(frame_data)
             
-            # 현재 보폭 결과 반환 (CommandExecutor 상태를 전달)
-            step_result = self.step_tracker.get_current_step_result()
-            
-            if step_result.step_count > 0:
-                return step_result
-            
-            return None
+            # 현재 보폭 결과 반환 (레거시 호환성을 위해 None 반환)
+            return None  # 레거시 step_tracker 제거됨
                 
         except Exception as e:
             ErrorLogger.log_service_error("CommandExecutor", "프레임 처리", e)
@@ -972,13 +950,8 @@ class CommandExecutor:
             "duration": time.time() - self.measurement_start_time if self.measurement_start_time else 0,
             "frame_count": self.frame_count,
             "tracker_status": {
-                "current_step": self.step_tracker.get_current_step_result() if self.step_tracker else None,
-                "performance": (
-                    self.step_tracker.get_performance_metrics(
-                        frame_count=self.frame_count,
-                        start_time=self.measurement_start_time or time.time()
-                    ) if self.step_tracker else None
-                )
+                "current_step": None,  # 레거시 step_tracker 제거됨
+                "performance": None    # 레거시 step_tracker 제거됨
             }
         }
 

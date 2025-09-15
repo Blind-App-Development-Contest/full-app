@@ -324,6 +324,24 @@ class FastDepthProcessor:
             logger.warning(f"[FastDepth] 이미지 신뢰도 계산 오류: {e}")
             return 0.3
 
+    def _update_stats(self, processing_time: float, success: bool, step_length_cm: Optional[float] = None, confidence: Optional[float] = None):
+        """처리 통계 업데이트"""
+        try:
+            self.processing_stats["total_processed"] += 1
+
+            if success:
+                self.processing_stats["successful_measurements"] += 1
+            else:
+                self.processing_stats["failed_measurements"] += 1
+
+            # 평균 처리 시간 업데이트
+            total = self.processing_stats["total_processed"]
+            current_avg = self.processing_stats["average_processing_time"]
+            self.processing_stats["average_processing_time"] = (current_avg * (total - 1) + processing_time) / total
+
+        except Exception as e:
+            logger.warning(f"[FastDepth] 통계 업데이트 오류: {e}")
+
     def reset_stats(self):
         """통계 리셋"""
         self.processing_stats = {

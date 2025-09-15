@@ -223,3 +223,20 @@ class SchemaConverter:
             session_id=None,  # 세션 ID 추가
             start_time=datetime.fromtimestamp(progress.get("start_time", 0)) if progress.get("start_time") else None
         )
+
+    @staticmethod
+    def to_unified_command_response(
+        recognition_result,
+        execution_result,
+        measurement_status=None,
+        user_id=None,
+        advanced_features_enabled=True
+    ) -> UnifiedCommandResponse:
+        """통합 명령 응답 생성"""
+        return UnifiedCommandResponse(
+            intent=recognition_result.intent,
+            entities=recognition_result.entities,
+            confidence=recognition_result.confidence,
+            execution=execution_result,
+            measurement_status=measurement_status
+        )
