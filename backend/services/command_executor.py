@@ -23,6 +23,8 @@ from models.step_models import (
 )
 from config.settings import get_settings
 from utils.fastdepth_processor import get_fastdepth_processor
+from middleware.error_handler import ErrorLogger
+# voice_speed_converter 불필요 - 직접 속도 값 사용
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -56,23 +58,23 @@ class CommandExecutionResult:
 class CommandExecutor:
     """음성 명령 실행 엔진"""
     
-    def __init__(self, user_id: str = None):
-        self.user_id = user_id
+    def __init__(self, user_id: str | None = None):
+        self.user_id = user_id or "default"
         self.is_listening = True
         self.current_mode = AppMode.SETUP
         self.current_setup_step = SetupStep.START
         self.execution_history = []
         
         # 상태 영속화 초기화
-        if user_id:
-            self._load_user_state(user_id)
+        if self.user_id and self.user_id != "default":
+            self._load_user_state(self.user_id)
 
         # 사용자 설정 정보 
         self.user_settings = {
             "user_name": None,
             "step_length": None,
             "voice_gender": "F", 
-            "voice_speed": 1.0, # 0.5 ~ 2.0 배속
+            "voice_speed": 1.0, # Google TTS speaking_rate (0.25-4.0)
             "caregiver_name": None,
             "caregiver_phone": None,
             "preferred_mode": None
@@ -87,6 +89,30 @@ class CommandExecutor:
         
         self.fastdepth_processor = None  # 새로운 FastDepth 프로세서
         self.session_id = None # 측정 세션 ID
+        
+        # 음성 안내 메시지 정의 (중앙화)
+        self.voice_messages = {
+            "step_measurement_complete": "보폭 계산 완료! 계산된 보폭은 {step_length}cm입니다.",
+            "step_measurement_reset": "보폭이 {step_length}cm로 재설정되었습니다.",
+            "voice_setting_complete_onboarding": "음성 설정 완료. 다음으로 보호자 정보를 설정해주세요.",
+            "voice_setting_complete_reset": "음성 설정이 변경되었습니다.",
+            "caregiver_create_onboarding": "보호자 설정 완료. 앱을 시작합니다",
+            "caregiver_create_reset": "보호자 정보가 등록되었습니다.",
+            "caregiver_update_onboarding": "보호자 정보가 수정되었습니다.",
+            "caregiver_update_reset": "보호자 정보가 변경되었습니다.",
+            "setup_complete": "모든 설정이 완료되었습니다!",
+            "settings_menu_open": "설정. 음성 안내를 듣고 설정을 변경하세요."
+        }
+
+    def get_voice_message(self, message_key: str, **kwargs) -> str:
+        """음성 안내 메시지 가져오기"""
+        template = self.voice_messages.get(message_key, "")
+        if not template:
+            return ""
+        try:
+            return template.format(**kwargs)
+        except KeyError:
+            return template
 
     def _load_user_state(self, user_id: str):
         """데이터베이스에서 사용자 설정을 조회하여 상태를 판단"""
@@ -154,7 +180,7 @@ class CommandExecutor:
                     print(f"[DEBUG] 온보딩 미완료 - SETUP 모드, 단계: {self.current_setup_step.value}")
                     
         except Exception as e:
-            print(f"[ERROR] 사용자 상태 로드 실패: {e}")
+            ErrorLogger.log_service_error("CommandExecutor", "사용자 상태 로드", e)
             # 오류 발생 시 기본 상태 유지
 
     def _save_user_state(self):
@@ -173,15 +199,8 @@ class CommandExecutor:
                     print(f"[DEBUG] 새 사용자 생성 완료 - user_id: {self.user_id}")
                 
         except Exception as e:
-            print(f"[ERROR] 사용자 생성 실패: {e}")
+            ErrorLogger.log_service_error("CommandExecutor", "사용자 생성", e)
         
-        # 보폭 계산을 위한 데이터 수집
-        self.processed_frames = []  # For UnifiedStepCalculator
-        self.total_distance_traveled = 0.0  # Accumulated distance in meters
-        self.last_position = None  # Last known foot position
-        
-        # 새로운 IMU 통합 시스템 사용 (unified calculator 제거됨)
-
         
     async def execute_command(
         self, 
@@ -214,7 +233,7 @@ class CommandExecutor:
             return result
             
         except Exception as e:
-            logger.error(f"명령 실행 중 오류: {e}")
+            ErrorLogger.log_service_error("CommandExecutor", "명령 실행", e)
             return CommandExecutionResult(
                 status=ExecutionStatus.FAILED,
                 message=f"명령 실행 중 오류가 발생했습니다: {str(e)}"
@@ -360,7 +379,7 @@ class CommandExecutor:
             )
             
         except Exception as e:
-            print(f"[CommandExecutor] 보폭 측정 시작 실패: {e}")
+            ErrorLogger.log_service_error("CommandExecutor", "보폭 측정 시작", e)
             return CommandExecutionResult(
                 status=ExecutionStatus.FAILED,
                 message=f"보폭 측정 시작 실패: {str(e)}"
@@ -376,25 +395,20 @@ class CommandExecutor:
                 )
             
             # 현재 측정 상태 반환 (CommandExecutor 상태를 전달)
-            step_result = self.step_tracker.get_current_step_result()
-            performance_metrics = self.step_tracker.get_performance_metrics(
-                frame_count=self.frame_count,
-                start_time=self.measurement_start_time or time.time()
-            )
             
             return CommandExecutionResult(
                 status=ExecutionStatus.SUCCESS,
-                message=f"측정이 진행 중입니다. 현재까지 {step_result.step_count}걸음 측정되었습니다. 계속 걸어주세요.",
+                message="측정이 진행 중입니다. 계속 걸어주세요.",
                 data={
                     "mode": "footstep_walking",
                     "measurement_status": "측정중",
-                    "measurement_type": "kalman_filter",
-                    "current_step_cm": step_result.step_length_cm,
-                    "step_count": step_result.step_count,
-                    "confidence": step_result.confidence,
-                    "tracking_quality": step_result.tracking_quality,
+                    "measurement_type": "distance_based",
+                    "current_step_cm": self.user_settings.get("step_length", 60),
+                    "step_count": 0,  # 레거시 호환성
+                    "confidence": 0.7,  # 기본값
+                    "tracking_quality": "good",  # 기본값
                     "measurement_duration": round(time.time() - self.measurement_start_time if self.measurement_start_time else 0, 1),
-                    "fps": performance_metrics["fps"]
+                    "fps": 0  # 기본값
                 },
                 actions=["footstep_walking_start", "tts_announce"]
             )
@@ -472,7 +486,7 @@ class CommandExecutor:
             
             return CommandExecutionResult(
                 status=ExecutionStatus.SUCCESS,
-                message=f"보폭 측정이 완료되었습니다! 측정된 보폭은 {result.step_length_cm}cm입니다. {quality_msg} 이제 다음 단계로 진행하겠습니다.",
+                message=self.get_voice_message("step_measurement_complete", step_length=result.step_length_cm),
                 data={
                     "mode": "footstep_complete_next_step",
                     "measurement_type": result.measurement_method.value,
@@ -497,7 +511,7 @@ class CommandExecutor:
             )
             
         except Exception as e:
-            print(f"[CommandExecutor] 보폭 측정 완료 실패: {e}")
+            ErrorLogger.log_service_error("CommandExecutor", "보폭 측정 완료", e)
             self.cancel_step_measurement()  # 안전하게 상태 리셋
             return CommandExecutionResult(
                 status=ExecutionStatus.FAILED,
@@ -528,7 +542,7 @@ class CommandExecutor:
             )
             
         except Exception as e:
-            print(f"[CommandExecutor] 보폭 측정 취소 실패: {e}")
+            ErrorLogger.log_service_error("CommandExecutor", "보폭 측정 취소", e)
             self.cancel_step_measurement()  # 강제 취소
             return CommandExecutionResult(
                 status=ExecutionStatus.SUCCESS,  # 취소는 항상 성공으로 처리
@@ -601,7 +615,7 @@ class CommandExecutor:
         """보폭 측정 시작 - 모든 컴포넌트에서 사용하는 단일 진입점"""
         try:
             if self.measurement_active:
-                logger.warning("이미 측정이 활성화되어 있습니다")
+                ErrorLogger.log_service_error("CommandExecutor", "보폭 측정 시작", Exception("이미 측정이 활성화되어 있습니다"))
                 return False
             
             # 레거시 시스템 정리
@@ -631,7 +645,7 @@ class CommandExecutor:
             return True
             
         except Exception as e:
-            logger.error(f"보폭 측정 시작 실패: {e}")
+            ErrorLogger.log_service_error("CommandExecutor", "보폭 측정 시작 실패", e)
             self.measurement_active = False
             self.measurement_status = MeasurementStatus.INACTIVE
             return False
@@ -640,7 +654,7 @@ class CommandExecutor:
         """보폭 측정 중지 - 최종 결과 반환 (새로운 IMU 시스템 사용)"""
         try:
             if not self.measurement_active:
-                logger.warning("활성화된 측정이 없습니다")
+                ErrorLogger.log_service_error("CommandExecutor", "보폭 측정 중지", Exception("활성화된 측정이 없습니다"))
                 return None
             
             # 레거시 fallback
@@ -666,15 +680,16 @@ class CommandExecutor:
             # 결과가 유효한지 확인
             if final_result is None or final_result.step_count == 0:
                 self.measurement_status = MeasurementStatus.CANCELLED
-                logger.warning("측정된 보폭이 없음")
+                ErrorLogger.log_service_error("CommandExecutor", "보폭 측정 중지", Exception("측정된 보폭이 없음"))
                 return None
             
             # 사용자 설정에 보폭 저장
             self.user_settings["step_length"] = final_result.step_length_cm
             
-            # CRITICAL: 측정 완료 후 step_tracker 완전 정리
+            # CRITICAL: 측정 완료 후 step_tracker 완전 정리 (메모리 누수 방지)
             logger.info("측정 완료 - step_tracker 및 관련 데이터 정리 중...")
             if self.step_tracker:
+                del self.step_tracker
                 self.step_tracker = None
             
             # 측정 관련 데이터 완전 정리
@@ -685,10 +700,18 @@ class CommandExecutor:
             self.total_distance_traveled = 0.0
             self.last_position = None
             
+            # GPU 메모리 정리 (MiDaS 모델 사용 후)
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass  # GPU 정리 실패해도 계속 진행
+            
             return final_result
             
         except Exception as e:
-            logger.error(f"보폭 측정 중지 실패: {e}")
+            ErrorLogger.log_service_error("CommandExecutor", "보폭 측정 중지 실패", e)
             self.measurement_active = False
             self.measurement_status = MeasurementStatus.CANCELLED
             return None
@@ -717,7 +740,7 @@ class CommandExecutor:
             return True
             
         except Exception as e:
-            logger.error(f"보폭 측정 취소 실패: {e}")
+            ErrorLogger.log_service_error("CommandExecutor", "보폭 측정 취소 실패", e)
             return False
     
     async def process_step_frame(self, frame_data: Dict[str, Any]) -> Optional[StepResult]:
@@ -743,7 +766,7 @@ class CommandExecutor:
                             logger.info(f"새로운 보폭 측정: {measurement_result.step_length_cm}cm")
                         
                     except Exception as e:
-                        logger.error(f"새로운 시스템 프레임 처리 오류: {e}")
+                        ErrorLogger.log_service_error("CommandExecutor", "새로운 시스템 프레임 처리", e)
                 
             # 레거시 호환성 로깅
             logger.debug("프레임 처리 완료 (새로운 IMU 시스템 사용)")
@@ -753,16 +776,11 @@ class CommandExecutor:
             # 프레임 데이터를 UnifiedStepCalculator용으로 저장
             self._collect_frame_data_for_calculation(frame_data)
             
-            # 현재 보폭 결과 반환 (CommandExecutor 상태를 전달)
-            step_result = self.step_tracker.get_current_step_result()
-            
-            if step_result.step_count > 0:
-                return step_result
-            
-            return None
+            # 현재 보폭 결과 반환 (레거시 호환성을 위해 None 반환)
+            return None  # 레거시 step_tracker 제거됨
                 
         except Exception as e:
-            logger.error(f"프레임 처리 오류: {e}")
+            ErrorLogger.log_service_error("CommandExecutor", "프레임 처리", e)
             return None
     
     def _collect_frame_data_for_calculation(self, frame_data: Dict[str, Any]):
@@ -791,7 +809,7 @@ class CommandExecutor:
                 self.last_position = current_position
                 
         except Exception as e:
-            logger.warning(f"프레임 데이터 수집 중 오류: {e}")
+            ErrorLogger.log_service_error("CommandExecutor", "프레임 데이터 수집", e)
     
     def _extract_best_foot_position(self, frame_data: Dict[str, Any]) -> Optional[tuple]:
         """프레임에서 가장 신뢰할 수 있는 발 위치 추출"""
@@ -816,7 +834,7 @@ class CommandExecutor:
             return None
             
         except Exception as e:
-            logger.warning(f"발 위치 추출 중 오류: {e}")
+            ErrorLogger.log_service_error("CommandExecutor", "발 위치 추출", e)
             return None
     
     def _calculate_final_step_result(
@@ -847,7 +865,7 @@ class CommandExecutor:
                     logger.info("프레임 기반 계산")
                         
                 except Exception as e:
-                    logger.warning(f"프레임 기반 계산 실패: {e}")
+                    ErrorLogger.log_service_error("CommandExecutor", "프레임 기반 계산", e)
             
             # 2순위: 거리 및 스텝 수 기반 계산
             if self.total_distance_traveled > 0 and kalman_result.step_count > 0:
@@ -864,7 +882,7 @@ class CommandExecutor:
                     # 거리 기반 계산도 새로운 시스템으로 통합됨
                             
                 except Exception as e:
-                    logger.warning(f"거리 기반 계산 실패: {e}")
+                    ErrorLogger.log_service_error("CommandExecutor", "거리 기반 계산", e)
             
             # 3순위: Kalman 결과 그대로 사용 (최소한의 데이터라도 있으면)
             if kalman_result.step_count > 0:
@@ -876,7 +894,7 @@ class CommandExecutor:
             return None
             
         except Exception as e:
-            logger.error(f"최종 보폭 계산 실패: {e}")
+            ErrorLogger.log_service_error("CommandExecutor", "최종 보폭 계산 실패", e)
             # 응급 상황에서는 Kalman 결과라도 반환
             if kalman_result and kalman_result.step_count > 0:
                 return kalman_result
@@ -932,13 +950,8 @@ class CommandExecutor:
             "duration": time.time() - self.measurement_start_time if self.measurement_start_time else 0,
             "frame_count": self.frame_count,
             "tracker_status": {
-                "current_step": self.step_tracker.get_current_step_result() if self.step_tracker else None,
-                "performance": (
-                    self.step_tracker.get_performance_metrics(
-                        frame_count=self.frame_count,
-                        start_time=self.measurement_start_time or time.time()
-                    ) if self.step_tracker else None
-                )
+                "current_step": None,  # 레거시 step_tracker 제거됨
+                "performance": None    # 레거시 step_tracker 제거됨
             }
         }
 
@@ -990,7 +1003,7 @@ class CommandExecutor:
                 actions=["tts_announce"]
             )
 
-        self.user_settings["voice_speed"] = speed  # 변수명 수정
+        self.user_settings["voice_speed"] = speed
         self.current_setup_step = SetupStep.CAREGIVER_INFO
 
         return CommandExecutionResult(
@@ -1080,7 +1093,7 @@ class CommandExecutor:
         
         return CommandExecutionResult(
             status=ExecutionStatus.SUCCESS,
-            message="모든 설정이 완료되었습니다!",
+            message=self.get_voice_message("setup_complete"),
             data={
                 "setup_complete": True,
                 "user_settings": self.user_settings
@@ -1228,7 +1241,7 @@ class CommandExecutor:
             
             return CommandExecutionResult(
                 status=ExecutionStatus.SUCCESS,
-                message="설정 메뉴를 열었습니다. 음성 안내를 듣고 설정을 변경하세요.",
+                message=self.get_voice_message("settings_menu_open"),
                 data={
                     "mode": "settings",
                     "available_options": [
@@ -1434,7 +1447,7 @@ class CommandExecutor:
                 return all([has_voice_setting, has_caregiver_info, has_footstep_info, has_user_name])
                 
         except Exception as e:
-            print(f"[ERROR] 온보딩 상태 확인 실패: {e}")
+            ErrorLogger.log_service_error("CommandExecutor", "온보딩 상태 확인", e)
             return False
     
     def get_execution_history(self, limit: int = 10) -> List[Dict[str, Any]]:
@@ -1462,7 +1475,5 @@ class CommandExecutor:
         
         # UnifiedStepCalculator 데이터도 리셋
         self.processed_frames.clear()
-        self.total_distance_traveled = 0.0
-        self.last_position = Noner()
         self.total_distance_traveled = 0.0
         self.last_position = None

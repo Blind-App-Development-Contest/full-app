@@ -1,4 +1,3 @@
-
 // lib/map_screen.dart
 import 'dart:async';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -11,7 +10,40 @@ import '../services/voice_service.dart';
 import '../utils/voice_utils.dart';
 import 'package:html/parser.dart' show parse;
 import '../constants/app_colors.dart';
+import 'package:flutter/services.dart';
 
+/// 음성 안내 우선순위 정의
+enum VoiceGuidancePriority {
+  emergency(3), // 긴급 (안전 관련)
+  navigation(2), // 경로 안내
+  interaction(1), // 사용자 상호작용
+  status(0); // 상태 안내
+
+  const VoiceGuidancePriority(this.level);
+  final int level;
+}
+
+/// 음성 안내 큐 아이템
+class _VoiceGuidanceItem {
+  final String text;
+  final VoiceGuidancePriority priority;
+  final DateTime timestamp;
+  final bool canBeInterrupted;
+
+  _VoiceGuidanceItem({
+    required this.text,
+    required this.priority,
+    this.canBeInterrupted = true,
+  }) : timestamp = DateTime.now();
+
+  /// 우선순위 비교 (높은 우선순위가 먼저)
+  int compareTo(_VoiceGuidanceItem other) {
+    final priorityCompare = other.priority.level.compareTo(priority.level);
+    if (priorityCompare != 0) return priorityCompare;
+    // 같은 우선순위면 시간 순서
+    return timestamp.compareTo(other.timestamp);
+  }
+}
 
 class MapScreen extends StatefulWidget {
   final String backendBaseUrl;
@@ -41,7 +73,7 @@ class _MapScreenState extends State<MapScreen> {
   bool _waitingForReadConfirmation = false; // 음성 안내 확인 대기 상태
   bool _isListening = false; // 음성인식 상태
   bool _mapAuthFailed = false; // 맵 인증 실패 상태
-  
+
   // VoiceService 연동
   VoiceService? _voiceService;
 
@@ -49,8 +81,13 @@ class _MapScreenState extends State<MapScreen> {
   StreamSubscription<Position>? _positionStream;
   int _currentInstructionIndex = 0;
   bool _isNavigating = false;
-  
+
   Timer? _statusAnnouncementTimer; // 주기적 상태 안내 타이머
+
+  // === 음성 안내 큐 시스템 ===
+  final List<_VoiceGuidanceItem> _voiceQueue = [];
+  bool _isProcessingQueue = false;
+  Timer? _queueProcessTimer;
 
   @override
   void initState() {
@@ -59,7 +96,7 @@ class _MapScreenState extends State<MapScreen> {
     _initializeVoiceService();
     _checkMapAuthStatus();
   }
-  
+
   void _checkMapAuthStatus() {
     // 맵 로드 후 인증 상태 확인
     Future.delayed(const Duration(seconds: 3), () {
@@ -77,18 +114,37 @@ class _MapScreenState extends State<MapScreen> {
   void dispose() {
     _stopVoiceGuidance(); // 음성 안내 중지
     _statusAnnouncementTimer?.cancel(); // 상태 안내 타이머 취소
+    _clearVoiceQueue(); // 음성 안내 큐 정리
+    // VoiceService 자동 인식 중지
+    try {
+      _voiceService?.stopAutoRecognitionCycle();
+      debugPrint('✅ MapScreen: 자동 인식 사이클 중지 완료');
+    } catch (e) {
+      debugPrint('❌ MapScreen: 자동 인식 중지 실패: $e');
+    }
+
+    // 음성 인식 상태 초기화
+    if (_isListening) {
+      try {
+        _voiceService?.stopListeningAndProcess();
+        _voiceService?.removeListener(_handleVoiceRecognitionResult);
+        debugPrint('✅ MapScreen: 진행 중인 음성 인식 중지 완료');
+      } catch (e) {
+        debugPrint('❌ MapScreen: 음성 인식 중지 실패: $e');
+      }
+    }
+
     _destinationController.dispose();
     super.dispose();
   }
-  
+
   void _initializeVoiceService() {
     try {
       _voiceService = context.read<VoiceService>();
       debugPrint("✅ MapScreen VoiceService 초기화 성공");
-      
+
       // 지도 화면 진입 시 시각장애인용 안내
       _announceMapScreenEntry();
-      
     } catch (e) {
       debugPrint("❌ MapScreen VoiceService 초기화 실패: $e");
     }
@@ -97,24 +153,21 @@ class _MapScreenState extends State<MapScreen> {
   /// 지도 화면 진입 시 시각장애인용 상세 안내
   Future<void> _announceMapScreenEntry() async {
     if (_voiceService == null) return;
-    
+
     try {
       await Future.delayed(const Duration(milliseconds: 500));
-      
-      await VoiceUtils.speakWithService(_voiceService, 
-        "길찾기 모드에 진입했습니다. "
-        "목적지를 입력하면 음성으로 경로를 안내해드립니다.", 
-        speed: 0.9
+
+      await _speakText(
+        "길찾기 모드입니다. "
+        "목적지를 입력하면 음성으로 경로를 안내해드립니다.",
       );
-      
+
       await Future.delayed(const Duration(milliseconds: 800));
-      
-      await VoiceUtils.speakWithService(_voiceService, 
+
+      await _speakText(
         "화면 하단의 입력창에 목적지를 말하거나 입력하세요. "
-        "음성인식 버튼을 사용할 수 있습니다.", 
-        speed: 0.9
+        "음성인식 버튼을 사용할 수 있습니다.",
       );
-      
     } catch (e) {
       debugPrint('❌ 지도 화면 진입 안내 실패: $e');
     }
@@ -123,29 +176,32 @@ class _MapScreenState extends State<MapScreen> {
   /// 경로 안내 시작 시 시각장애인용 상세 안내
   Future<void> _announceRouteStart() async {
     if (_voiceService == null || _instructions.isEmpty) return;
-    
+
     try {
       // 1단계: 경로 안내 시작 알림
-      await VoiceUtils.speakWithService(_voiceService, "경로 안내를 시작합니다!", speed: 1.0);
-      
+      await _speakText("경로 안내 시작!", priority: VoiceGuidancePriority.navigation);
+
       await Future.delayed(const Duration(milliseconds: 800));
-      
+
       // 2단계: 전체 경로 정보 안내
       final totalSteps = _instructions.length;
-      await VoiceUtils.speakWithService(_voiceService, 
-        "총 $totalSteps단계의 경로로 안내해드리겠습니다.", 
-        speed: 0.9
+      await _speakText(
+        "총 $totalSteps단계의 경로로 안내해드리겠습니다.",
+        priority: VoiceGuidancePriority.navigation,
       );
-      
+
       await Future.delayed(const Duration(milliseconds: 600));
-      
+
       // 3단계: 첫 번째 안내 시작
-      final firstInstruction = _instructions.first['instruction_html'] as String;
-      await VoiceUtils.speakWithService(_voiceService, "첫 번째 안내입니다. $firstInstruction", speed: 0.9);
-      
+      final firstInstruction =
+          _instructions.first['instruction_html'] as String;
+      await _speakText(
+        "첫 번째 안내입니다. $firstInstruction",
+        priority: VoiceGuidancePriority.navigation,
+      );
+
       // 4단계: 주기적 상태 안내 시작
       _startPeriodicStatusAnnouncement();
-      
     } catch (e) {
       debugPrint('❌ 경로 안내 시작 음성 안내 실패: $e');
     }
@@ -154,34 +210,31 @@ class _MapScreenState extends State<MapScreen> {
   /// 주기적 상태 안내 시작 (시각장애인용)
   void _startPeriodicStatusAnnouncement() {
     _statusAnnouncementTimer?.cancel();
-    
+
     // 30초마다 현재 상태 안내
-    _statusAnnouncementTimer = Timer.periodic(
-      const Duration(seconds: 30), 
-      (timer) {
-        if (_isNavigating && _currentInstructionIndex < _instructions.length) {
-          _announceCurrentStatus();
-        } else {
-          timer.cancel();
-        }
+    _statusAnnouncementTimer = Timer.periodic(const Duration(seconds: 30), (
+      timer,
+    ) {
+      if (_isNavigating && _currentInstructionIndex < _instructions.length) {
+        _announceCurrentStatus();
+      } else {
+        timer.cancel();
       }
-    );
+    });
   }
 
   /// 현재 진행 상태 안내 (시각장애인용)
   Future<void> _announceCurrentStatus() async {
     if (_voiceService == null) return;
-    
+
     try {
       final remainingSteps = _instructions.length - _currentInstructionIndex;
       final currentStep = _currentInstructionIndex + 1;
-      
-      await VoiceUtils.speakWithService(_voiceService, 
+
+      await _speakText(
         "현재 ${_instructions.length}단계 중 $currentStep단계 진행 중입니다. "
-        "남은 안내는 $remainingSteps단계입니다.", 
-        speed: 0.9
+        "남은 안내는 $remainingSteps단계입니다.",
       );
-      
     } catch (e) {
       debugPrint('❌ 현재 상태 음성 안내 실패: $e');
     }
@@ -190,17 +243,16 @@ class _MapScreenState extends State<MapScreen> {
   /// 다음 단계 안내 시 상세 음성 피드백 (시각장애인용)
   Future<void> _announceNextStep(String instruction) async {
     if (_voiceService == null) return;
-    
+
     try {
       final currentStep = _currentInstructionIndex + 1;
       final totalSteps = _instructions.length;
-      
+
       // 단계 정보와 함께 안내
-      await VoiceUtils.speakWithService(_voiceService, 
-        "$totalSteps단계 중 $currentStep단계입니다. $instruction", 
-        speed: 0.9
+      await _speakText(
+        "$totalSteps단계 중 $currentStep단계입니다. $instruction",
+        priority: VoiceGuidancePriority.navigation,
       );
-      
     } catch (e) {
       debugPrint('❌ 다음 단계 음성 안내 실패: $e');
     }
@@ -209,44 +261,147 @@ class _MapScreenState extends State<MapScreen> {
   /// 목적지 도착 시 상세 음성 안내 (시각장애인용)
   Future<void> _announceDestinationArrival() async {
     if (_voiceService == null) return;
-    
+
     try {
-      await VoiceUtils.speakWithService(_voiceService, "목적지에 도착했습니다!", speed: 1.0);
-      
+      await _speakEmergency("목적지 도착!");
+
       await Future.delayed(const Duration(milliseconds: 800));
-      
-      await VoiceUtils.speakWithService(_voiceService, 
-        "경로 안내가 완료되었습니다. 안전하게 도착하셨습니다.", 
-        speed: 0.9
+
+      await _speakText(
+        "경로 안내를 종료합니다.",
+        priority: VoiceGuidancePriority.navigation,
       );
-      
+
       await Future.delayed(const Duration(milliseconds: 600));
-      
-      await VoiceUtils.speakWithService(_voiceService, 
-        "새로운 경로를 검색하거나 다른 모드로 이동할 수 있습니다.", 
-        speed: 0.9
+
+      await _speakText(
+        "새로운 경로를 검색하거나 다른 모드를 이용하세요.",
+        priority: VoiceGuidancePriority.status,
       );
-      
     } catch (e) {
       debugPrint('❌ 목적지 도착 음성 안내 실패: $e');
     }
   }
 
-  // 음성 안내 메서드 (VoiceService 사용)
-  Future<void> _speakText(String text) async {
+  // === 음성 안내 큐 시스템 메서드들 ===
+
+  /// 음성 안내 큐에 추가
+  void _addToVoiceQueue(
+    String text,
+    VoiceGuidancePriority priority, {
+    bool canBeInterrupted = true,
+  }) {
+    final item = _VoiceGuidanceItem(
+      text: text,
+      priority: priority,
+      canBeInterrupted: canBeInterrupted,
+    );
+
+    _voiceQueue.add(item);
+    _voiceQueue.sort((a, b) => a.compareTo(b)); // 우선순위 순으로 정렬
+
+    debugPrint(
+      '📢 음성 안내 큐 추가: [${priority.name}] $text (큐 크기: ${_voiceQueue.length})',
+    );
+
+    _processVoiceQueue();
+  }
+
+  /// 음성 안내 큐 처리
+  void _processVoiceQueue() async {
+    if (_isProcessingQueue || _voiceQueue.isEmpty || _voiceService == null) {
+      return;
+    }
+
+    _isProcessingQueue = true;
+
+    try {
+      // VoiceService가 음성 출력 중이면 대기
+      if (_voiceService!.isSpeaking) {
+        debugPrint('🔊 VoiceService 사용 중 - 큐 처리 대기');
+        _queueProcessTimer?.cancel();
+        _queueProcessTimer = Timer.periodic(const Duration(milliseconds: 500), (
+          timer,
+        ) {
+          if (!_voiceService!.isSpeaking) {
+            timer.cancel();
+            _isProcessingQueue = false;
+            _processVoiceQueue();
+          }
+        });
+        return;
+      }
+
+      final item = _voiceQueue.removeAt(0);
+      debugPrint('🔊 음성 안내 재생: [${item.priority.name}] ${item.text}');
+
+      await _speakTextDirect(item.text);
+    } catch (e) {
+      debugPrint('❌ 음성 안내 큐 처리 실패: $e');
+    } finally {
+      _isProcessingQueue = false;
+
+      // 큐에 남은 아이템이 있으면 계속 처리
+      if (_voiceQueue.isNotEmpty) {
+        Future.delayed(const Duration(milliseconds: 100), _processVoiceQueue);
+      }
+    }
+  }
+
+  /// 직접 음성 출력 (큐 시스템 우회)
+  Future<void> _speakTextDirect(String text) async {
     try {
       // HTML 태그 제거
       final document = parse(text);
-      final String parsedString = parse(document.body?.text).documentElement!.text;
+      final String parsedString =
+          parse(document.body?.text).documentElement!.text;
 
       if (_voiceService != null) {
-        await VoiceUtils.speakWithService(_voiceService, parsedString);
+        await VoiceUtils.speakWithService(
+          _voiceService,
+          parsedString,
+          speed: _voiceService!.getCurrentSpeed(),
+        );
       } else {
         debugPrint('🔊 음성 안내 (VoiceService 없음): $parsedString');
       }
     } catch (e) {
       debugPrint('❌ 음성 출력 실패: $e');
     }
+  }
+
+  /// 큐 정리
+  void _clearVoiceQueue() {
+    _queueProcessTimer?.cancel();
+    _voiceQueue.clear();
+    _isProcessingQueue = false;
+    debugPrint('🧹 음성 안내 큐 정리 완료');
+  }
+
+  /// 특정 우선순위 이하의 안내 중단 (긴급 상황 시 사용)
+  void _interruptLowerPriority(VoiceGuidancePriority priority) {
+    final removedCount = _voiceQueue.length;
+    _voiceQueue.removeWhere(
+      (item) => item.priority.level < priority.level && item.canBeInterrupted,
+    );
+    final currentCount = _voiceQueue.length;
+    debugPrint(
+      '⚡ 낮은 우선순위 안내 중단: ${priority.name} 이하 (${removedCount - currentCount}개 제거)',
+    );
+  }
+
+  /// 긴급 음성 안내 (다른 모든 안내 중단)
+  Future<void> _speakEmergency(String text) async {
+    _interruptLowerPriority(VoiceGuidancePriority.emergency);
+    await _speakText(text, priority: VoiceGuidancePriority.emergency);
+  }
+
+  // 음성 안내 메서드 (큐 시스템 사용)
+  Future<void> _speakText(
+    String text, {
+    VoiceGuidancePriority priority = VoiceGuidancePriority.status,
+  }) async {
+    _addToVoiceQueue(text, priority);
   }
 
   // 현재 선택된 추천 항목 음성 안내
@@ -262,7 +417,7 @@ class _MapScreenState extends State<MapScreen> {
       if (address.isNotEmpty) {
         message += ', $address';
       }
-      _speakText(message);
+      _speakText(message, priority: VoiceGuidancePriority.interaction);
     }
   }
 
@@ -325,10 +480,13 @@ class _MapScreenState extends State<MapScreen> {
         }
 
         // 음성 안내: 추천 목록이 있음을 알리고 사용자 선택 대기
-        _speakText('${response.length}개의 추천 장소가 있습니다. 목록을 읽어드릴까요?');
+        _speakText(
+          '${response.length}개의 추천 장소가 있습니다. 목록을 읽어드릴까요?',
+          priority: VoiceGuidancePriority.interaction,
+        );
       } else {
         debugPrint('추천할 장소 없음');
-        _speakText('추천할 장소가 없습니다.');
+        _speakText('추천할 장소가 없습니다.', priority: VoiceGuidancePriority.status);
         setState(() {
           _waitingForReadConfirmation = false;
         });
@@ -356,7 +514,7 @@ class _MapScreenState extends State<MapScreen> {
     if (address.isNotEmpty) {
       message += '. 주소: $address';
     }
-    _speakText(message);
+    _speakText(message, priority: VoiceGuidancePriority.interaction);
   }
 
   // 음성 안내 읽기 시작
@@ -364,7 +522,10 @@ class _MapScreenState extends State<MapScreen> {
     setState(() {
       _waitingForReadConfirmation = false;
     });
-    _speakText('${_placeSuggestions.length}개의 추천 장소입니다.');
+    _speakText(
+      '${_placeSuggestions.length}개의 추천 장소입니다.',
+      priority: VoiceGuidancePriority.interaction,
+    );
 
     // 첫 번째 항목 읽어주기
     Future.delayed(const Duration(milliseconds: 1000), () {
@@ -377,7 +538,7 @@ class _MapScreenState extends State<MapScreen> {
     setState(() {
       _waitingForReadConfirmation = false;
     });
-    _speakText('원하는 장소를 선택하세요.');
+    _speakText('원하는 장소를 선택하세요.', priority: VoiceGuidancePriority.interaction);
   }
 
   // 다음 추천 항목으로 이동
@@ -416,17 +577,104 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
-  // 음성인식 버튼 누름 (기능은 나중에 구현)
-  void _toggleVoiceRecognition() {
-    setState(() {
-      _isListening = !_isListening;
-    });
-
-    if (_isListening) {
-      _speakText('음성인식을 시작합니다.');
-    } else {
-      _speakText('음성인식을 중지합니다.');
+  // 음성인식 버튼
+  void _toggleVoiceRecognition() async {
+    if (_voiceService == null) {
+      debugPrint('❌ MapScreen: VoiceService not initialized');
+      return;
     }
+
+    try {
+      if (_isListening) {
+        // 음성인식 중지
+        debugPrint('🎙️ MapScreen: 음성인식 중지 요청');
+        await _voiceService!.stopListeningAndProcess();
+
+        // 효과음으로 중지 알림 (딜레이 없음)
+        SystemSound.play(SystemSoundType.alert);
+
+        setState(() {
+          _isListening = false;
+        });
+      } else {
+        // 음성인식 시작
+        debugPrint('🎙️ MapScreen: 음성인식 시작 요청');
+
+        // 효과음으로 시작 알림 (딜레이 없음)
+        SystemSound.play(SystemSoundType.click);
+
+        setState(() {
+          _isListening = true;
+        });
+
+        // VoiceService 리스너 설정 (인식 결과 처리)
+        _setupVoiceRecognitionListener();
+
+        // 즉시 음성인식 실행 (딜레이 제거)
+        await _voiceService!.startListening();
+      }
+    } catch (e) {
+      debugPrint('❌ MapScreen: 음성인식 토글 실패: $e');
+      // 사용자에게는 단순하게 알림
+      _speakText('다시 시도해주세요.', priority: VoiceGuidancePriority.status);
+
+      setState(() {
+        _isListening = false;
+      });
+    }
+  }
+
+  /// 음성인식 결과 처리 리스너 설정
+  void _setupVoiceRecognitionListener() {
+    if (_voiceService == null) return;
+
+    // VoiceService의 상태 변화 리스너 등록
+    _voiceService!.addListener(_handleVoiceRecognitionResult);
+  }
+
+  /// 음성인식 결과 처리
+  void _handleVoiceRecognitionResult() {
+    if (_voiceService == null || !_isListening) return;
+
+    // VoiceService가 인식을 완료했는지 확인
+    if (_voiceService!.currentState == VoiceState.idle) {
+      // 인식 완료 후 상태 초기화
+      setState(() {
+        _isListening = false;
+      });
+
+      // 인식된 텍스트가 있다면 목적지로 설정
+      final recognizedText = _getLastRecognizedText();
+      if (recognizedText != null && recognizedText.isNotEmpty) {
+        debugPrint('🎙️ MapScreen: 인식된 텍스트: $recognizedText');
+
+        // 목적지 입력창에 설정
+        _destinationController.text = recognizedText;
+
+        // 음성 확인
+        _speakText(
+          '$recognizedText로 검색합니다.',
+          priority: VoiceGuidancePriority.interaction,
+        );
+
+        // 자동 장소 검색
+        _searchPlaces(recognizedText);
+      } else {
+        debugPrint('🎙️ MapScreen: 인식 결과 없음');
+        _speakText('다시 말씀해주세요.', priority: VoiceGuidancePriority.status);
+      }
+
+      // 리스너 제거
+      _voiceService!.removeListener(_handleVoiceRecognitionResult);
+    }
+  }
+
+  /// 마지막 인식된 텍스트 가져오기 (VoiceService에서)
+  String? _getLastRecognizedText() {
+    if (_voiceService == null) return null;
+
+    final text = _voiceService!.lastRecognizedText.trim();
+    return text.isEmpty ? null : text;
   }
 
   // ---- 유틸 ----
@@ -490,8 +738,6 @@ class _MapScreenState extends State<MapScreen> {
       return null;
     }
   }
-
-  
 
   // ---- 현재 위치로 시점 이동 ----
   Future<void> _centerToMyLocation() async {
@@ -619,7 +865,7 @@ class _MapScreenState extends State<MapScreen> {
     } catch (e) {
       setState(() => _status = '경로 요청 실패');
       String userMessage = '경로 요청 실패';
-      
+
       final errorStr = e.toString();
       if (errorStr.contains('TimeoutException')) {
         userMessage = '서버 응답이 너무 느려 연결이 끊어졌습니다. 네트워크 연결을 확인하거나 잠시 후 다시 시도해주세요.';
@@ -630,7 +876,7 @@ class _MapScreenState extends State<MapScreen> {
       } else if (errorStr.contains('overloaded')) {
         userMessage = '서버가 과부하 상태입니다. 잠시 후 다시 시도해주세요.';
       }
-      
+
       _toast(userMessage);
       debugPrint('Route error details: $e');
     }
@@ -718,7 +964,9 @@ class _MapScreenState extends State<MapScreen> {
     if (distance < 20) {
       _currentInstructionIndex++;
       if (_currentInstructionIndex < _instructions.length) {
-        final instructionText = _instructions[_currentInstructionIndex]['instruction_html'] as String?;
+        final instructionText =
+            _instructions[_currentInstructionIndex]['instruction_html']
+                as String?;
         if (instructionText != null) {
           // 시각장애인용 상세 다음 단계 안내
           _announceNextStep(instructionText);
@@ -730,7 +978,6 @@ class _MapScreenState extends State<MapScreen> {
       }
     }
   }
-
 
   // ---- 버튼 핸들러 ----
   Future<void> _routeFromMyLocation() async {
@@ -770,18 +1017,19 @@ class _MapScreenState extends State<MapScreen> {
     } catch (e) {
       debugPrint('Route from my location error: $e');
       setState(() => _status = '경로 계산 실패');
-      
+
       String userMessage = '경로 계산 중 오류가 발생했습니다';
       final errorStr = e.toString();
-      
+
       if (errorStr.contains('TimeoutException')) {
         userMessage = '경로 계산 시간이 초과되었습니다. 네트워크 상태를 확인하고 다시 시도해주세요.';
-      } else if (errorStr.contains('Connection refused') || errorStr.contains('unreachable')) {
+      } else if (errorStr.contains('Connection refused') ||
+          errorStr.contains('unreachable')) {
         userMessage = '지도 서버에 연결할 수 없습니다. 네트워크 연결을 확인해주세요.';
       } else if (errorStr.contains('SocketException')) {
         userMessage = '인터넷 연결에 문제가 있습니다. WiFi나 모바일 데이터를 확인해주세요.';
       }
-      
+
       _toast(userMessage);
     }
   }
@@ -796,11 +1044,7 @@ class _MapScreenState extends State<MapScreen> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(
-                  Icons.map_outlined,
-                  size: 80,
-                  color: Colors.grey[400],
-                ),
+                Icon(Icons.map_outlined, size: 80, color: Colors.grey[400]),
                 const SizedBox(height: 16),
                 Text(
                   '네이버 지도 인증 실패',
@@ -813,10 +1057,7 @@ class _MapScreenState extends State<MapScreen> {
                 Text(
                   '네이버 지도를 사용하려면 클라이언트 ID가 필요합니다.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.grey[600],
-                    fontSize: 16,
-                  ),
+                  style: TextStyle(color: Colors.grey[600], fontSize: 16),
                 ),
                 const SizedBox(height: 24),
                 Container(
@@ -857,7 +1098,10 @@ class _MapScreenState extends State<MapScreen> {
                 const SizedBox(height: 16),
                 ElevatedButton.icon(
                   onPressed: () {
-                    _speakText('맵 재시도');
+                    _speakText(
+                      '맵 재시도',
+                      priority: VoiceGuidancePriority.interaction,
+                    );
                     setState(() {
                       _mapAuthFailed = false;
                       _status = '맵 재시도 중...';
@@ -898,10 +1142,10 @@ class _MapScreenState extends State<MapScreen> {
 
         setState(() => _status = '맵 로드 완료');
         debugPrint('✅ NaverMap widget ready');
-        
+
         // 타일 로딩 상태 확인을 위한 짧은 대기
         await Future.delayed(const Duration(seconds: 2));
-        
+
         // 맵이 준비되면 현재 위치로 자동 이동
         try {
           await Future.delayed(const Duration(milliseconds: 500));
@@ -909,7 +1153,7 @@ class _MapScreenState extends State<MapScreen> {
         } catch (e) {
           debugPrint('⚠️ 초기 위치 이동 실패: $e');
         }
-        
+
         // 타일 로딩 실패 감지
         Future.delayed(const Duration(seconds: 5), () {
           if (mounted && _status.contains('맵 로드 완료')) {
@@ -932,7 +1176,7 @@ class _MapScreenState extends State<MapScreen> {
       leading: IconButton(
         icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white),
         onPressed: () {
-          _speakText('뒤로가기');
+          _speakText('뒤로가기', priority: VoiceGuidancePriority.interaction);
           Navigator.of(context).pop();
         },
         tooltip: '뒤로가기',
@@ -1003,7 +1247,9 @@ class _MapScreenState extends State<MapScreen> {
                               ),
                               child: IconButton(
                                 onPressed: () {
-                                  _speakText(_isListening ? '음성인식 중지' : '음성인식 시작');
+                                  _speakText(
+                                    _isListening ? '음성인식 중지' : '음성인식 시작',
+                                  );
                                   _toggleVoiceRecognition();
                                 },
                                 icon: Icon(
@@ -1023,7 +1269,10 @@ class _MapScreenState extends State<MapScreen> {
                       width: double.infinity,
                       child: ElevatedButton.icon(
                         onPressed: () {
-                          _speakText('도보 경로 찾기');
+                          _speakText(
+                            '도보 경로 찾기',
+                            priority: VoiceGuidancePriority.interaction,
+                          );
                           _routeFromMyLocation();
                         },
                         icon: const Icon(Icons.directions_walk),
@@ -1092,7 +1341,10 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                     IconButton(
                       onPressed: () {
-                        _speakText('닫기');
+                        _speakText(
+                          '닫기',
+                          priority: VoiceGuidancePriority.interaction,
+                        );
                         _hideInstructionsPanel();
                       },
                       icon: const Icon(Icons.close, color: Colors.white),
@@ -1216,7 +1468,10 @@ class _MapScreenState extends State<MapScreen> {
                       Expanded(
                         child: ElevatedButton.icon(
                           onPressed: () {
-                            _speakText('읽기');
+                            _speakText(
+                              '읽기',
+                              priority: VoiceGuidancePriority.interaction,
+                            );
                             _startReadingSuggestions();
                           },
                           icon: const Icon(Icons.volume_up, size: 18),
@@ -1232,7 +1487,10 @@ class _MapScreenState extends State<MapScreen> {
                       Expanded(
                         child: ElevatedButton.icon(
                           onPressed: () {
-                            _speakText('건너뛰기');
+                            _speakText(
+                              '건너뛰기',
+                              priority: VoiceGuidancePriority.interaction,
+                            );
                             _skipReadingSuggestions();
                           },
                           icon: const Icon(Icons.skip_next, size: 18),
@@ -1269,7 +1527,10 @@ class _MapScreenState extends State<MapScreen> {
                 children: [
                   IconButton(
                     onPressed: () {
-                      _speakText('이전 항목');
+                      _speakText(
+                        '이전 항목',
+                        priority: VoiceGuidancePriority.interaction,
+                      );
                       _previousSuggestion();
                     },
                     icon: const Icon(Icons.keyboard_arrow_up),
@@ -1278,7 +1539,10 @@ class _MapScreenState extends State<MapScreen> {
                   Expanded(
                     child: ElevatedButton.icon(
                       onPressed: () {
-                        _speakText('선택');
+                        _speakText(
+                          '선택',
+                          priority: VoiceGuidancePriority.interaction,
+                        );
                         _selectCurrentSuggestion();
                       },
                       icon: const Icon(Icons.check, size: 18),
@@ -1291,7 +1555,10 @@ class _MapScreenState extends State<MapScreen> {
                   ),
                   IconButton(
                     onPressed: () {
-                      _speakText('다음 항목');
+                      _speakText(
+                        '다음 항목',
+                        priority: VoiceGuidancePriority.interaction,
+                      );
                       _nextSuggestion();
                     },
                     icon: const Icon(Icons.keyboard_arrow_down),

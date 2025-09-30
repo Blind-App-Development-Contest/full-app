@@ -26,7 +26,9 @@ class VoiceService with ChangeNotifier {
 
   // === 서버 설정 ===
   // String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'http://localhost:8000';
-String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-app-jp.azurewebsites.net';
+  String get baseUrl =>
+      dotenv.env['BACKEND_BASE_URL'] ??
+      'https://aeye-backend-app-jp.azurewebsites.net';
 
   // === 상태 관리 ===
   VoiceState _currentState = VoiceState.idle;
@@ -45,12 +47,15 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
   StreamSubscription? _ttsSubscription;
   bool _isSpeaking = false; // 현재 음성 출력 중인지 확인
 
-
+  // === 간단 VAD(에너지 기반) ===
+  StreamSubscription? _amplitudeSubscription; // 녹음 중 진폭 스트림 구독
+  bool _vadSpeechDetected = false; // 리스닝 윈도우 내 음성 검출 여부
+  static const double _vadThresholdDb = -35.0; // dBFS 임계치(환경에 맞게 조절)
 
   // === 음성 속도 설정 ===
   double? _currentVoiceSpeed; // 사용자가 설정한 음성 속도
-  static const double _defaultSpeed = 0.9; // 기본 속도 (사용자 설정 전)
-  
+  static const double _defaultSpeed = 1.0; // 기본 속도 (UI 범위 0.5-2.0 내)
+
   // === 음성 성별 설정 ===
   String _currentVoiceGender = 'female'; // 사용자가 설정한 음성 성별
 
@@ -60,24 +65,28 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
   String get statusMessage => _statusMessage;
   List<String> get debugLogs => _debugLogs;
 
-  /// 현재 음성 속도 반환
-  /// 사용자가 설정한 속도가 있으면 해당 속도, 없으면 기본 속도 0.9 반환
+  /// 현재 음성 속도 반환 (UI 범위 0.5-2.0으로 클램핑)
+  /// 사용자가 설정한 속도가 있으면 해당 속도, 없으면 기본 속도 1.0 반환
   double getCurrentSpeed() {
-    return _currentVoiceSpeed ?? _defaultSpeed;
+    final speed = _currentVoiceSpeed ?? _defaultSpeed;
+    return speed.clamp(0.5, 2.0); // UI 범위로 클램핑
   }
+
+  /// 현재 음성 출력 중인지 확인
+  bool get isSpeaking => _isSpeaking;
 
   /// 음성 속도 설정 (사용자가 VoiceScreen에서 설정)
   void setVoiceSpeed(double speed) {
-    _currentVoiceSpeed = speed;
-    debugPrint('🔊 음성 속도 설정됨: ${speed}x');
+    _currentVoiceSpeed = speed.clamp(0.5, 2.0); // UI 범위로 클램핑
+    debugPrint('🔊 음성 속도 설정됨: ${_currentVoiceSpeed}x (UI 범위 0.5-2.0)');
   }
-  
+
   /// 음성 성별 설정 (사용자가 VoiceScreen에서 설정)
   void setVoiceGender(String gender) {
     _currentVoiceGender = gender;
     debugPrint('🎭 음성 성별 설정됨: $gender');
   }
-  
+
   String _normalizeGender(String g) {
     final v = g.toLowerCase().trim();
     if (v.startsWith('m') || v.contains('남')) return 'male';
@@ -87,7 +96,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
   // === TTS 큐 관리 ===
   final List<String> _ttsQueue = [];
   bool _isProcessingTtsQueue = false;
-  
+
   // === 파일 정리 관리 ===
   final Set<String> _tempFiles = {};
   Timer? _cleanupTimer;
@@ -98,10 +107,10 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
 
     // 마이크 권한 확인
     await _checkMicrophonePermission();
-    
+
     // 사용자 설정 로드
     await _loadUserSettings();
-    
+
     // 주기적 파일 정리 시작
     _startPeriodicCleanup();
 
@@ -157,7 +166,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
   Future<void> _runSingleRecognition() async {
     // 서비스가 dispose된 경우 중단
     if (_isDisposed) return;
-    
+
     // 사이클 실행 플래그가 꺼지면 모든 동작 중단
     if (!_isCycleRunning) return;
 
@@ -181,7 +190,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
   Future<void> startListening() async {
     // 서비스가 dispose된 경우 중단
     if (_isDisposed) return;
-    
+
     if (_currentState != VoiceState.idle) return;
 
     // 음성 안내(TTS) 중에는 STT 시작 금지 (에코/루프 방지)
@@ -202,22 +211,44 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
     try {
       // 녹음 파일 경로 설정
       final directory = await getApplicationDocumentsDirectory();
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      _currentRecordingPath = '${directory.path}/voice_test_$timestamp.m4a';
+      final timestamp = DateTime.now().microsecondsSinceEpoch; // 마이크로초로 더 촘촘하게
+      final rand = math.Random().nextInt(100000); // 추가 랜덤 접미사로 충돌 방지
+      _currentRecordingPath =
+          '${directory.path}/voice_test_${timestamp}_$rand.m4a';
 
       _addDebugLog("녹음 파일 경로: $_currentRecordingPath");
 
       _addDebugLog("녹음 설정: AAC-LC, 128kbps, 44.1kHz");
 
       // 녹음 시작
-      await _audioRecorder.start(const RecordConfig(), path: _currentRecordingPath!);
+      await _audioRecorder.start(
+        const RecordConfig(),
+        path: _currentRecordingPath!,
+      );
 
       _setState(VoiceState.listening);
       _setStatus("녹음 중... (최대 20초)");
       _addDebugLog("녹음 시작됨");
 
-      // 3초 타임아웃으로 더 단축 (빠른 응답)
-      Future.delayed(const Duration(seconds: 3), () {
+      // 간단 VAD: 녹음 중 진폭을 구독하여 음성 유무 플래그 설정
+      _vadSpeechDetected = false;
+      try {
+        _amplitudeSubscription?.cancel();
+        _amplitudeSubscription = _audioRecorder
+            .onAmplitudeChanged(const Duration(milliseconds: 200))
+            .listen((amp) {
+              // record 패키지의 Amplitude.current는 보통 dBFS(음수)로 제공됩니다.
+              final currentDb = amp.current.toDouble();
+              if (currentDb > _vadThresholdDb) {
+                _vadSpeechDetected = true;
+              }
+            });
+      } catch (e) {
+        _addDebugLog('⚠️ VAD 진폭 구독 실패(무시): $e');
+      }
+
+      // 7초 타임아웃으로 변경 (사용자 발화 시간 확보)
+      Future.delayed(const Duration(seconds: 7), () {
         if (_currentState == VoiceState.listening) {
           stopListeningAndProcess();
         }
@@ -233,7 +264,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
   Future<void> stopListeningAndProcess() async {
     // 서비스가 dispose된 경우 중단
     if (_isDisposed) return;
-    
+
     if (_currentState != VoiceState.listening) return;
 
     _addDebugLog("\n=== 음성 처리 시작 ===");
@@ -241,12 +272,32 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
     try {
       // 녹음 중단
       final path = await _audioRecorder.stop();
+      // VAD 스트림 해제
+      try {
+        await _amplitudeSubscription?.cancel();
+      } catch (_) {}
+      _amplitudeSubscription = null;
       if (path == null) {
         _addDebugLog("❌ 녹음 파일 경로가 null");
         _setStatus("녹음 파일을 찾을 수 없습니다");
         _setState(VoiceState.idle);
         return;
       }
+
+      // 간단 VAD: 음성 미검출 시 STT 전송을 생략하고 재시도 유도
+      if (!_vadSpeechDetected) {
+        _addDebugLog('🔇 VAD: 음성 미검출 - STT 전송 생략');
+        _setStatus('음성이 감지되지 않았습니다. 다시 말씀해 주세요.');
+        // 즉시 파일 정리
+        try {
+          await _cleanupFile(path);
+        } catch (_) {}
+        _setState(VoiceState.idle);
+        return;
+      }
+
+      // 오디오 파일 검증 및 정보 출력
+      await _verifyAudioFile(path);
 
       _setState(VoiceState.processing);
       // 1. STT 서버 호출하여 텍스트 얻기 (재시도 로직 포함)
@@ -264,7 +315,6 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
       _addDebugLog(
         "✅ STT 성공: '$transcribedText' (길이: ${transcribedText.length})",
       );
-
 
       // 2. NLU 서버 호출하여 의도 분석
       _setStatus("의도 분석 중...");
@@ -297,10 +347,6 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
   VoiceService({GlobalKey<NavigatorState>? navigatorKey}) {
     _initialize();
   }
-
-  
-  
-
   Future<void> _executeCommand(
     String command,
     Map<String, dynamic> entities,
@@ -319,16 +365,6 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
         break;
     }
   }
-
-
-
-
-
-
-
-
-
-
 
   /// STT API 호출을 재시도 로직과 함께 실행
   Future<Map<String, dynamic>> _convertSpeechToTextWithRetry(
@@ -518,27 +554,39 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
       final settings = await ApiService().getUserSettings();
       if (settings != null) {
         // 음성 속도 설정
-        if (settings.containsKey('voice_speed') && settings['voice_speed'] != null) {
+        if (settings.containsKey('voice_speed') &&
+            settings['voice_speed'] != null) {
           final int serverSpeed = settings['voice_speed'];
-          // 서버 값(1-20)을 앱 내부 속도(0.5-1.5)로 변환
-          final double appSpeed = 0.5 + (serverSpeed - 1) * 0.05;
+          // 서버 값(퍼센트 정수)을 배속으로 변환 (backend voice.py _int_percent_to_speed_float()와 동일)
+          double appSpeed = serverSpeed / 100.0;
+          // UI 범위(0.5-2.0)로 클램핑
+          appSpeed = appSpeed.clamp(0.5, 2.0);
           _currentVoiceSpeed = appSpeed;
-          _addDebugLog('✅ 서버에서 음성 속도 로드: $serverSpeed -> ${appSpeed.toStringAsFixed(2)}x');
+          _addDebugLog(
+            '✅ 서버에서 음성 속도 로드: $serverSpeed% -> ${appSpeed.toStringAsFixed(2)}x (UI 범위로 조정)',
+          );
         }
 
         // 보폭 설정 로드
-        if (settings.containsKey('step_length_cm') && settings['step_length_cm'] != null) {
+        if (settings.containsKey('step_length_cm') &&
+            settings['step_length_cm'] != null) {
           // ignore: non_constant_identifier_names
-          final double step_length_cm = (settings['step_length_cm'] as num).toDouble();
+          final double step_length_cm =
+              (settings['step_length_cm'] as num).toDouble();
           _addDebugLog('✅ 서버에서 보폭 로드: ${step_length_cm.toStringAsFixed(1)}cm');
           // 보폭 정보는 필요시 콜백으로 전달하거나 별도 저장소에 저장
         }
-        
+
         // 사용자 이름 로드
-        if (settings.containsKey('user_name') && settings['user_name'] != null) {
+        if (settings.containsKey('user_name') &&
+            settings['user_name'] != null) {
           final String userName = settings['user_name'];
           _addDebugLog('✅ 서버에서 사용자 이름 로드: $userName');
         }
+
+        _addDebugLog(
+          '🔊 VoiceService에 서버 설정 적용 완료: ${_currentVoiceSpeed?.toStringAsFixed(2) ?? _defaultSpeed.toStringAsFixed(2)}x, $_currentVoiceGender',
+        );
 
         notifyListeners();
       }
@@ -572,7 +620,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
       _safeNotifyListeners();
     }
   }
-  
+
   /// 안전한 리스너 알림
   void _safeNotifyListeners() {
     if (!_isDisposed) {
@@ -584,7 +632,6 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
     }
   }
 
-
   /// 로그 초기화 (안전한 버전)
   void clearLogs() {
     if (_isDisposed) return;
@@ -593,10 +640,53 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
     _addDebugLog("로그 초기화됨");
   }
 
+  /// 마지막으로 녹음된 오디오 재생 (디버깅용)
+  Future<void> playLastRecording() async {
+    if (_currentRecordingPath == null) {
+      _addDebugLog("재생할 녹음 파일이 없습니다.");
+      return;
+    }
+    if (_isSpeaking) {
+      await _stopCurrentTts(); // 기존 TTS 중지
+    }
+    if (_currentState == VoiceState.listening) {
+      _addDebugLog("녹음 중에는 재생할 수 없습니다.");
+      return; // 녹음 중에는 재생 안함
+    }
+
+    _addDebugLog("마지막 녹음 파일 재생 시작: $_currentRecordingPath");
+    try {
+      await _audioPlayer.setAudioSource(
+        AudioSource.file(_currentRecordingPath!),
+      );
+      _isSpeaking = true; // 재생 중임을 표시 (다른 동작 방지)
+      _safeNotifyListeners();
+
+      _audioPlayer.play();
+
+      // 재생 완료 리스너
+      _audioPlayer.processingStateStream
+          .firstWhere((state) => state == ProcessingState.completed)
+          .then((_) {
+            if (!_isDisposed) {
+              _isSpeaking = false;
+              _addDebugLog("마지막 녹음 파일 재생 완료.");
+              _safeNotifyListeners();
+            }
+          });
+    } catch (e) {
+      _addDebugLog("재생 오류: $e");
+      if (!_isDisposed) {
+        _isSpeaking = false;
+        _safeNotifyListeners();
+      }
+    }
+  }
+
   /// 강제 중단 (안전한 버전)
   void forceStop() {
     if (_isDisposed) return;
-    
+
     if (_currentState == VoiceState.listening) {
       try {
         _audioRecorder.stop();
@@ -616,26 +706,49 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
     double? speed,
     bool priority = false,
   }) async {
+    // 녹음 중에는 음성 출력을 하지 않음 (에코 방지)
+    if (_currentState == VoiceState.listening) {
+      _addDebugLog("녹음 중이므로 TTS 출력을 무시합니다: $text");
+      return;
+    }
+
     // 빈 텍스트는 즉시 반환
     if (text.trim().isEmpty) return;
-    
+
     // 우선순위 메시지가 아니면 큐에 추가
     if (!priority && _isProcessingTtsQueue) {
       _ttsQueue.add(text);
       return;
     }
-    
+
     // 안전한 오디오 중단
     await _stopCurrentTts();
-    
+
     try {
       _isSpeaking = true;
       _isProcessingTtsQueue = true;
-      
+
       // 현재 설정된 성별과 속도 사용 (정규화/범위 보정)
       final currentGender = _normalizeGender(gender ?? _currentVoiceGender);
-      final currentSpeed = (speed ?? getCurrentSpeed()).clamp(0.25, 4.0).toDouble();
-      
+      final requested = (speed ?? getCurrentSpeed());
+      // 요구사항: "가장 낮은 설정값"을 정상 속도(1.0x)로 맵핑
+      // 입력 도메인(사용자 설정 범위) 0.25~2.0를 출력 1.0~2.0으로 선형 변환
+      const double inputMin = 0.25;
+      const double inputMax = 2.0;
+      const double outputMin = 1.0; // 정상 속도
+      const double outputMax = 2.0; // 제품 상한
+      double effective;
+      if (requested <= inputMin) {
+        effective = outputMin;
+      } else if (requested >= inputMax) {
+        effective = outputMax;
+      } else {
+        final t = (requested - inputMin) / (inputMax - inputMin);
+        effective = outputMin + t * (outputMax - outputMin);
+      }
+      // Google TTS 허용 범위 최종 클램프
+      final currentSpeed = effective.clamp(0.25, 4.0).toDouble();
+
       // 사용자 UUID 확보
       String? uuid;
       try {
@@ -663,7 +776,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
             Uri.parse('$baseUrl/api/users/voice'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
-              'user_id': uuid,
+              'uuid': uuid,
               'text': text,
               'gender': currentGender,
               'speed': currentSpeed,
@@ -681,15 +794,14 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
 
         // 안전한 파일 생성
         final audioFile = await _createSafeTempFile();
-        
+
         try {
           // 오디오 데이터 저장
           await audioFile.writeAsBytes(response.bodyBytes);
           _tempFiles.add(audioFile.path);
-          
+
           // 안전한 오디오 재생
           await _playAudioSafely(audioFile);
-          
         } catch (playError) {
           debugPrint('❌ TTS 재생 오류: $playError');
           _isSpeaking = false;
@@ -704,7 +816,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
       debugPrint('❌ TTS 요청 실패: $e');
     } finally {
       _isProcessingTtsQueue = false;
-      
+
       // 큐에 대기 중인 TTS가 있으면 다음 실행
       if (!_isDisposed && _ttsQueue.isNotEmpty) {
         final nextText = _ttsQueue.removeAt(0);
@@ -723,10 +835,10 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
       try {
         await _ttsSubscription?.cancel();
         _ttsSubscription = null;
-        
+
         await _audioPlayer.stop();
         await Future.delayed(const Duration(milliseconds: 100)); // 완전한 정리 대기
-        
+
         _isSpeaking = false;
       } catch (e) {
         debugPrint('⚠️ TTS 중단 중 오류 (무시됨): $e');
@@ -746,14 +858,14 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
   /// 안전한 오디오 재생
   Future<void> _playAudioSafely(File audioFile) async {
     final player = _audioPlayer;
-    
+
     // 플레이어 초기화
     await player.setVolume(1.0);
     await player.setAudioSource(AudioSource.file(audioFile.path));
-    
+
     // 재생 시작
     await player.play();
-    
+
     // 완료 리스너 설정 (생명주기 체크 추가)
     _ttsSubscription = player.processingStateStream
         .where((state) => state == ProcessingState.completed)
@@ -762,7 +874,7 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
           if (!_isDisposed) {
             _isSpeaking = false;
             await _cleanupFile(audioFile.path);
-            
+
             // 다음 큐 처리를 위한 짧은 대기
             await Future.delayed(const Duration(milliseconds: 100));
           }
@@ -782,50 +894,94 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
     }
   }
 
-  /// 주기적 파일 정리 (메모리 누수 방지)
+  /// 주기적 파일 정리 (메모리/저장소 누수 방지)
   void _startPeriodicCleanup() {
     _cleanupTimer?.cancel();
     _cleanupTimer = Timer.periodic(const Duration(minutes: 5), (_) async {
       final directory = await getApplicationDocumentsDirectory();
-      final files = directory.listSync()
-          .where((entity) => entity is File && entity.path.contains('tts_'))
-          .cast<File>();
-      
+      final files = directory
+          .listSync()
+          .whereType<File>()
+          .where((file) => file.path.contains('tts_') || file.path.contains('voice_test_') || file.path.contains('audio_'));
+
       for (final file in files) {
         try {
           final stats = await file.stat();
           final age = DateTime.now().difference(stats.modified);
-          
-          // 10분 이상 된 TTS 파일 삭제
+
+          // 10분 이상 된 음성 관련 임시 파일 삭제
           if (age.inMinutes > 10) {
             await file.delete();
-            debugPrint('🗑️ 오래된 TTS 파일 정리: ${file.path}');
+            debugPrint('🗑️ 오래된 음성 임시 파일 정리: ${file.path}');
           }
         } catch (e) {
-          debugPrint('⚠️ TTS 파일 정리 중 오류: $e');
+          debugPrint('⚠️ 음성 임시 파일 정리 중 오류: $e');
         }
       }
     });
+  }
+
+  /// 오디오 파일 검증 및 정보 출력
+  Future<void> _verifyAudioFile(String audioPath) async {
+    try {
+      final audioFile = File(audioPath);
+      if (!audioFile.existsSync()) {
+        _addDebugLog("❌ 오디오 파일이 존재하지 않습니다: $audioPath");
+        return;
+      }
+
+      // 오디오 파일 정보 출력
+      final fileSize = await audioFile.length();
+      final fileHash = audioFile.readAsBytesSync().hashCode;
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+
+      _addDebugLog("=== 오디오 파일 정보 ===");
+      _addDebugLog("파일 경로: $audioPath");
+      _addDebugLog("파일 크기: $fileSize bytes");
+      _addDebugLog("파일 해시: $fileHash");
+      _addDebugLog("타임스탬프: $timestamp");
+
+      // 파일이 비어있는지 확인
+      if (fileSize == 0) {
+        _addDebugLog("⚠️ 경고: 오디오 파일이 비어있습니다!");
+      } else if (fileSize < 1024) {
+        _addDebugLog("⚠️ 경고: 오디오 파일이 너무 작습니다 ($fileSize bytes)");
+      } else {
+        _addDebugLog("✅ 오디오 파일 검증 완료");
+      }
+
+      // 매번 새로운 파일명으로 저장하도록 수정 (사용자 제안 적용)
+      try {
+        final directory = await getApplicationDocumentsDirectory();
+        final newAudioPath = "${directory.path}/audio_$timestamp.m4a";
+        await audioFile.copy(newAudioPath);
+        _addDebugLog("📁 검증용 복사본 생성: $newAudioPath");
+      } catch (e) {
+        _addDebugLog("⚠️ 검증용 복사본 생성 실패: $e");
+      }
+    } catch (e) {
+      _addDebugLog("❌ 오디오 파일 검증 중 오류: $e");
+    }
   }
 
   @override
   void dispose() {
     // dispose 플래그 설정 (가장 먼저)
     _isDisposed = true;
-    
+
     // 자동 인식 사이클 즉시 중단
     _isCycleRunning = false;
-    
+
     // TTS 큐와 현재 재생 정리
     _ttsQueue.clear();
     _stopCurrentTts(); // await 제거 (dispose는 동기적으로)
-    
+
     // 정리 타이머 중지
     _cleanupTimer?.cancel();
-    
+
     // 비동기 정리 작업들을 백그라운드에서 실행
     _cleanupResourcesAsync();
-    
+
     // 기존 동기 리소스 정리
     try {
       _httpClient.close();
@@ -834,10 +990,10 @@ String get baseUrl => dotenv.env['BACKEND_BASE_URL'] ?? 'https://aeye-backend-ap
     } catch (e) {
       debugPrint('⚠️ dispose 리소스 정리 중 오류: $e');
     }
-    
+
     super.dispose();
   }
-  
+
   /// 비동기 리소스 정리 (백그라운드 실행)
   Future<void> _cleanupResourcesAsync() async {
     try {
@@ -864,14 +1020,14 @@ class _AudioPlayerManager {
   static _AudioPlayerManager? _instance;
   AudioPlayer? _player;
   bool _isInitializing = false;
-  
+
   _AudioPlayerManager._internal();
-  
+
   factory _AudioPlayerManager() {
     _instance ??= _AudioPlayerManager._internal();
     return _instance!;
   }
-  
+
   AudioPlayer get player {
     if (_player == null && !_isInitializing) {
       _initializePlayer();
@@ -890,10 +1046,10 @@ class _AudioPlayerManager {
     }
     return _player!;
   }
-  
+
   void _initializePlayer() {
     if (_isInitializing || _player != null) return;
-    
+
     _isInitializing = true;
     try {
       // AudioPlayer를 고유 ID와 함께 생성
@@ -913,7 +1069,7 @@ class _AudioPlayerManager {
       _isInitializing = false;
     }
   }
-  
+
   void dispose() {
     _player?.dispose();
     _player = null;

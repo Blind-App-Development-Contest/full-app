@@ -31,14 +31,14 @@ MarkupSafe==3.0.2
 matplotlib==3.10.5                  # 📊 시각화
 mpmath==1.3.0
 networkx==3.4.2
-numpy<2.0,>=1.26.0                  # 🔢 수치 연산 라이브러리 (MediaPipe 호환)
+numpy<2.0,>=1.26.0                  # 🔢 수치 연산 라이브러리
 openai==1.99.1                      # 💬 OpenAI GPT-4 API
 opencv-python==4.10.0.84            # 📸 이미지 처리, 카메라 프레임 분석 (numpy<2 호환)
 packaging==25.0
 pandas==2.3.1                       # 🧮 데이터프레임 처리
 pillow==11.3.0                      # 🖼️ 이미지 파일 처리
 proto-plus==1.26.1
-protobuf>=4.25.3,<5                # MediaPipe 호환성 위해 <5 버전 사용
+protobuf>=4.25.3
 psutil==7.0.0
 py-cpuinfo==9.0.0
 pyasn1==0.6.1
@@ -79,8 +79,6 @@ timm
 
 # =====================================================
 
-mediapipe==0.10.21                       # 🦶 MediaPipe Pose - 발 키포인트 감지 (엄지발가락 기준)
-filterpy==1.4.5                          # 📐 고급 칼만 필터 구현 (확장 칼만 필터 포함)
 solapi
 
 PyJWT>=2.10.1

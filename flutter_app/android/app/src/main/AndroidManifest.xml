@@ -10,7 +10,7 @@
             android:value="5z23wo0mnc" />
 
         <activity
-            android:name=".MainActivity"
+            android:name="test.tru6307.blind.MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
             android:taskAffinity=""
@@ -23,7 +23,7 @@
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme" />
 
-            <!-- 구글맵 API 키는 그대로 둬도 됩니다 -->
+            <!-- Google Maps API Key -->
             <meta-data
               android:name="com.google.android.geo.API_KEY"
               android:value="AIzaSyCYDAwPDhYm8KbdhH01-9s7Koe2hyuzAGE" />

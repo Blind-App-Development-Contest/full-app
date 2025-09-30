@@ -7,6 +7,7 @@ from typing import Tuple
 from fastapi import HTTPException, UploadFile
 from dotenv import load_dotenv
 from config.settings import get_settings
+from middleware.error_handler import ErrorLogger
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -34,7 +35,7 @@ class SpeechService:
             return True, "검증 성공"
             
         except Exception as e:
-            logger.error(f"파일 검증 중 오류: {e}")
+            ErrorLogger.log_service_error("SpeechService", "파일 검증", e)
             return False, f"파일 검증 오류: {str(e)}"
     
     async def validate_and_read_audio(self, file: UploadFile) -> Tuple[bytes, float, str]:
@@ -44,27 +45,34 @@ class SpeechService:
         # 1. 파일 타입 검증
         is_valid, validation_message = self.validate_audio_file(file)
         if not is_valid:
-            logger.error(f"[STT] 파일 검증 실패: {validation_message}")
+            ErrorLogger.log_service_error("SpeechService", "파일 검증", Exception(validation_message))
             raise HTTPException(status_code=400, detail=validation_message)
         
         # 2. 파일 읽기
         try:
             audio_bytes = await file.read()
         except Exception as e:
-            logger.error(f"[STT] 파일 읽기 실패: {e}")
+            ErrorLogger.log_service_error("SpeechService", "파일 읽기", e)
             raise HTTPException(status_code=400, detail=f"파일 읽기 실패: {str(e)}")
         
         # 3. 파일 크기 검증
-        file_size_mb = len(audio_bytes) / (1024 * 1024)
+        total_bytes = len(audio_bytes)
+        file_size_mb = total_bytes / (1024 * 1024)
         
         if file_size_mb > settings.MAX_FILE_SIZE_MB:
-            logger.error(f"[STT] 파일 크기 초과: {file_size_mb:.2f}MB")
+            ErrorLogger.log_service_error("SpeechService", "파일 크기 검증", Exception(f"파일 크기 초과: {file_size_mb:.2f}MB"), {"file_size_mb": file_size_mb, "max_size": settings.MAX_FILE_SIZE_MB})
             raise HTTPException(
                 status_code=413,
                 detail=f"파일 크기가 너무 큽니다. 최대 {settings.MAX_FILE_SIZE_MB}MB"
             )
         
-        logger.info(f"[STT] 파일 크기: {len(audio_bytes)} bytes ({file_size_mb:.2f}MB)")
+        # 최소 크기 검증(무발화/빈 업로드 차단)
+        MIN_AUDIO_BYTES = 1200  # 환경에 맞게 조정 가능
+        if total_bytes < MIN_AUDIO_BYTES:
+            ErrorLogger.log_service_error("SpeechService", "파일 크기 검증", Exception(f"파일 크기 너무 작음: {total_bytes} bytes"), {"file_size_bytes": total_bytes, "min_size": MIN_AUDIO_BYTES})
+            raise HTTPException(status_code=400, detail="오디오 데이터가 너무 짧습니다. 다시 시도해주세요.")
+
+        logger.info(f"[STT] 파일 크기: {total_bytes} bytes ({file_size_mb:.2f}MB)")
         
         return audio_bytes, file_size_mb, file.content_type or "application/octet-stream"
     
@@ -83,7 +91,7 @@ class SpeechService:
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"[STT] 파일 음성인식 실패: {e}")
+            ErrorLogger.log_service_error("SpeechService", "음성인식", e)
             raise HTTPException(status_code=500, detail=f"음성인식 처리 오류: {str(e)}")
     
     async def transcribe_audio_bytes(self, file_content: bytes, content_type: str = "audio/m4a") -> str:
@@ -94,7 +102,12 @@ class SpeechService:
         
         headers = {"Authorization": f"Bearer {self.api_key}"}
         files = {"file": (filename, file_content, content_type)}
-        data = {"model": "whisper-1", "language": "ko"}
+        # 낮은 temperature로 환각 줄이기, 한국어 고정
+        data = {
+            "model": "whisper-1",
+            "language": "ko",
+            "temperature": 0,
+        }
         
         async with httpx.AsyncClient() as client:
             try:
@@ -116,17 +129,16 @@ class SpeechService:
                 return transcribed_text
 
             except httpx.HTTPStatusError as e:
-                logger.error(f"[STT] OpenAI API 에러: {e.response.status_code}")
-                logger.error(f"[STT] 에러 내용: {e.response.text}")
+                ErrorLogger.log_external_api_error("OpenAI Whisper", e.response.status_code, e.response.text)
                 raise HTTPException(
                     status_code=e.response.status_code,
                     detail=f"OpenAI API 에러: {e.response.text}"
                 )
             except httpx.TimeoutException:
-                logger.error("[STT] OpenAI API 타임아웃")
+                ErrorLogger.log_service_error("SpeechService", "OpenAI API 호출", Exception("API 타임아웃"))
                 raise HTTPException(status_code=504, detail="음성인식 서비스 타임아웃")
             except Exception as e:
-                logger.error(f"[STT] 내부 서버 오류: {e}")
+                ErrorLogger.log_service_error("SpeechService", "음성인식 처리", e)
                 raise HTTPException(status_code=500, detail="서버 내부 오류가 발생했습니다.")
     
     async def transcribe_audio(self, file_content: bytes) -> str:

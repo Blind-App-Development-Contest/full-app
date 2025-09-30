@@ -26,16 +26,19 @@ const bool kUseBackendStatusCheck = true;
 
 /// 기본 상태 조회 엔드포인트 (dotenv 가 있으면 그걸 우선)
 // const String kStatusEndpointBaseDefault = 'http://localhost:8000/api/users/measurement/';
-const String kStatusEndpointBaseDefault = 'https://aeye-backend-app-jp.azurewebsites.net/api/users/measurement/';
+const String kStatusEndpointBaseDefault =
+    'https://aeye-backend-app-jp.azurewebsites.net/api/users/measurement/';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // 시스템 UI (상태바 아이콘/밝기)
-  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-    statusBarBrightness: Brightness.light,
-    statusBarIconBrightness: Brightness.dark,
-  ));
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarBrightness: Brightness.light,
+      statusBarIconBrightness: Brightness.dark,
+    ),
+  );
 
   // .env 로드 (없어도 동작)
   try {
@@ -48,8 +51,10 @@ Future<void> main() async {
   try {
     // 환경변수에서 클라이언트 ID를 가져오되, 없으면 플랫폼별 설정을 사용
     final clientId = dotenv.env['NAVER_MAP_CLIENT_ID'];
-    
-    if (clientId != null && clientId.isNotEmpty && clientId != 'YOUR_NAVER_MAP_CLIENT_ID_HERE') {
+
+    if (clientId != null &&
+        clientId.isNotEmpty &&
+        clientId != 'YOUR_NAVER_MAP_CLIENT_ID_HERE') {
       // 유효한 클라이언트 ID가 있는 경우 - 새로운 인증 API 사용
       await FlutterNaverMap().init(
         clientId: clientId,
@@ -63,24 +68,32 @@ Future<void> main() async {
           debugPrint("🗺️ 그리드만 보이는 현상은 이 인증 실패가 원인일 수 있습니다.");
         },
       );
-      debugPrint("✅ NaverMap 새 인증 API 초기화 완료 (클라이언트 ID: ${clientId.substring(0, 8)}...)");
+      debugPrint(
+        "✅ NaverMap 새 인증 API 초기화 완료 (클라이언트 ID: ${clientId.substring(0, 8)}...)",
+      );
     } else {
       // 클라이언트 ID가 없는 경우 - 플랫폼별 설정에서 읽기 시도
       debugPrint("⚠️ .env에 NAVER_MAP_CLIENT_ID가 설정되지 않음");
       debugPrint("📱 플랫폼별 설정 파일에서 클라이언트 ID를 읽어옵니다:");
       debugPrint("   - iOS: Info.plist의 NMFNcpKeyId");
-      debugPrint("   - Android: AndroidManifest.xml의 com.naver.maps.map.CLIENT_ID");
-      
+      debugPrint(
+        "   - Android: AndroidManifest.xml의 com.naver.maps.map.CLIENT_ID",
+      );
+
       // 플랫폼별 설정에서 클라이언트 ID 읽기 시도
       try {
         await FlutterNaverMap().init(
           onAuthFailed: (ex) {
             debugPrint("❌ NaverMap 새 인증 API 실패 (플랫폼 설정): $ex");
             debugPrint("💡 해결방법:");
-            debugPrint("   1. 네이버 클라우드 플랫폼(https://console.ncloud.com/)에서 Mobile Dynamic Map 서비스 등록");
+            debugPrint(
+              "   1. 네이버 클라우드 플랫폼(https://console.ncloud.com/)에서 Mobile Dynamic Map 서비스 등록",
+            );
             debugPrint("   2. 새로운 Client ID 발급");
             debugPrint("   3. iOS: Info.plist의 NMFNcpKeyId에 새 클라이언트 ID 입력");
-            debugPrint("   4. Android: AndroidManifest.xml의 com.naver.maps.map.CLIENT_ID에 새 클라이언트 ID 입력");
+            debugPrint(
+              "   4. Android: AndroidManifest.xml의 com.naver.maps.map.CLIENT_ID에 새 클라이언트 ID 입력",
+            );
             debugPrint("   5. 또는 .env 파일 생성 후 NAVER_MAP_CLIENT_ID 설정");
           },
         );
@@ -102,7 +115,7 @@ Future<void> main() async {
 
   // 앱을 먼저 시작하고 백그라운드에서 초기화 (iPhone 최적화)
   runApp(const MyApp());
-  
+
   // 백그라운드에서 초기화 작업 수행 (UI 차단하지 않음)
   _initializeInBackground();
 }
@@ -203,7 +216,10 @@ class _StartupRouterState extends State<_StartupRouter> {
       if (resp.statusCode == 200) {
         final data = jsonDecode(resp.body);
         final setupComplete = data['setup_complete'] == true;
-        setState(() => _start = setupComplete ? const ModeScreen() : const NameScreen());
+        setState(
+          () =>
+              _start = setupComplete ? const ModeScreen() : const NameScreen(),
+        );
       } else {
         debugPrint('Status check failed: ${resp.statusCode}');
         setState(() => _start = fallback);
@@ -217,9 +233,7 @@ class _StartupRouterState extends State<_StartupRouter> {
   @override
   Widget build(BuildContext context) {
     if (_start == null) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
     return _start!;
   }
@@ -245,15 +259,13 @@ class _Splash extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      body: Center(child: CircularProgressIndicator()),
-    );
+    return const Scaffold(body: Center(child: CircularProgressIndicator()));
   }
 }
 
 class _AlternativeStartup extends StatefulWidget {
   const _AlternativeStartup();
-  
+
   @override
   State<_AlternativeStartup> createState() => _AlternativeStartupState();
 }
@@ -275,7 +287,10 @@ class _AlternativeStartupState extends State<_AlternativeStartup> {
     if (kUseBackendStatusCheck) {
       try {
         final uri = Uri.parse('${AppConfig.measurementEndpoint}?uuid=$uuid');
-        final resp = await http.get(uri, headers: {'Accept': 'application/json'});
+        final resp = await http.get(
+          uri,
+          headers: {'Accept': 'application/json'},
+        );
         if (resp.statusCode == 200) {
           final json = jsonDecode(resp.body) as Map<String, dynamic>;
           final setupComplete = json['setup_complete'] == true;
@@ -302,36 +317,32 @@ class _AlternativeStartupState extends State<_AlternativeStartup> {
 
   @override
   Widget build(BuildContext context) {
-    return MultiProvider(
-      providers: [ChangeNotifierProvider(create: (context) => VoiceService())],
-      child: MaterialApp(
-        navigatorKey: navigatorKey,
-        title: 'A:EYE',
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData(useMaterial3: true),
-        home: FutureBuilder<_LaunchDecision>(
-          future: _decideLaunch(),
-          builder: (context, snap) {
-            if (snap.connectionState != ConnectionState.done) {
-              return const _Splash();
-            }
-            final decision = snap.data ?? _LaunchDecision.name();
-            switch (decision.target) {
-              case _StartTarget.name:
-                return const NameScreen();
-              case _StartTarget.mode:
-                return const ModeScreen();
-            }
-          },
-        ),
-        routes: {
-          '/name': (_) => const NameScreen(),
-          '/mode': (_) => const ModeScreen(),
-          '/measurement-camera':
-              (context) => const CameraMeasurementScreen(),
+    // VoiceService는 상위(MyApp)에서 주입되므로 여기서는 중복 주입하지 않습니다.
+    return MaterialApp(
+      navigatorKey: navigatorKey,
+      title: 'A:EYE',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(useMaterial3: true),
+      home: FutureBuilder<_LaunchDecision>(
+        future: _decideLaunch(),
+        builder: (context, snap) {
+          if (snap.connectionState != ConnectionState.done) {
+            return const _Splash();
+          }
+          final decision = snap.data ?? _LaunchDecision.name();
+          switch (decision.target) {
+            case _StartTarget.name:
+              return const NameScreen();
+            case _StartTarget.mode:
+              return const ModeScreen();
+          }
         },
       ),
+      routes: {
+        '/name': (_) => const NameScreen(),
+        '/mode': (_) => const ModeScreen(),
+        '/measurement-camera': (context) => const CameraMeasurementScreen(),
+      },
     );
   }
 }
-

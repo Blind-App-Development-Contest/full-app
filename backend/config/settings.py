@@ -11,8 +11,13 @@ class Settings(BaseSettings):
     PORT: int = int(os.getenv("PORT", 8000))
     DEBUG: bool = False
 
-    # CORS 설정
-    ALLOWED_ORIGINS: List[str] = ["*"]  # 개발용, 운영환경에서는 구체적인 도메인 지정
+    # CORS 설정 - 보안 강화
+    ALLOWED_ORIGINS: List[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000", 
+        "http://localhost:8080",
+        "http://127.0.0.1:8080"
+    ]  # Flutter 개발 서버 및 로컬 테스트용
 
     # 음성/검색 설정
     MAX_FILE_SIZE_MB: int = 50

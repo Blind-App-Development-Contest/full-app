@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from pydantic import BaseModel
 from uuid import UUID
 from typing import Dict, Any
 from datetime import datetime
-import time
+import numpy as np
+import tempfile
 # 기존 데이터베이스 연결 설정 제거하고 중앙화된 것 사용
 from core.database import get_async_db
 from models.database_models import User, Footstep
@@ -11,16 +12,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-# 통합 스텝 모델 import - 중복 제거됨
+# 통합 스텝 모델 import
 from models.step_models import (
     StepMeasurementRequest,
     StepMeasurementResponse,
     StepUpdateRequest,
     StepMeasurementMethod,
-    validate_step_measurement_inputs
+    validate_step_measurement_inputs,
+    StepCalculationUtils
 )
 
-# 레거시 호환성을 위한 모델들 (새 코드는 step_models 사용 권장)
+# 레거시 호환성을 위한 모델들
 class FootstepUpdateRequest(BaseModel):
     user_id: UUID
     step_length_cm: int
@@ -32,103 +34,199 @@ class FootstepResponse(BaseModel):
 
 # 새로운 IMU 통합 시스템 import (레거시 호환성 유지)
 from utils.fastdepth_processor import get_fastdepth_processor
+from middleware.error_handler import ErrorLogger
 
 router = APIRouter()
 
 # 싱글톤 서비스 인스턴스 사용
 from services.singleton import service_manager
 command_executor = service_manager.get_command_executor()
+speech_service = service_manager.get_speech_service()
+speech_analyzer = service_manager.get_speech_analyzer()
 
 # 레거시 함수들은 UnifiedStepCalculator와 StepValidationResult로 대체됨
 
-@router.post("/measurements", response_model=StepMeasurementResponse)
-async def create_footstep_measurement(request: StepMeasurementRequest):
+@router.post("/measurements/files", response_model=StepMeasurementResponse)
+async def measurement_from_files(
+    voice_file: UploadFile = File(..., description="걸음수 추출용 음성 파일"),
+    frame_file: UploadFile = File(..., description="거리 측정용 프레임 이미지"),
+    user_id: str = Form(default="api_user")
+):
     """
-    FastDepth 기반 보폭 측정
+    파일 업로드 방식 통합형 보폭 측정
     
     Args:
-        request: 거리와 걸음 수 정보
+        voice_file: 걸음수 추출용 음성 파일
+        frame_file: 거리 측정용 프레임 이미지  
+        user_id: 사용자 ID
         
     Returns:
-        FootstepDepthMeasurementResponse: 측정 결과
+        StepMeasurementResponse: 측정 결과
     """
     try:
-        print(f"[FastDepth 보폭 측정] 시작")
-        print(f"  - 측정 거리: {request.distance_meters}m")
-        print(f"  - 걸음 수: {request.step_count}걸음")
+        print(f"[파일 업로드 보폭 측정] 시작 - 사용자: {user_id}")
         
-# 새로운 IMU 통합 시스템을 사용한 보폭 계산
-        processor = get_fastdepth_processor()
+        # 1단계: 음성에서 걸음수 추출
+        step_count = await _extract_step_count_from_voice(voice_file)
         
-        # 거리 기반 계산을 위해 간단한 더미 이미지 생성
-        import numpy as np
-        dummy_image = np.zeros((480, 640, 3), dtype=np.uint8)
+        # 2단계: 프레임에서 거리 측정
+        cv_image = await _convert_upload_to_cv_image(frame_file)
+        measured_distance_meters = await _measure_distance_from_frame(cv_image)
         
-        # 카메라 기반 계산 (IMU 제거됨)
-        step_result = await processor.process_frame_for_measurement(
-            cv_image=dummy_image,
-            user_id=str(request.user_id) if getattr(request, 'user_id', None) else 'api_user'
+        # 3단계: 통합 보폭 계산
+        return await _calculate_unified_step_measurement(
+            step_count=step_count,
+            distance_meters=measured_distance_meters,
+            user_id=user_id,
+            method="file_upload_integration"
         )
         
-        # 레거시 API 호환을 위해 결과가 없으면 거리 기반 단순 계산
-        if not step_result:
-            from models.step_models import StepCalculationResult, AccuracyConverter
-            # 거리 기반 단순 계산 (None 체크)
-            if request.distance_meters is None or request.step_count is None or request.step_count == 0:
-                raise HTTPException(status_code=400, detail="거리와 걸음 수는 필수입니다.")
-            step_length_cm = (request.distance_meters / request.step_count) * 100
-            confidence = 0.7 if request.distance_meters >= 3.0 else 0.5
-            
-            step_result = StepCalculationResult(
-                step_length_cm=round(step_length_cm, 1),
-                confidence=confidence,
-                step_count=request.step_count,
-                tracking_quality=AccuracyConverter.confidence_to_quality(confidence),
-                accuracy_level=AccuracyConverter.confidence_to_korean_level(confidence),
-                measurement_method=request.measurement_method,
-                consistency_score=None,
-                processing_time_ms=None,
-                timestamp=datetime.now(),
-                source_data={
-                    "method": "distance_based_api_fallback",
-                    "distance_meters": request.distance_meters,
-                    "step_count": request.step_count
-                }
-            )
+    except Exception as e:
+        ErrorLogger.log_api_error("Footstep", "파일 업로드 보폭 측정", e)
+        raise HTTPException(status_code=500, detail=f"파일 업로드 측정 실패: {str(e)}")
+
+async def _extract_step_count_from_voice(voice_file: UploadFile) -> int:
+    """음성 파일에서 걸음수 추출"""
+    try:
+        # 음성을 텍스트로 변환
+        transcribed_text = await speech_service.transcribe_from_file(voice_file)
+        print(f"[음성인식] 변환된 텍스트: '{transcribed_text}'")
         
-        # CommandExecutor에 보폭 등록
+        # 텍스트에서 의도 분석
+        speech_result = speech_analyzer.analyze_command(
+            transcribed_text, 
+            context="awaiting_step_count"
+        )
+        
+        # 걸음수 추출
+        if speech_result.intent == "STEP_COUNT_RESPONSE":
+            if "step_count" in speech_result.entities and speech_result.entities["step_count"] is not None:
+                step_count = speech_result.entities["step_count"]
+                print(f"[음성분석] 걸음수 추출 성공: {step_count}걸음")
+                return int(step_count)
+            elif speech_result.entities.get("action") == "input_step_count_failed":
+                print(f"[음성분석] 걸음수 추출 실패: {speech_result.entities.get('error', '알 수 없는 오류')}")
+                raise ValueError("음성에서 걸음수를 명확히 인식할 수 없습니다")
+        
+        # 직접 숫자 추출 시도
+        import re
+        numbers = re.findall(r'\d+', transcribed_text)
+        if numbers:
+            # 첫 번째 숫자를 걸음수로 사용
+            step_count = int(numbers[0])
+            print(f"[음성분석] 직접 숫자 추출: {step_count}걸음")
+            return step_count
+        
+        raise ValueError("음성에서 걸음수를 찾을 수 없습니다")
+        
+    except Exception as e:
+        print(f"[음성처리 오류] {e}")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"음성에서 걸음수 추출 실패: {str(e)}"
+        )
+
+async def _convert_upload_to_cv_image(image_file: UploadFile) -> np.ndarray:
+    """UploadFile을 OpenCV 이미지로 변환"""
+    try:
+        # 파일 내용 읽기
+        image_bytes = await image_file.read()
+        
+        # NumPy 배열로 변환
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        
+        # OpenCV 이미지로 디코드
+        import cv2
+        cv_image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if cv_image is None:
+            raise ValueError("이미지 파일을 디코드할 수 없습니다")
+        
+        print(f"[이미지처리] 변환 완료: {cv_image.shape}")
+        return cv_image
+        
+    except Exception as e:
+        print(f"[이미지처리 오류] {e}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"이미지 파일 처리 실패: {str(e)}"
+        )
+
+async def _measure_distance_from_frame(cv_image: np.ndarray) -> float:
+    """프레임에서 거리 측정 (공통 유틸리티)"""
+    try:
+        processor = get_fastdepth_processor()
+        distance_meters = processor._analyze_frame_for_distance(cv_image)
+        print(f"[거리 측정] {distance_meters:.2f}m")
+        return distance_meters
+    except Exception as e:
+        print(f"[거리 측정 오류] {e}")
+        raise HTTPException(status_code=500, detail=f"거리 측정 실패: {str(e)}")
+
+async def _calculate_unified_step_measurement(
+    step_count: int, 
+    distance_meters: float, 
+    user_id: str,
+    method: str
+) -> StepMeasurementResponse:
+    """통합 보폭 계산 (공통 유틸리티)"""
+    try:
+        from models.step_models import StepCalculationResult, AccuracyConverter
+        
+        # 보폭 계산
+        step_length_cm = StepCalculationUtils.calculate_step_length_cm(distance_meters, step_count)
+        confidence = StepCalculationUtils.get_confidence_from_distance(distance_meters)
+        
+        step_result = StepCalculationResult(
+            step_length_cm=round(step_length_cm, 1),
+            confidence=confidence,
+            step_count=step_count,
+            tracking_quality=AccuracyConverter.confidence_to_quality(confidence),
+            accuracy_level=AccuracyConverter.confidence_to_korean_level(confidence),
+            measurement_method=StepMeasurementMethod.DISTANCE_BASED,
+            consistency_score=None,
+            processing_time_ms=None,
+            timestamp=datetime.now(),
+            source_data={
+                "method": method,
+                "step_count": step_count,
+                "distance_meters": distance_meters,
+                "distance_source": "midas_frame_analysis",
+                "step_count_source": "whisper_voice_recognition"
+            }
+        )
+        
+        # 설정 업데이트
         previous_step_length = command_executor.user_settings.get("step_length")
         command_executor.user_settings["step_length"] = step_result.step_length_cm
         
         # 로그 출력
-        print(f"[FastDepth 보폭 측정] 완료")
-        print(f"  - 계산된 보폭: {step_result.step_length_cm}cm")
-        print(f"  - 정확도: {step_result.accuracy_level.value}")
-        print(f"  - 품질: {step_result.tracking_quality.value}")
-        print(f"  - 이전 보폭: {previous_step_length}cm → 새 보폭: {step_result.step_length_cm}cm")
+        print(f"[통합 보폭 계산] 완료")
+        print(f"  - 걸음수: {step_count}걸음")
+        print(f"  - 거리: {distance_meters:.2f}m") 
+        print(f"  - 보폭: {step_result.step_length_cm}cm")
         
-        # 정확도에 따른 메시지 생성
+        # 정확도 메시지
         accuracy_msg = ""
         if step_result.accuracy_level.value == "높음":
             accuracy_msg = " (높은 정확도로 측정됨)"
         elif step_result.accuracy_level.value == "낮음":
-            accuracy_msg = " (더 긴 거리에서 재측정을 권장함)"
-        
-        # 입력 데이터 준비
-        input_data = {
-            "distance_meters": request.distance_meters,
-            "step_count": request.step_count,
-            "measurement_method": request.measurement_method.value,
-            "user_id": request.user_id
-        }
+            accuracy_msg = " (더 긴 거리나 더 많은 걸음으로 재측정을 권장함)"
         
         return StepMeasurementResponse(
             success=True,
-            message=f"보폭 측정이 완료되었습니다! 계산된 보폭은 {step_result.step_length_cm}cm입니다.{accuracy_msg}",
+            message=command_executor.get_voice_message("step_measurement_complete", step_length=step_result.step_length_cm),
             result=step_result,
-            input_data=input_data,
+            input_data={
+                "step_count": step_count,
+                "distance_meters": distance_meters,
+                "method": method,
+                "user_id": user_id
+            },
             processing_info={
-                "method": "distance_based_calculation",
+                "method": method,
+                "voice_processing": "whisper_stt",
+                "frame_processing": "midas_depth_estimation", 
                 "previous_step_length": previous_step_length,
                 "updated_user_settings": True
             },
@@ -136,7 +234,72 @@ async def create_footstep_measurement(request: StepMeasurementRequest):
         )
         
     except Exception as e:
-        print(f"[오류] FastDepth 보폭 측정 중 오류: {e}")
+        print(f"[보폭 계산 오류] {e}")
+        raise HTTPException(status_code=500, detail=f"보폭 계산 실패: {str(e)}")
+
+@router.post("/measurements", response_model=StepMeasurementResponse)
+async def create_footstep_measurement(request: StepMeasurementRequest):
+    """
+    통합형 보폭 측정 (음성 or 직접입력 걸음수 + 프레임 거리 측정)
+    
+    Args:
+        request: 음성/프레임 데이터 또는 직접 입력 데이터
+        
+    Returns:
+        StepMeasurementResponse: 측정 결과
+    """
+    try:
+        print(f"[통합 보폭 측정] 시작")
+        
+        step_count = None
+        measured_distance_meters = None
+        
+        # 1단계: 걸음수 확보 (음성 우선, 직접입력 백업)
+        if hasattr(request, 'voice_data') and request.voice_data is not None:
+            print("[음성 처리] 음성에서 걸음수 추출")
+            try:
+                # 음성 데이터를 임시 파일로 저장하여 처리
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+                    temp_file.write(request.voice_data)
+                    temp_file.flush()
+                    
+                    # UploadFile 객체로 변환
+                    from fastapi import UploadFile
+                    temp_upload = UploadFile(filename="temp_voice.wav", file=open(temp_file.name, "rb"))
+                    step_count = await _extract_step_count_from_voice(temp_upload)
+                    temp_upload.file.close()
+                    
+                print(f"  - 음성에서 추출된 걸음수: {step_count}걸음")
+            except Exception as e:
+                print(f"[음성 처리 실패] {e}")
+                if request.step_count is not None:
+                    step_count = request.step_count
+                    print(f"  - 백업 직접입력 사용: {step_count}걸음")
+                else:
+                    raise HTTPException(status_code=400, detail="음성 처리 실패, 걸음수 직접입력이 필요합니다")
+        elif request.step_count is not None:
+            step_count = request.step_count
+            print(f"  - 직접 입력된 걸음수: {step_count}걸음")
+        else:
+            raise HTTPException(status_code=400, detail="걸음수는 음성 또는 직접 입력으로 제공해야 합니다")
+        
+        # 2단계: 거리 측정 (프레임 필수)
+        if not hasattr(request, 'frame_data') or request.frame_data is None:
+            raise HTTPException(status_code=400, detail="프레임 데이터가 필요합니다 (거리 측정용)")
+        
+        # 2단계: 프레임에서 거리 측정
+        measured_distance_meters = await _measure_distance_from_frame(request.frame_data)
+        
+        # 3단계: 통합 보폭 계산
+        return await _calculate_unified_step_measurement(
+            step_count=step_count,
+            distance_meters=measured_distance_meters,
+            user_id=getattr(request, 'user_id', 'api_user'),
+            method="integrated_voice_frame_data"
+        )
+        
+    except Exception as e:
+        ErrorLogger.log_api_error("Footstep", "FastDepth 보폭 측정", e)
         raise HTTPException(status_code=500, detail=f"측정 실패: {str(e)}")
 
 # =========================
@@ -267,7 +430,7 @@ async def get_footstep_settings():
         }
         
     except Exception as e:
-        print(f"[오류] 현재 보폭 조회 중 오류: {e}")
+        ErrorLogger.log_api_error("Footstep", "현재 보폭 조회", e)
         raise HTTPException(status_code=500, detail=f"보폭 조회 실패: {str(e)}")
 
 @router.put("", response_model=Dict[str, Any], tags=["Footstep Management"])
@@ -300,7 +463,7 @@ async def update_footstep_settings(request: StepUpdateRequest):
         }
         
     except Exception as e:
-        print(f"[오류] 보폭 업데이트 중 오류: {e}")
+        ErrorLogger.log_api_error("Footstep", "보폭 업데이트", e)
         raise HTTPException(status_code=500, detail=f"보폭 업데이트 실패: {str(e)}")
 
 @router.post("/measurements/validate", tags=["Footstep Management"])
@@ -333,8 +496,8 @@ async def validate_measurement_request(distance_meters: float, step_count: int):
             warnings.append("걸음 수가 적습니다")
             recommendations.append("더 많은 걸음으로 측정하면 정확도가 향상됩니다")
         
-        # 간단한 보폭 계산 (검증용)
-        expected_step_length = (distance_meters / step_count) * 100
+        # 중앙화된 보폭 계산 사용
+        expected_step_length = StepCalculationUtils.calculate_step_length_cm(distance_meters, step_count)
         
         if expected_step_length < 30:
             warnings.append("계산될 보폭이 너무 짧습니다")
@@ -366,7 +529,7 @@ async def validate_measurement_request(distance_meters: float, step_count: int):
         }
         
     except Exception as e:
-        print(f"[오류] 데이터 검증 중 오류: {e}")
+        ErrorLogger.log_api_error("Footstep", "데이터 검증", e)
         raise HTTPException(status_code=500, detail=f"검증 실패: {str(e)}")
 
 @router.delete("/user/{user_id}", status_code=status.HTTP_204_NO_CONTENT)

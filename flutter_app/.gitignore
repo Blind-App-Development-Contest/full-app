@@ -49,3 +49,6 @@ backend/.gemini/
 backend/tools.yaml
 
 ios/Podfile.lock
+
+# .env
+.env

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, AliasChoices
 from typing import Optional
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,23 +51,24 @@ def get_solapi_service() -> SolapiMessageService:
 # Schemas
 # ─────────────────────────────────────────────────────────────
 class CaregiverCreate(BaseModel):
-    user_id: UUID
+    user_id: UUID = Field(validation_alias=AliasChoices('uuid', 'user_id'))
     caregivers_name: str = Field(..., max_length=32)
     phone_number: str = Field(..., max_length=32)
+    context: Optional[str] = Field("onboarding", description="설정 컨텍스트: onboarding, reset")
 
 class CaregiverUpdate(BaseModel):
     caregivers_name: Optional[str] = Field(None, max_length=32)
     phone_number: Optional[str] = Field(None, max_length=32)
+    context: Optional[str] = Field("reset", description="설정 컨텍스트: onboarding, reset")
 
 class CaregiverResponse(BaseModel):
     caregiver_id: int
     user_id: UUID
     caregivers_name: str
     phone_number: str
-
-# message 필드 제거
+    
 class AlertRequest(BaseModel):
-    user_id: UUID
+    user_id: UUID = Field(validation_alias=AliasChoices('uuid', 'user_id'))
 
 class CaregiverAlertResponse(BaseModel):
     status: str
@@ -78,7 +79,7 @@ class CaregiverAlertResponse(BaseModel):
 # ─────────────────────────────────────────────────────────────
 # POST /api/users/caregiver : 보호자 정보 등록
 # ─────────────────────────────────────────────────────────────
-@router.post("/caregiver", response_model=CaregiverResponse)
+@router.post("/caregiver")
 async def create_caregiver(req: CaregiverCreate, session: AsyncSession = Depends(get_session)):
     user_id_str = str(req.user_id)
     try:
@@ -113,7 +114,29 @@ async def create_caregiver(req: CaregiverCreate, session: AsyncSession = Depends
         
         await session.commit()
 
-        return CaregiverResponse.model_validate(row, from_attributes=True)
+        # 컨텍스트에 따른 음성 안내 메시지 생성 (CommandExecutor에서 가져오기)
+        from services.singleton import service_manager
+        command_executor = service_manager.get_command_executor()
+        
+        context = getattr(req, 'context', 'onboarding')
+        if context == "onboarding":
+            voice_message = command_executor.get_voice_message("caregiver_create_onboarding")
+            next_step = "onboarding_complete"
+        else:
+            voice_message = command_executor.get_voice_message("caregiver_create_reset")
+            next_step = "settings_return"
+
+        # 응답에 음성 안내 정보 추가
+        caregiver_response = CaregiverResponse.model_validate(row, from_attributes=True)
+        response_dict = caregiver_response.model_dump()
+        response_dict.update({
+            "voice_message": voice_message,
+            "next_step": next_step,
+            "context": context,
+            "message": f"보호자 정보가 성공적으로 {'등록' if context == 'onboarding' else '업데이트'}되었습니다."
+        })
+        
+        return response_dict
 
     except IntegrityError as e:
         await session.rollback()
@@ -137,7 +160,7 @@ async def create_caregiver(req: CaregiverCreate, session: AsyncSession = Depends
 # ─────────────────────────────────────────────────────────────
 # PATCH /api/users/caregiver/{user_id} : 보호자 정보 수정
 # ─────────────────────────────────────────────────────────────
-@router.patch("/caregiver/{user_id}", response_model=CaregiverResponse)
+@router.patch("/caregiver/{user_id}")
 async def update_caregiver(user_id: UUID, req: CaregiverUpdate, session: AsyncSession = Depends(get_session)):
     if req.caregivers_name is None and req.phone_number is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one field must be provided")
@@ -168,7 +191,29 @@ async def update_caregiver(user_id: UUID, req: CaregiverUpdate, session: AsyncSe
         if not row:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Caregiver not found for the specified user")
 
-        return CaregiverResponse.model_validate(row, from_attributes=True)
+        # 컨텍스트에 따른 음성 안내 메시지 생성 (CommandExecutor에서 가져오기)
+        from services.singleton import service_manager
+        command_executor = service_manager.get_command_executor()
+        
+        context = getattr(req, 'context', 'reset')
+        if context == "onboarding":
+            voice_message = command_executor.get_voice_message("caregiver_update_onboarding")
+            next_step = "onboarding_complete"
+        else:
+            voice_message = command_executor.get_voice_message("caregiver_update_reset")
+            next_step = "settings_return"
+
+        # 응답에 음성 안내 정보 추가
+        caregiver_response = CaregiverResponse.model_validate(row, from_attributes=True)
+        response_dict = caregiver_response.model_dump()
+        response_dict.update({
+            "voice_message": voice_message,
+            "next_step": next_step,
+            "context": context,
+            "message": f"보호자 정보가 성공적으로 {'완료' if context == 'onboarding' else '변경'}되었습니다."
+        })
+        
+        return response_dict
     except Exception as e:
         await session.rollback()
         if settings.DEBUG:

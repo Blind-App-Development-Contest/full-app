@@ -3,6 +3,7 @@ from models.common_models import (
     SystemStatusResponse,
     ExecutionHistoryResponse
 )
+from middleware.error_handler import ErrorLogger
 
 router = APIRouter()
 
@@ -32,7 +33,7 @@ def get_execution_status():
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[오류] 상태 조회 중 오류: {e}")
+        ErrorLogger.log_api_error("Execution", "상태 조회", e)
         raise HTTPException(status_code=500, detail=f"상태 조회 오류: {str(e)}")
 
 @router.get("/history", response_model=ExecutionHistoryResponse)
@@ -86,7 +87,7 @@ def get_commands_history(limit: int = 10):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[오류] 기록 조회 중 오류: {e}")
+        ErrorLogger.log_api_error("Execution", "기록 조회", e)
         raise HTTPException(status_code=500, detail=f"기록 조회 오류: {str(e)}")
 
 @router.get("/setup", tags=["Command Execution"])
@@ -109,7 +110,7 @@ def get_setup_configuration():
         }
         
     except Exception as e:
-        print(f"[오류] 설정 상태 조회 중 오류: {e}")
+        ErrorLogger.log_api_error("Execution", "설정 상태 조회", e)
         raise HTTPException(status_code=500, detail=f"상태 조회 오류: {str(e)}")
 
 @router.delete("/setup", tags=["Command Execution"])
@@ -132,5 +133,5 @@ def delete_setup_configuration():
         }
         
     except Exception as e:
-        print(f"[오류] 설정 초기화 중 오류: {e}")
+        ErrorLogger.log_api_error("Execution", "설정 초기화", e)
         raise HTTPException(status_code=500, detail=f"초기화 오류: {str(e)}")

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, select, insert
@@ -7,6 +7,8 @@ from models.database_models import User, Voice, Caregiver, Footstep, UserSetting
 from core.database import get_async_db as get_session
 import logging
 from config.settings import get_settings
+from api.voice import speed_float_to_int_percent
+from middleware.error_handler import ErrorLogger
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -27,7 +29,7 @@ class OnboardingComplete(BaseModel):
     user_name: str
     # 음성 설정
     voice_gender: str = "F"  # M/F
-    voice_speed: int = 10    # 1-20 (10이 기본)
+    voice_speed: float = Field(1.0, ge=0.25, le=4.0, description="음성 속도 (Google TTS speaking_rate, 0.25-4.0)")
     # 보폭 설정
     step_length_cm: int
     # 보호자 정보
@@ -106,7 +108,7 @@ async def register_user(
         if settings.DEBUG:
             logger.exception("register_user failed")
         else:
-            logger.error(f"register_user failed: {e}")
+            ErrorLogger.log_api_error("Users", "register_user", e)
         raise HTTPException(status_code=500, detail=str(e))
     
 # 이름 수정
@@ -138,7 +140,7 @@ async def update_name(
         if settings.DEBUG:
             logger.exception("update_name failed")
         else:
-            logger.error(f"update_name failed: {e}")
+            ErrorLogger.log_api_error("Users", "update_name", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 # 온보딩 완료 - 모든 사용자 정보를 한 번에 저장
@@ -162,7 +164,11 @@ async def complete_onboarding(
             {"uid": str(payload.app_uuid), "uname": payload.user_name}
         )
         
-        # 2. 음성 설정 저장
+        # 2. 음성 설정 저장 (속도 값 유효성 검증)
+        if not (0.25 <= payload.voice_speed <= 4.0):
+            raise HTTPException(status_code=400, detail=f"Invalid voice speed: {payload.voice_speed}")
+        speed_db_value = speed_float_to_int_percent(payload.voice_speed)
+        
         voice_result = await session.execute(
             text("""
                 INSERT INTO voice (user_id, gender, speed) 
@@ -176,7 +182,7 @@ async def complete_onboarding(
             {
                 "uid": str(payload.app_uuid), 
                 "gender": payload.voice_gender,
-                "speed": payload.voice_speed
+                "speed": speed_db_value
             }
         )
         voice_id = voice_result.scalar_one()
@@ -248,7 +254,7 @@ async def complete_onboarding(
                 "user_name": payload.user_name,
                 "voice_settings": {
                     "gender": payload.voice_gender,
-                    "speed": payload.voice_speed
+                    "speed": payload.voice_speed  # 정규화된 속도 반환
                 },
                 "step_length_cm": payload.step_length_cm,
                 "caregiver": {
@@ -263,5 +269,5 @@ async def complete_onboarding(
         if settings.DEBUG:
             logger.exception("complete_onboarding failed")
         else:
-            logger.error(f"complete_onboarding failed: {e}")
+            ErrorLogger.log_api_error("Users", "complete_onboarding", e)
         raise HTTPException(status_code=500, detail=f"온보딩 완료 처리 실패: {str(e)}")

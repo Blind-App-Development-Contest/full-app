@@ -18,7 +18,7 @@ class ServiceManager:
             cls._instance = super(ServiceManager, cls).__new__(cls)
         return cls._instance
     
-    def get_command_executor(self, user_id: str = None) -> CommandExecutor:
+    def get_command_executor(self, user_id: str | None = None) -> CommandExecutor:
         """사용자별 CommandExecutor 인스턴스 반환"""
         if user_id is None:
             user_id = "default"
