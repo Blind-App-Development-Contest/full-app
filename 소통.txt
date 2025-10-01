@@ -1,5 +1,12 @@
-2025-09-11T09:15:06.705855Z INFO:     169.254.131.1:13719 - "POST /api/users/voice HTTP/1.1" 200 OK
-2025-09-11T09:15:06.8954409Z INFO:services.speech_service:[STT] 파일 수신: voice_test_1757582102374.m4a, 타입: audio/m4a
-2025-09-11T09:15:06.8954981Z INFO:services.speech_service:[STT] 파일 크기: 14123 bytes (0.01MB)
-2025-09-11T09:15:09.4223731Z INFO:httpx:HTTP Request: POST https://api.openai.com/v1/audio/transcriptions "HTTP/1.1 200 OK"
-2025-09-11T09:15:09.424551Z INFO:services.speech_service:[STT] 변환 완료: 'MBC 뉴스 이덕영입니다.' (파일크기: 0.01MB)
+Would you like to run the runner as service? (Y/N) [press Enter for N] y
+User account to use for the service [press Enter for NT AUTHORITY\NETWORK SERVICE] y
+Entered value is invalid
+User account to use for the service [press Enter for NT AUTHORITY\NETWORK SERVICE]
+Granting file permissions to 'NT AUTHORITY\NETWORK SERVICE'.
+Service actions.runner.Blind-App-Development-Contest-full-app.DESKTOP-1VHBQ5H successfully installed
+Service actions.runner.Blind-App-Development-Contest-full-app.DESKTOP-1VHBQ5H successfully set recovery option
+Service actions.runner.Blind-App-Development-Contest-full-app.DESKTOP-1VHBQ5H successfully set to delayed auto start
+Service actions.runner.Blind-App-Development-Contest-full-app.DESKTOP-1VHBQ5H successfully configured
+Waiting for service to start...
+Cannot start the service. Check the logs for more details.
+Cannot start the service actions.runner.Blind-App-Development-Contest-full-app.DESKTOP-1VHBQ5H in a timely fashion.
