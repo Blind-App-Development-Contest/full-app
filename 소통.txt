@@ -1,12 +1,3 @@
-Would you like to run the runner as service? (Y/N) [press Enter for N] y
-User account to use for the service [press Enter for NT AUTHORITY\NETWORK SERVICE] y
-Entered value is invalid
-User account to use for the service [press Enter for NT AUTHORITY\NETWORK SERVICE]
-Granting file permissions to 'NT AUTHORITY\NETWORK SERVICE'.
-Service actions.runner.Blind-App-Development-Contest-full-app.DESKTOP-1VHBQ5H successfully installed
-Service actions.runner.Blind-App-Development-Contest-full-app.DESKTOP-1VHBQ5H successfully set recovery option
-Service actions.runner.Blind-App-Development-Contest-full-app.DESKTOP-1VHBQ5H successfully set to delayed auto start
-Service actions.runner.Blind-App-Development-Contest-full-app.DESKTOP-1VHBQ5H successfully configured
-Waiting for service to start...
-Cannot start the service. Check the logs for more details.
-Cannot start the service actions.runner.Blind-App-Development-Contest-full-app.DESKTOP-1VHBQ5H in a timely fashion.
+ "C:\Program Files\Docker\Docker\resources\bin\docker.exe" buildx create --name builder-4a1bb04c-b18e-4b7c-aa49-d26d6db43b97 --driver docker-container --buildkitd-flags "--allow-insecure-entitlement security.insecure --allow-insecure-entitlement network.host" --use
+  ERROR: failed to initialize builder builder-4a1bb04c-b18e-4b7c-aa49-d26d6db43b97 (builder-4a1bb04c-b18e-4b7c-aa49-d26d6db43b970): error during connect: this error may indicate that the docker daemon is not running: Get "http://%2F%2F.%2Fpipe%2Fdocker_engine/v1.51/containers/buildx_buildkit_builder-4a1bb04c-b18e-4b7c-aa49-d26d6db43b970/json": open //./pipe/docker_engine: The system cannot find the file specified.
+Error: The process 'C:\Program Files\Docker\Docker\resources\bin\docker.exe' failed with exit code 1
