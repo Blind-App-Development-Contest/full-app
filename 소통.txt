@@ -1,3 +1,16 @@
- "C:\Program Files\Docker\Docker\resources\bin\docker.exe" buildx create --name builder-4a1bb04c-b18e-4b7c-aa49-d26d6db43b97 --driver docker-container --buildkitd-flags "--allow-insecure-entitlement security.insecure --allow-insecure-entitlement network.host" --use
-  ERROR: failed to initialize builder builder-4a1bb04c-b18e-4b7c-aa49-d26d6db43b97 (builder-4a1bb04c-b18e-4b7c-aa49-d26d6db43b970): error during connect: this error may indicate that the docker daemon is not running: Get "http://%2F%2F.%2Fpipe%2Fdocker_engine/v1.51/containers/buildx_buildkit_builder-4a1bb04c-b18e-4b7c-aa49-d26d6db43b970/json": open //./pipe/docker_engine: The system cannot find the file specified.
-Error: The process 'C:\Program Files\Docker\Docker\resources\bin\docker.exe' failed with exit code 1
+Run docker stop backend-container || true
+  docker stop backend-container || true
+  docker rm backend-container || true
+  shell: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.EXE -command ". '{0}'"
+At C:\Users\SYU\Documents\GitHub\full-app\actions-runner\_work\_temp\e02c76fc-7898-4815-85e6-e01cb266a8b2.ps1:2 char:31
++ docker stop backend-container || true
++                               ~~
+The token '||' is not a valid statement separator in this version.
+At C:\Users\SYU\Documents\GitHub\full-app\actions-runner\_work\_temp\e02c76fc-7898-4815-85e6-e01cb266a8b2.ps1:3 char:29
++ docker rm backend-container || true
++                             ~~
+The token '||' is not a valid statement separator in this version.
+    + CategoryInfo          : ParserError: (:) [], ParseException
+    + FullyQualifiedErrorId : InvalidEndOfLine
+ 
+Error: Process completed with exit code 1.

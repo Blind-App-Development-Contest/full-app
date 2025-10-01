@@ -1,0 +1,11 @@
+﻿{
+  "agentId": 24,
+  "agentName": "DESKTOP-1VHBQ5H",
+  "poolId": 1,
+  "poolName": "Default",
+  "serverUrl": "https://pipelinesghubeus26.actions.githubusercontent.com/SOQr2DZZ06CflTi25yZHcO85GXPlrIHDQE96ijtKfPjI8qMKlo/",
+  "gitHubUrl": "https://github.com/Blind-App-Development-Contest/full-app",
+  "workFolder": "_work",
+  "useV2Flow": true,
+  "serverUrlV2": "https://broker.actions.githubusercontent.com/"
+}
