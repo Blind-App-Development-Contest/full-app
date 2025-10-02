@@ -1,3 +1,7 @@
-Requested labels: self-hosted
-Job defined at: Blind-App-Development-Contest/full-app/.github/workflows/deploy-on-premise.yml@refs/heads/dev
-Waiting for a runner to pick up this job...
+(base) PS C:\actions-runner> .\run.cmd
+        1개 파일이 복사되었습니다.
+
+√ Connected to GitHub
+
+A session for this runner already exists.
+2025-10-02 00:34:45Z: Runner connect error: Error: Conflict. Retrying until reconnected.
