@@ -1,33 +1,3 @@
-Run actions/checkout@v3
-  with:
-    repository: Blind-App-Development-Contest/full-app
-    token: ***
-    ssh-strict: true
-    persist-credentials: true
-    clean: true
-    sparse-checkout-cone-mode: true
-    fetch-depth: 1
-    fetch-tags: false
-    lfs: false
-    submodules: false
-    set-safe-directory: true
-Syncing repository: Blind-App-Development-Contest/full-app
-Getting Git version info
-Deleting the contents of 'C:\Users\SYU\Documents\GitHub\full-app\actions-runner\_work\full-app\full-app'
-The repository will be downloaded using the GitHub REST API
-To create a local Git repository instead, add Git 2.18 or higher to the PATH
-Downloading the archive
-Writing archive to disk
-Extracting the archive
-C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -NoLogo -Sta -NoProfile -NonInteractive -ExecutionPolicy Unrestricted -Command "$ErrorActionPreference = 'Stop' ; try { Add-Type -AssemblyName System.IO.Compression.FileSystem } catch { } ; [System.IO.Compression.ZipFile]::ExtractToDirectory('C:\Users\SYU\Documents\GitHub\full-app\actions-runner\_work\full-app\full-app\26db5495-e3e3-41a4-afa8-1490f3fff495.tar.gz', 'C:\Users\SYU\Documents\GitHub\full-app\actions-runner\_work\full-app\full-app\26db5495-e3e3-41a4-afa8-1490f3fff495')"
-Exception calling "ExtractToDirectory" with "2" argument(s): "Could not find a part of the path 'C:\Users\SYU\Documents
-\GitHub\full-app\actions-runner\_work\full-app\full-app\26db5495-e3e3-41a4-afa8-1490f3fff495\Blind-App-Development-Cont
-est-full-app-3b43af9\actions-runner\_work\_actions\actions\checkout\v3\.licenses\npm\@octokit\plugin-paginate-rest.dep.
-yml'."
-At line:1 char:111
-+ ... catch { } ; [System.IO.Compression.ZipFile]::ExtractToDirectory('C:\U ...
-+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : DirectoryNotFoundException
- 
-Error: The process 'C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe' failed with exit code 1
+Requested labels: self-hosted
+Job defined at: Blind-App-Development-Contest/full-app/.github/workflows/deploy-on-premise.yml@refs/heads/dev
+Waiting for a runner to pick up this job...
