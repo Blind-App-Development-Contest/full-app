@@ -28,7 +28,7 @@ jobs:
           docker rm backend-container
 
       - name: Create .env file
-        run: echo "${{ secrets.DOT_ENV }}" > backend/.env
+        run: Set-Content -Path backend/.env -Value "${{ secrets.DOT_ENV }}" -Encoding UTF8
 
       - name: Run new container
         run: docker run -d -p 8000:8000 --env-file ./backend/.env --name backend-container --restart always full-app-backend:latest
