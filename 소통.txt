@@ -1,7 +1,0 @@
-(base) PS C:\actions-runner> .\run.cmd
-        1개 파일이 복사되었습니다.
-
-√ Connected to GitHub
-
-A session for this runner already exists.
-2025-10-02 00:34:45Z: Runner connect error: Error: Conflict. Retrying until reconnected.
