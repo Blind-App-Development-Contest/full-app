@@ -1,16 +1,4 @@
-Run docker stop backend-container
-  docker stop backend-container
-  docker rm backend-container
-  shell: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.EXE -command ". '{0}'"
-  
-Error response from daemon: No such container: backend-container
-Error response from daemon: No such container: backend-container
-Error: Process completed with exit code 1.
-
-Run docker run -d -p 8000:8000 --env-file ./backend/.env --name backend-container --restart always full-app-backend:latest
-  docker run -d -p 8000:8000 --env-file ./backend/.env --name backend-container --restart always full-app-backend:latest
-  shell: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.EXE -command ". '{0}'"
-  
-docker: invalid env file (./backend/.env): invalid utf8 bytes at line 1: [255 254 71 0 79 0 79 0 71 0 76 0 69 0 95 0 84 0 84 0 83 0 95 0 65 0 80 0 73 0 95 0 75 0 69 0 89 0 61 0 65 0 73 0 122 0 97 0 83 0 121 0 67 0 99 0 102 0 109 0 119 0 65 0 79 0 68 0 66 0 65 0 113 0 78 0 76 0 98 0 108 0 90 0 103 0 72 0 108 0 111 0 70 0 71 0 49 0 89 0 83 0 49 0 87 0 71 0 49 0 88 0 88 0 55 0 77 0 13 0]
-Run 'docker run --help' for more information
-Error: Process completed with exit code 1.
+(base) PS C:\Users\SYU> netstat -ano | findstr "LISTENING" | findstr "8000"
+  TCP    0.0.0.0:8000           0.0.0.0:0              LISTENING       12184
+  TCP    [::]:8000              [::]:0                 LISTENING       12184
+  TCP    [::1]:8000             [::]:0                 LISTENING       4316
