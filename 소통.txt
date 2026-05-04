@@ -1,0 +1,4 @@
+(base) PS C:\Users\SYU> netstat -ano | findstr "LISTENING" | findstr "8000"
+  TCP    0.0.0.0:8000           0.0.0.0:0              LISTENING       12184
+  TCP    [::]:8000              [::]:0                 LISTENING       12184
+  TCP    [::1]:8000             [::]:0                 LISTENING       4316

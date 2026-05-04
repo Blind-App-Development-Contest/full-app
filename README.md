@@ -79,7 +79,7 @@ FULL-APP/
 5. FastAPI 서버 실행
     Windows |   backend\start.bat (cmd)
                 .\backend\start.ps1 (powershell)
-    macOS   |   ./backend/start.sh
+    macOS   |   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ## DB 설정
 
@@ -101,3 +101,32 @@ GRANT ALL ON DATABASE appdb TO appuser;
 
 3. 스키마 파일 적용
 psql -U appuser -h localhost -d appdb -f backend/db/appdb.sql
+
+4. DB 접속
+psql -h localhost -U appuser -d appdb
+
+
+# 추가된 라이브러리(마이다스)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+pip install opencv-python numpy ultralytics transformers fastapi uvicorn python-multipart asyncpg
+
+
+## 구글 클라우드 연동
+
+1. mac
+brew install --cask gcloud-cli
+exec $SHELL -l
+gcloud version
+
+gcloud auth application-default login
+gcloud config set project <PROJECT_ID>                 # 선택이지만 권장
+gcloud auth application-default set-quota-project <PROJECT_ID>
+
+2. windows(powershell)
+winget install -e --id Google.CloudSDK
+설치 후 터미널 닫았다가 다시 열기 (또는 새 PowerShell 창)
+gcloud version
+
+gcloud auth application-default login
+gcloud config set project <PROJECT_ID>                 # 선택이지만 권장
+gcloud auth application-default set-quota-project <PROJECT_ID>

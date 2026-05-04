@@ -43,3 +43,12 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# MCP gemini
+backend/.gemini/
+backend/tools.yaml
+
+ios/Podfile.lock
+
+# .env
+.env

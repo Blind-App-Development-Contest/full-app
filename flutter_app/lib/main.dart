@@ -1,122 +1,348 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
+import 'package:camera/camera.dart';
 
-void main() {
+import 'package:provider/provider.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'screens/name_screen.dart';
+import 'screens/mode_screen.dart';
+import 'screens/camera_measurement_screen.dart'; // 필요 없으면 제거
+import 'services/api_service.dart';
+import 'services/voice_service.dart';
+import 'services/onboarding_service.dart';
+import 'constants/config.dart';
+import 'package:flutter_naver_map/flutter_naver_map.dart';
+
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
+const String kUuidKey = 'app_uuid';
+
+/// (옵션) 백엔드 상태 확인 사용 여부
+const bool kUseBackendStatusCheck = true;
+
+/// 기본 상태 조회 엔드포인트 (dotenv 가 있으면 그걸 우선)
+// const String kStatusEndpointBaseDefault = 'http://localhost:8000/api/users/measurement/';
+const String kStatusEndpointBaseDefault =
+    'https://aeye-backend-app-jp.azurewebsites.net/api/users/measurement/';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // 시스템 UI (상태바 아이콘/밝기)
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarBrightness: Brightness.light,
+      statusBarIconBrightness: Brightness.dark,
+    ),
+  );
+
+  // .env 로드 (없어도 동작)
+  try {
+    await dotenv.load(fileName: ".env");
+  } catch (e) {
+    debugPrint("Warning: .env 파일을 찾을 수 없습니다: $e");
+  }
+
+  // NaverMap SDK 초기화 - 새로운 인증 API 사용 (2025년 7월 이후 필수)
+  try {
+    // 환경변수에서 클라이언트 ID를 가져오되, 없으면 플랫폼별 설정을 사용
+    final clientId = dotenv.env['NAVER_MAP_CLIENT_ID'];
+
+    if (clientId != null &&
+        clientId.isNotEmpty &&
+        clientId != 'YOUR_NAVER_MAP_CLIENT_ID_HERE') {
+      // 유효한 클라이언트 ID가 있는 경우 - 새로운 인증 API 사용
+      await FlutterNaverMap().init(
+        clientId: clientId,
+        onAuthFailed: (ex) {
+          debugPrint("❌ NaverMap 새 인증 API 실패: $ex");
+          debugPrint("💡 해결방법:");
+          debugPrint("   1. 네이버 클라우드 플랫폼에서 Mobile Dynamic Map 서비스 등록");
+          debugPrint("   2. 새로운 Client ID 발급 (기존 ID와 다를 수 있음)");
+          debugPrint("   3. .env 파일에 NAVER_MAP_CLIENT_ID 업데이트");
+          debugPrint("   4. 2025년 7월 이후 무료 할당량 정책 확인");
+          debugPrint("🗺️ 그리드만 보이는 현상은 이 인증 실패가 원인일 수 있습니다.");
+        },
+      );
+      debugPrint(
+        "✅ NaverMap 새 인증 API 초기화 완료 (클라이언트 ID: ${clientId.substring(0, 8)}...)",
+      );
+    } else {
+      // 클라이언트 ID가 없는 경우 - 플랫폼별 설정에서 읽기 시도
+      debugPrint("⚠️ .env에 NAVER_MAP_CLIENT_ID가 설정되지 않음");
+      debugPrint("📱 플랫폼별 설정 파일에서 클라이언트 ID를 읽어옵니다:");
+      debugPrint("   - iOS: Info.plist의 NMFNcpKeyId");
+      debugPrint(
+        "   - Android: AndroidManifest.xml의 com.naver.maps.map.CLIENT_ID",
+      );
+
+      // 플랫폼별 설정에서 클라이언트 ID 읽기 시도
+      try {
+        await FlutterNaverMap().init(
+          onAuthFailed: (ex) {
+            debugPrint("❌ NaverMap 새 인증 API 실패 (플랫폼 설정): $ex");
+            debugPrint("💡 해결방법:");
+            debugPrint(
+              "   1. 네이버 클라우드 플랫폼(https://console.ncloud.com/)에서 Mobile Dynamic Map 서비스 등록",
+            );
+            debugPrint("   2. 새로운 Client ID 발급");
+            debugPrint("   3. iOS: Info.plist의 NMFNcpKeyId에 새 클라이언트 ID 입력");
+            debugPrint(
+              "   4. Android: AndroidManifest.xml의 com.naver.maps.map.CLIENT_ID에 새 클라이언트 ID 입력",
+            );
+            debugPrint("   5. 또는 .env 파일 생성 후 NAVER_MAP_CLIENT_ID 설정");
+          },
+        );
+        debugPrint("✅ NaverMap 새 인증 API 초기화 시도 완료 (플랫폼별 설정 사용)");
+      } catch (platformError) {
+        debugPrint("❌ 플랫폼별 설정에서 클라이언트 ID를 찾을 수 없음: $platformError");
+        debugPrint("🔧 .env 파일에 NAVER_MAP_CLIENT_ID를 설정하는 것을 권장합니다.");
+      }
+    }
+  } catch (e) {
+    debugPrint("❌ NaverMap 새 인증 API 초기화 실패: $e");
+    debugPrint("💡 문제 해결을 위해 다음을 확인하세요:");
+    debugPrint("   1. 네이버 클라우드 플랫폼에서 Mobile Dynamic Map 서비스 활성화");
+    debugPrint("   2. 새로운 인증 API용 클라이언트 ID 발급 (기존과 다를 수 있음)");
+    debugPrint("   3. 플랫폼별 설정 파일에 올바른 클라이언트 ID 입력");
+    debugPrint("   4. 인터넷 연결 상태");
+    debugPrint("   5. 2025년 7월 이후 새로운 요금 정책 확인");
+  }
+
+  // 앱을 먼저 시작하고 백그라운드에서 초기화 (iPhone 최적화)
   runApp(const MyApp());
+
+  // 백그라운드에서 초기화 작업 수행 (UI 차단하지 않음)
+  _initializeInBackground();
+}
+
+/// ApiService 초기화
+Future<void> _initializeApiService() async {
+  try {
+    await ApiService().initializeUser();
+    debugPrint("✅ ApiService 초기화 완료");
+  } catch (e) {
+    debugPrint("❌ ApiService 초기화 실패: $e");
+  }
+}
+
+/// 백그라운드 초기화 (UI 차단하지 않음)
+Future<void> _initializeInBackground() async {
+  // 병렬로 초기화 작업 수행
+  await Future.wait([
+    // 사용자 UUID 생성/로드
+    _initializeApiService(),
+    // 카메라 권한 미리 확인 (카메라 화면 진입 속도 향상)
+    _preCheckCameraPermission(),
+  ]);
+}
+
+/// 카메라 권한 미리 확인
+Future<void> _preCheckCameraPermission() async {
+  try {
+    final cameras = await availableCameras();
+    debugPrint("📷 백그라운드 카메라 권한 확인 완료 - 카메라 ${cameras.length}개 발견");
+  } catch (e) {
+    debugPrint("⚠️ 백그라운드 카메라 권한 확인 실패: $e");
+  }
 }
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
-
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => VoiceService(), lazy: true),
+        ChangeNotifierProvider(create: (_) => OnboardingService(), lazy: true),
+      ],
+      child: MaterialApp(
+        navigatorKey: navigatorKey,
+        debugShowCheckedModeBanner: false,
+        title: 'A:EYE',
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+          useMaterial3: true,
+        ),
+        home: const _StartupRouter(),
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
+class _StartupRouter extends StatefulWidget {
+  const _StartupRouter();
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<_StartupRouter> createState() => _StartupRouterState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _StartupRouterState extends State<_StartupRouter> {
+  Widget? _start;
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
+  @override
+  void initState() {
+    super.initState();
+    _decideStartScreen();
+  }
+
+  Future<void> _decideStartScreen() async {
+    final prefs = await SharedPreferences.getInstance();
+    final name = prefs.getString('user_name')?.trim();
+    final uuid = prefs.getString(kUuidKey) ?? '';
+
+    // .env 우선, 없으면 기본값
+    final statusBase =
+        dotenv.env['STATUS_ENDPOINT_BASE'] ?? AppConfig.measurementEndpoint;
+
+    // 기본 기준: 이름 저장돼 있으면 ModeScreen, 아니면 NameScreen
+    Widget fallback = const ModeScreen();
+    if (name == null || name.isEmpty) {
+      fallback = const NameScreen();
+    }
+
+    // 백엔드 상태 체크 옵션
+    if (!kUseBackendStatusCheck || uuid.isEmpty) {
+      setState(() => _start = fallback);
+      return;
+    }
+
+    try {
+      final uri = Uri.parse('$statusBase?uuid=$uuid');
+      final resp = await http.get(uri).timeout(const Duration(seconds: 5));
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        final setupComplete = data['setup_complete'] == true;
+        setState(
+          () =>
+              _start = setupComplete ? const ModeScreen() : const NameScreen(),
+        );
+      } else {
+        debugPrint('Status check failed: ${resp.statusCode}');
+        setState(() => _start = fallback);
+      }
+    } catch (e) {
+      debugPrint('Status check error: $e');
+      setState(() => _start = fallback);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
+    if (_start == null) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    return _start!;
+  }
+}
+
+/// 시작 분기용 내부 타입
+enum _StartTarget { name, mode }
+
+class _LaunchDecision {
+  final _StartTarget target;
+  const _LaunchDecision(this.target);
+
+  factory _LaunchDecision.name() => const _LaunchDecision(_StartTarget.name);
+  factory _LaunchDecision.mode() => const _LaunchDecision(_StartTarget.mode);
+
+  // uuid 자체가 없으면 셋업 필요
+  static _LaunchDecision noUuid() => _LaunchDecision.name();
+}
+
+/// 단순 스플래시 위젯
+class _Splash extends StatelessWidget {
+  const _Splash();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(body: Center(child: CircularProgressIndicator()));
+  }
+}
+
+class _AlternativeStartup extends StatefulWidget {
+  const _AlternativeStartup();
+
+  @override
+  State<_AlternativeStartup> createState() => _AlternativeStartupState();
+}
+
+class _AlternativeStartupState extends State<_AlternativeStartup> {
+  Future<_LaunchDecision> _decideLaunch() async {
+    // ===== 1) 로컬에서 uuid 확인 =====
+    final prefs = await SharedPreferences.getInstance();
+    final uuid = prefs.getString(kUuidKey);
+    // // 보안 저장소로 바꾸고 싶으면:
+    // const storage = FlutterSecureStorage();
+    // final uuid = await storage.read(key: kUuidKey);
+
+    if (uuid == null || uuid.isEmpty) {
+      return _LaunchDecision.noUuid();
+    }
+
+    // ===== 2) (옵션) 백엔드로 현재 상태 확인 =====
+    if (kUseBackendStatusCheck) {
+      try {
+        final uri = Uri.parse('${AppConfig.measurementEndpoint}?uuid=$uuid');
+        final resp = await http.get(
+          uri,
+          headers: {'Accept': 'application/json'},
+        );
+        if (resp.statusCode == 200) {
+          final json = jsonDecode(resp.body) as Map<String, dynamic>;
+          final setupComplete = json['setup_complete'] == true;
+
+          // CommandExecutor 기준: setup_complete가 true면 SETUP이 끝난 상태
+          if (setupComplete) {
+            // (원하면 current_mode를 보고 카메라/네비 초기 화면 분기도 가능)
+            return _LaunchDecision.mode();
+          } else {
+            return _LaunchDecision.name(); // 셋업 이어서 진행
+          }
+        }
+        // 상태코드가 애매하면 로컬 기준으로 통과
+        return _LaunchDecision.mode();
+      } catch (_) {
+        // 네트워크 이슈 시 UX를 위해 로컬 기준으로 통과
+        return _LaunchDecision.mode();
+      }
+    }
+
+    // ===== 3) 백엔드 체크 끈 경우: uuid만 있으면 바로 ModeScreen =====
+    return _LaunchDecision.mode();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // VoiceService는 상위(MyApp)에서 주입되므로 여기서는 중복 주입하지 않습니다.
+    return MaterialApp(
+      navigatorKey: navigatorKey,
+      title: 'A:EYE',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(useMaterial3: true),
+      home: FutureBuilder<_LaunchDecision>(
+        future: _decideLaunch(),
+        builder: (context, snap) {
+          if (snap.connectionState != ConnectionState.done) {
+            return const _Splash();
+          }
+          final decision = snap.data ?? _LaunchDecision.name();
+          switch (decision.target) {
+            case _StartTarget.name:
+              return const NameScreen();
+            case _StartTarget.mode:
+              return const ModeScreen();
+          }
+        },
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-          ],
-        ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
+      routes: {
+        '/name': (_) => const NameScreen(),
+        '/mode': (_) => const ModeScreen(),
+        '/measurement-camera': (context) => const CameraMeasurementScreen(),
+      },
     );
   }
 }
