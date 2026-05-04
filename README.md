@@ -1,132 +1,20 @@
-# full-app
+프로젝트명: AI 기반 시각 장애인 통합 보조 솔루션
+<img width="1567" height="411" alt="image (5)" src="https://github.com/user-attachments/assets/d8641d93-e134-4576-9a83-411b6d78634b" />
 
-## 기술 스택
+1. 프로젝트 배경 및 목적
+많은 시각 장애인이 일상적인 이동과 사물 식별에서 어려움을 겪고 있습니다. 기존의 보조 도구들은 단순히 장애물을 감지하는 데 그치거나, 복잡한 정보를 직관적으로 전달하지 못하는 한계가 있습니다.
+BugBug는 최신 AI 비전 기술과 LLM(대형언어모델)을 결합하여, 사용자가 단순히 '보는' 것을 넘어 주변 상황을 '이해'하고 '상호작용'할 수 있는 환경을 제공하고자 기획되었습니다.
 
-| 분야            | 기술 스택                                                     |
-|----------------|-------------------------------------------------------------|
-| **모바일 앱**    | Flutter (Android / iOS)                                     |
-| **객체 인식**    | YOLOv8 (Python)                                             |
-| **깊이 추정**    | FastDepth                                                   |
-| **음성 인식**    | Google Speech-to-Text                                       |
-| **명령어 해석**   | GPT-4 API                                                  |
-| **지도 서비스**   | Google Maps API                                            |
-| **음성 출력**    | Google Text-to-Speech (TTS)                                 |
-| **스트리밍 처리** | Google ML Kit (영상 프레임 실시간 처리)                           |
-| **백엔드**       | FastAPI                                                    |
-| **데이터베이스**  | PostgreSQL                                                  |
-| **배포 환경**    | AWS (EC2, RDS 등)                                           |
+2. 핵심 서비스 가치
+지능형 상황 인지: 단순 객체 탐지를 넘어, GPT-4를 활용해 현재 상황을 맥락적으로 분석하고 음성으로 가이드를 제공합니다.
 
+직관적인 인터페이스: 시각 정보가 제한된 사용자를 위해 음성 명령(Voice Command)과 최적화된 UX를 제공합니다.
 
-## 디렉토리 구조
-FULL-APP/
-├── .github/                  # GitHub Actions (CI 등 자동화)
-│
-├── backend/                  # FastAPI 백엔드
-│   ├── main.py               # FastAPI 진입점
-│   ├── start.sh              # macOS/Linux 실행 스크립트
-│   ├── start.ps1             # Windows PowerShell 실행 스크립트
-│   ├── start.bat             # Windows CMD 실행 스크립트
-│   ├── api/                  # 라우터 분리 예정 (vision, command 등)
-│   ├── services/             # YOLO, GPT, TTS 등 비즈니스 로직
-│   ├── models/               # Pydantic or SQLAlchemy 모델
-│   ├── db/                   # DB 연결, 세션 관리
-│   ├── core/                 # 설정, 환경 변수 관리
-│   └── tests/                # 테스트 코드
-│
-├── flutter_app/              # Flutter 모바일 앱
-│   ├── android/
-│   ├── ios/
-│   ├── lib/
-│   │   ├── main.dart         # 앱 진입점
-│   │   ├── screens/          # UI 화면
-│   │   ├── widgets/          # 공용 위젯
-│   │   ├── services/         # 백엔드 API 호출
-│   │   ├── models/           # 데이터 모델
-│   │   ├── core/             # 앱 전역 설정 (상수, 스타일, 환경변수)
-│   │   ├── routes/           # 화면 전환 경로 관리
-│   │   └── providers/        # 상태 관리 (Provider, Riverpod 등)
-│   ├── pubspec.yaml
-│   └── ...
-│
-├── .gitignore                # Git 무시 설정
-├── README.md                 # 프로젝트 설명서
-├── requirements.txt          # FastAPI 백엔드 의존성
-├── venv/                     # Python 가상환경 (Git에 포함 X)
+데이터 기반 분석: 사용자의 활동 데이터를 분석하여 안전한 이동 경로 제안 및 일상 패턴 리포트를 생성합니다.
 
-## 개발 환경 준비
-- **Python**: 3.10.13 (`pyenv` ios 권장)
-- **Flutter**: 3.29.3
-- **Dart**: 3.7.2
-
-## 가상환경 설정
-(venv/ 폴더는 Git에 포함되지 않으며, 각 사용자가 로컬에서 직접 생성해야 함)
-
-1. 파이썬 설치
-
-2. 가상환경 생성
-    Windows |   python -m venv venv
-    macOS   |   python3 -m venv venv
-
-3. 가상환경 이동
-    Windows |   backend\venv\Scripts\activate (cmd)
-            |   	backend\venv\Scripts\Activate.ps1 (powershell)
-    macOS   |   source backend/venv/bin/activate 
-
-4. 의존성 설치
-    Windows |   pip install -r backend/requirements.txt
-    macOS   |   pip install -r backend/requirements.txt
-
-5. FastAPI 서버 실행
-    Windows |   backend\start.bat (cmd)
-                .\backend\start.ps1 (powershell)
-    macOS   |   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
-## DB 설정
-
-1. PostgreSQL 설치
-- macOS: `brew install postgresql@16`
-- Windows: [공식 다운로드](https://www.postgresql.org/download/windows/)
-
-2. DB/계정 생성
-psql -h localhost -d postgres   #(postgresql 접속)
-CREATE DATABASE appdb;
-CREATE USER appuser WITH PASSWORD '1111';
-GRANT ALL PRIVILEGES ON DATABASE appdb TO appuser;
-
-\c appdb
-GRANT CREATE, USAGE ON SCHEMA public TO appuser;
-ALTER SCHEMA public OWNER TO appuser;   #(실패해도 무방)
-GRANT ALL ON DATABASE appdb TO appuser;
-\q (postgresql 종료)
-
-3. 스키마 파일 적용
-psql -U appuser -h localhost -d appdb -f backend/db/appdb.sql
-
-4. DB 접속
-psql -h localhost -U appuser -d appdb
-
-
-# 추가된 라이브러리(마이다스)
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-pip install opencv-python numpy ultralytics transformers fastapi uvicorn python-multipart asyncpg
-
-
-## 구글 클라우드 연동
-
-1. mac
-brew install --cask gcloud-cli
-exec $SHELL -l
-gcloud version
-
-gcloud auth application-default login
-gcloud config set project <PROJECT_ID>                 # 선택이지만 권장
-gcloud auth application-default set-quota-project <PROJECT_ID>
-
-2. windows(powershell)
-winget install -e --id Google.CloudSDK
-설치 후 터미널 닫았다가 다시 열기 (또는 새 PowerShell 창)
-gcloud version
-
-gcloud auth application-default login
-gcloud config set project <PROJECT_ID>                 # 선택이지만 권장
-gcloud auth application-default set-quota-project <PROJECT_ID>
+기능,상세 내용
+실시간 객체 인식,"YOLOv8 모델을 통해 보행 중 마주치는 장애물, 표지판, 사물을 실시간으로 탐지하고 거리 정보를 계산합니다."
+AI 분석 리포트,사용자의 이동 경로와 주로 마주친 환경 데이터를 시각화 및 문서화하여 맞춤형 안전 가이드를 제공합니다.
+AR 플레이그라운드,"증강 현실(AR) 기술을 접목하여 가상의 안전 구역을 설정하거나, 공간감을 익힐 수 있는 보조 인터페이스를 제공합니다."
+대화형 음성 제어,"""앞에 뭐가 있어?"", ""화장실 어디야?"" 등의 자연어 질문에 대해 GPT-4가 실시간 비전 데이터를 분석하여 답변합니다."
+<img width="2701" height="1628" alt="image (4)" src="https://github.com/user-attachments/assets/eca98b46-77d0-4a46-81ec-7174b880c711" />
